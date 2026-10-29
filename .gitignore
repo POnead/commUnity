@@ -1,0 +1,7 @@
+.impeccable/
+.taste-skill/
+pdf files/
+node_modules/
+.env
+.env.*
+!.env.example

@@ -1,8 +1,5 @@
 "use strict";
 
-const DATA_KEY = "community-demo-data-v1";
-const SESSION_KEY = "community-demo-session-v1";
-const DEMO_PASSWORD = "BaleteDemo26!";
 const ROLES = {
   resident: "Resident",
   official: "Barangay official",
@@ -29,27 +26,49 @@ const CATEGORIES = [
   "Other community concern",
 ];
 const AREAS = ["Purok 1", "Purok 2", "Purok 3", "Purok 4", "Purok 5", "Main Road"];
+function locationAreas() {
+  return data?.locations?.map((location) => location.area) || AREAS;
+}
+function locationBarangays() {
+  return [...new Set((data?.locations || []).map((location) => location.barangay))];
+}
+function areasInBarangay(barangay) {
+  return (data?.locations || []).filter((location) => location.barangay === barangay).map((location) => location.area);
+}
+function locationAreaLabels() {
+  return Object.fromEntries((data?.locations || []).map((location) => [
+    location.area,
+    `${location.barangay} · ${location.purok}${location.street ? ` · ${location.street}` : ""}`,
+  ]));
+}
 const DEMO_USERS = [
   { email: "juan.delacruz@community.demo", role: "resident", name: "Juan Dela Cruz", area: "Purok 3" },
   { email: "maria.santos@community.demo", role: "official", name: "Maria Santos", area: "Balete, Batangas" },
-  { email: "admin@community.demo", role: "administrator", name: "Community administrator", area: "Balete, Batangas" },
+  { email: "admin@gmail.com", role: "administrator", name: "Community administrator", area: "Balete, Batangas" },
 ];
+const DEFAULT_PERMISSIONS = {
+  resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageAnnouncements: false, manageUsers: false, manageRoles: false, viewAudit: false },
+  official: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: false, manageRoles: false, viewAudit: false },
+  administrator: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: true, manageRoles: true, viewAudit: true },
+};
 const PERMISSION_DEFS = [
   { id: "submitReports", label: "Submit and track concerns", group: "Community services", description: "Create concerns and view their updates." },
   { id: "viewSchedules", label: "View collection schedules", group: "Community services", description: "See posted collection dates and service updates." },
   { id: "manageReports", label: "Review and update reports", group: "Community services", description: "Review resident concerns and record status updates." },
   { id: "manageSchedules", label: "Manage collection schedules", group: "Community services", description: "Create, update, and remove service schedules." },
-  { id: "manageUsers", label: "Manage user accounts", group: "Portal administration", description: "Review accounts and adjust access in this prototype." },
-  { id: "manageRoles", label: "Change role permissions", group: "Portal administration", description: "Choose which prototype functions each role can access." },
-  { id: "viewAudit", label: "Review activity history", group: "Portal administration", description: "View the local record of demonstration changes." },
+  { id: "manageAnnouncements", label: "Manage announcements", group: "Community services", description: "Publish or remove updates shared with residents." },
+  { id: "manageUsers", label: "Manage user accounts", group: "Portal administration", description: "Review accounts and adjust access in this workspace." },
+  { id: "manageRoles", label: "Change role permissions", group: "Portal administration", description: "Choose which workspace functions each role can access." },
+  { id: "viewAudit", label: "Review activity history", group: "Portal administration", description: "Review recorded account and service activity." },
 ];
-const EMERGENCY_GUIDANCE = "This prototype does not send reports to barangay staff or contact emergency services. If anyone is in immediate danger, contact local emergency services directly. Do not wait for a response through this demo.";
+const EMERGENCY_GUIDANCE = "CommUnity does not dispatch emergency services. If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service.";
 
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
 let data;
 let currentUser;
 let currentRoute;
+let dataRevision = 0;
 let lastKnownHash = window.location.hash;
 let selectedReportId = null;
 let pendingReportRoute = "";
@@ -111,7 +130,7 @@ function esc(value) {
 
 function asDate(value) {
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) throw new Error("A date in the local demonstration data is invalid.");
+  if (Number.isNaN(parsed.getTime())) throw new Error("A saved CommUnity date is invalid.");
   return parsed;
 }
 
@@ -287,7 +306,7 @@ function seedData() {
     { id: idFor("N"), targetEmail: DEMO_USERS[0].email, reportId: "RPT-2026-045", title: "Report in progress", body: "The maintenance team is checking the streetlight near Purok 3.", createdAt: "2026-10-29T10:15:00", read: true },
     { id: idFor("N"), targetEmail: DEMO_USERS[1].email, title: "Urgent concern: Flooding on Mabini Street", body: "A resident submitted an urgent hazard report for Purok 3.", createdAt: "2026-10-30T08:42:00", read: false, reportId: "RPT-2026-048" },
     { id: idFor("N"), targetEmail: DEMO_USERS[1].email, title: "New concern reported", body: "Illegal waste disposal was reported in Purok 5.", createdAt: "2026-10-30T08:10:00", read: false, reportId: "RPT-2026-047" },
-    { id: idFor("N"), targetEmail: DEMO_USERS[2].email, title: "Resident account registered", body: "Six resident and two official sample accounts are available in this workspace.", createdAt: "2026-10-30T07:00:00", read: false },
+    { id: idFor("N"), targetEmail: DEMO_USERS[2].email, title: "Resident account registered", body: "There are six resident and two official accounts in this workspace.", createdAt: "2026-10-30T07:00:00", read: false },
   ];
 
   const activities = [
@@ -318,74 +337,82 @@ function seedData() {
   };
 }
 
-function localSave() {
+function emptyState() {
+  return {
+    version: 1,
+    users: [],
+    reports: [],
+    schedules: [],
+    notifications: [],
+    activities: [],
+    permissions: structuredClone(DEFAULT_PERMISSIONS),
+    announcements: [],
+    locations: [],
+    recyclingLocations: [],
+  };
+}
+
+async function localSave() {
   try {
     const snapshot = JSON.stringify(data);
-    localStorage.setItem(DATA_KEY, snapshot);
-    lastPersistedSnapshot = snapshot;
+    const response = await fetch("/api/state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data, revision: dataRevision }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "CommUnity could not save this change.");
+    dataRevision = result.revision;
+    data = result.data;
+    currentUser = result.user;
+    lastPersistedSnapshot = JSON.stringify(data);
     return true;
   } catch (error) {
-    console.error("CommUnity could not save demonstration data.", error);
+    console.error("CommUnity could not save data.", error);
     if (lastPersistedSnapshot) {
       data = JSON.parse(lastPersistedSnapshot);
-      currentUser = userFromSession();
     }
-    toast("This change could not be saved in this browser. Free up local storage and try again.", "error");
+    toast(error.message || "Your change could not be saved. Check that the CommUnity server is running, then try again.", "error");
     return false;
   }
 }
 
-function loadLocalData() {
-  const saved = localStorage.getItem(DATA_KEY);
-  if (!saved) {
-    data = seedData();
-    return true;
-  }
+async function loadLocalData() {
   try {
-    const parsed = JSON.parse(saved);
-    if (parsed.version !== 1 || !Array.isArray(parsed.users) || !Array.isArray(parsed.reports) || !Array.isArray(parsed.schedules)) {
-      throw new Error("The saved data does not match this prototype version.");
+    const sessionResponse = await fetch("/api/session");
+    const session = await sessionResponse.json();
+    if (!sessionResponse.ok) throw new Error(session.error || "CommUnity could not check your sign-in.");
+    currentUser = session.user;
+    if (!currentUser) {
+      data = emptyState();
+      const locationResponse = await fetch("/api/locations");
+      const locationResult = await locationResponse.json();
+      if (!locationResponse.ok) throw new Error(locationResult.error || "CommUnity could not load community locations.");
+      data.locations = locationResult.locations;
+      dataRevision = 0;
+      lastPersistedSnapshot = "";
+      return false;
     }
-    data = parsed;
+    const response = await fetch("/api/state");
+    const stored = await response.json();
+    if (!response.ok) throw new Error(stored.error || "CommUnity could not load your information.");
+    dataRevision = stored.revision;
+    data = stored.data;
+    currentUser = stored.user;
+    if (!data || data.version !== 1 || !Array.isArray(data.users) || !Array.isArray(data.reports) || !Array.isArray(data.schedules)) {
+      throw new Error("The saved data version is not supported. Reset the saved CommUnity data to continue.");
+    }
     data.notifications ||= [];
     data.activities ||= [];
-    data.permissions ||= seedData().permissions;
+    data.permissions ||= structuredClone(DEFAULT_PERMISSIONS);
     data.announcements ||= [];
-    lastPersistedSnapshot = saved;
-    return true;
+    lastPersistedSnapshot = stored.data ? JSON.stringify(data) : "";
+    return Boolean(stored.data);
   } catch (error) {
-    console.error("CommUnity could not read its saved demonstration data.", error);
-    app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>Saved data could not be opened</h1><p>${esc(error.message)} Reset the local demonstration data to continue.</p><button class="button" type="button" data-action="reset-corrupt">Reset demonstration data</button></main>`;
-    return false;
+    console.error("CommUnity could not read saved data.", error);
+    app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>Saved data could not be opened</h1><p>${esc(error.message)}</p></main>`;
+    return null;
   }
-}
-
-function bytesToHex(buffer) {
-  return Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function newSalt() {
-  if (!globalThis.crypto?.subtle) throw new Error("Secure browser password tools are unavailable. Open this site in a current browser over localhost.");
-  return bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
-}
-
-async function passwordDigest(password, saltHex) {
-  if (!globalThis.crypto?.subtle) throw new Error("Secure browser password tools are unavailable. Open this site in a current browser over localhost.");
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const salt = Uint8Array.from(saltHex.match(/.{2}/g) || [], (part) => Number.parseInt(part, 16));
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 120000, hash: "SHA-256" }, key, 256);
-  return bytesToHex(bits);
-}
-
-async function setPassword(account, password) {
-  account.passwordSalt = newSalt();
-  account.passwordDigest = await passwordDigest(password, account.passwordSalt);
-}
-
-async function verifyPassword(account, password) {
-  if (!account?.passwordSalt || !account?.passwordDigest) return false;
-  const digest = await passwordDigest(password, account.passwordSalt);
-  return digest === account.passwordDigest;
 }
 
 function toast(message, kind = "") {
@@ -400,24 +427,7 @@ function currentPath() {
   return window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
 }
 
-function userFromSession() {
-  const remembered = localStorage.getItem(SESSION_KEY);
-  const tabSession = sessionStorage.getItem(SESSION_KEY);
-  const email = remembered || tabSession;
-  return data.users.find((user) => user.email === email && user.status === "Active") || null;
-}
-
-function setSession(user, remember) {
-  localStorage.removeItem(SESSION_KEY);
-  sessionStorage.removeItem(SESSION_KEY);
-  const store = remember ? localStorage : sessionStorage;
-  store.setItem(SESSION_KEY, user.email);
-  currentUser = user;
-}
-
 function clearSession() {
-  localStorage.removeItem(SESSION_KEY);
-  sessionStorage.removeItem(SESSION_KEY);
   currentUser = null;
   selectedReportId = null;
   reportDraft = null;
@@ -431,7 +441,7 @@ function unreadCount(user = currentUser) {
 }
 
 function addActivity(action, detail, result = "Success") {
-  data.activities.unshift({
+  data.activities.push({
     id: idFor("A"),
     actor: currentUser?.name || "Resident",
     role: currentUser?.role || "resident",
@@ -440,7 +450,6 @@ function addActivity(action, detail, result = "Success") {
     at: new Date().toISOString(),
     result,
   });
-  data.activities = data.activities.slice(0, 200);
 }
 
 function addNotification(targetEmail, title, body, reportId = "") {
@@ -512,7 +521,7 @@ function inputField(label, name, value = "", options = {}) {
   const help = options.help ? `<span class="field-help" id="${esc(id)}-help">${esc(options.help)}</span>` : "";
   const describedBy = options.help ? `aria-describedby="${esc(id)}-help"` : "";
   const readonly = options.readonly ? "readonly" : "";
-  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${placeholder} ${required} ${describedBy} ${readonly} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}></div>`;
+  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${placeholder} ${required} ${describedBy} ${readonly} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}></div>`;
 }
 
 function selectField(label, name, items, selected, options = {}) {

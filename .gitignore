@@ -2,6 +2,7 @@
 .taste-skill/
 pdf files/
 node_modules/
+data/
 .env
 .env.*
 !.env.example

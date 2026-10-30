@@ -7,9 +7,9 @@ function routeState() {
   if (path[0] !== role) return { type: "app", role, page: "dashboard" };
   const pageName = path[1] || "dashboard";
   const pages = {
-    resident: ["dashboard", "collection", "report", "reports", "history", "notifications", "profile"],
-    official: ["dashboard", "concerns", "urgent", "collection", "history", "notifications", "profile"],
-    administrator: ["dashboard", "users", "roles", "audit", "settings", "profile"],
+    resident: ["dashboard", "collection", "recycling", "report", "reports", "history", "notifications", "profile"],
+    official: ["dashboard", "concerns", "urgent", "collection", "history", "announcements", "notifications", "profile"],
+    administrator: ["dashboard", "reports", "monitoring", "notifications", "users", "locations", "announcements", "roles", "audit", "settings", "profile"],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
   if (!canOpenPage(role, resolvedPage)) {
@@ -22,7 +22,6 @@ function routeState() {
 
 function render() {
   if (!data) return;
-  currentUser = currentUser || userFromSession();
   const route = routeState();
   currentRoute = route;
   if (currentUser && route.type === "app") {
@@ -34,6 +33,7 @@ function render() {
     if (route.role === "resident") {
       if (route.page === "dashboard") markup = dashboardResident();
       else if (route.page === "collection") markup = collectionResident();
+      else if (route.page === "recycling") markup = recyclingPage();
       else if (route.page === "report") markup = reportPage();
       else if (route.page === "reports" || route.page === "history") markup = reportsPage("resident", route.page);
       else if (route.page === "notifications") markup = notificationsPage("resident");
@@ -43,16 +43,23 @@ function render() {
       else if (route.page === "collection") markup = collectionOfficial();
       else if (route.page === "concerns" || route.page === "urgent" || route.page === "history") markup = reportsPage("official", route.page);
       else if (route.page === "notifications") markup = notificationsPage("official");
+      else if (route.page === "announcements") markup = announcementsPage("official");
       else markup = profilePage("official");
     } else {
       if (route.page === "dashboard") markup = dashboardAdmin();
+      else if (route.page === "reports") markup = reportsPage("administrator", "reports");
+      else if (route.page === "monitoring") markup = monitoringPage();
+      else if (route.page === "notifications") markup = notificationsPage("administrator");
       else if (route.page === "users") markup = usersPage();
+      else if (route.page === "locations") markup = locationsPage();
+      else if (route.page === "announcements") markup = announcementsPage("administrator");
       else if (route.page === "roles") markup = rolesPage();
       else if (route.page === "audit") markup = auditPage();
       else if (route.page === "settings") markup = settingsPage();
       else markup = profilePage("administrator");
     }
     app.innerHTML = markup;
+    updatePagination();
     if (modalState) {
       const input = app.querySelector(".modal input:not([type=hidden]), .modal select");
       if (input) requestAnimationFrame(() => input.focus());
@@ -76,15 +83,36 @@ function modalMarkup() {
     const schedule = modalState.id ? data.schedules.find((item) => item.id === modalState.id) : null;
     const title = schedule ? "Edit collection schedule" : "Add collection schedule";
     const body = `<form id="schedule-form" class="modal-form"><input type="hidden" name="id" value="${esc(schedule?.id || "")}">
-      <div class="modal-form-fields"><div class="form-grid">${selectField("Area", "area", AREAS, schedule?.area || "Purok 1", { required: true })}${inputField("Collection date", "date", schedule?.date || todayISO(), { type: "date", required: true })}${inputField("Waste type", "wasteType", schedule?.wasteType || "", { required: true, placeholder: "e.g. Biodegradable" })}${selectField("Service status", "status", COLLECTION_STATUSES, schedule?.status || "Scheduled", { required: true })}${inputField("Start time", "start", schedule?.start || "6:00 AM", { required: true })}${inputField("End time", "end", schedule?.end || "9:00 AM", { required: true })}${selectField("Frequency", "frequency", ["Weekly", "Bi-weekly", "Monthly", "One-time"], schedule?.frequency || "Weekly", { required: true })}${inputField("Collection team", "team", schedule?.team || "Team A · Truck 01")}</div></div>
+      <div class="modal-form-fields"><div class="form-grid">${selectField("Area", "area", locationAreas(), schedule?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Collection date", "date", schedule?.date || todayISO(), { type: "date", required: true })}${inputField("Waste type", "wasteType", schedule?.wasteType || "", { required: true, placeholder: "e.g. Biodegradable" })}${selectField("Service status", "status", COLLECTION_STATUSES, schedule?.status || "Scheduled", { required: true })}${inputField("Start time", "start", schedule?.start || "6:00 AM", { required: true })}${inputField("End time", "end", schedule?.end || "9:00 AM", { required: true })}${selectField("Frequency", "frequency", ["Weekly", "Bi-weekly", "Monthly", "One-time"], schedule?.frequency || "Weekly", { required: true })}${inputField("Collection team", "team", schedule?.team || "Team A · Truck 01")}</div></div>
       <div class="form-actions">${schedule ? `<button class="button danger" type="button" data-action="delete-schedule" data-id="${esc(schedule.id)}">Remove schedule</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save schedule</button></div></form>`;
     return makeModal(title, "Service updates for this area will appear in resident workspaces.", body);
   }
+  if (modalState.kind === "location") {
+    const location = data.locations.find((item) => item.id === modalState.id);
+    const body = `<form id="location-form" class="modal-form"><input type="hidden" name="id" value="${esc(location?.id || "")}">
+      <div class="modal-form-fields"><div class="form-grid">${inputField("Area label", "area", location?.area || "", { required: true, maxLength: 120, placeholder: "e.g. Purok 6" })}${inputField("Barangay", "barangay", location?.barangay || "Balete", { required: true, maxLength: 100 })}${inputField("Purok", "purok", location?.purok || "", { required: true, maxLength: 100 })}${inputField("Street", "street", location?.street || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Landmark", "landmark", location?.landmark || "", { maxLength: 160, placeholder: "Optional" })}</div></div>
+      <div class="form-actions">${location ? `<button class="button danger" type="button" data-action="delete-location" data-id="${esc(location.id)}">Remove location</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save location</button></div></form>`;
+    return makeModal(location ? "Edit community location" : "Add community location", "Location labels are used for resident profiles, reports, and collection schedules.", body);
+  }
+  if (modalState.kind === "recycling") {
+    const item = data.recyclingLocations.find((record) => record.id === modalState.id);
+    const body = `<form id="recycling-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
+      <div class="modal-form-fields"><div class="form-grid">${inputField("Business or site name", "name", item?.name || "", { required: true, maxLength: 120 })}${inputField("Barangay", "barangay", item?.barangay || "Balete", { required: true, maxLength: 100 })}${inputField("Street or address", "street", item?.street || "", { required: true, maxLength: 160 })}${inputField("Purok", "purok", item?.purok || "", { maxLength: 100, placeholder: "Optional" })}${inputField("Nearby landmark", "landmark", item?.landmark || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Contact number", "phone", item?.phone || "", { type: "tel", maxLength: 40, placeholder: "Optional" })}${inputField("Accepted materials", "materials", item?.materials || "", { required: true, maxLength: 500, placeholder: "e.g. PET bottles, cardboard, aluminum" })}${inputField("Opening hours", "hours", item?.hours || "", { maxLength: 120, placeholder: "Optional" })}<label class="checkbox-field span-all"><input name="active" type="checkbox" ${item?.active === false ? "" : "checked"}><span><strong>Show this listing to residents</strong></span></label></div></div>
+      <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-recycling" data-id="${esc(item.id)}">Remove listing</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save listing</button></div></form>`;
+    return makeModal(item ? "Edit recycling location" : "Add recycling location", "Check the address and accepted materials before making a listing visible to residents.", body);
+  }
+  if (modalState.kind === "announcement") {
+    const item = data.announcements.find((record) => record.id === modalState.id);
+    const body = `<form id="announcement-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
+      <div class="modal-form-fields"><div class="form-grid">${inputField("Title", "title", item?.title || "", { required: true, maxLength: 120 })}${inputField("Publish date", "date", item?.date || todayISO(), { type: "date", required: true })}<div class="form-field span-all"><label for="announcement-detail">Message *</label><textarea class="textarea" id="announcement-detail" name="detail" required maxlength="1000">${esc(item?.detail || "")}</textarea></div></div></div>
+      <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save changes" : "Publish announcement"}</button></div></form>`;
+    return makeModal(item ? "Edit announcement" : "New announcement", "Announcements are visible to signed-in residents and staff.", body);
+  }
   const user = modalState.id ? getUser(modalState.id) : null;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
-    <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", AREAS.concat(["Balete, Batangas"]), user?.area || "Purok 1", { required: true })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 10, help: "For this local prototype only; do not reuse a real password." })}</div></div>
+    <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Balete, Batangas"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 12, help: "Choose a unique password with at least 12 characters." })}</div></div>
     <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
-  return makeModal(user ? "Edit account" : "Add account", "Accounts and role changes are stored only in this browser.", body);
+  return makeModal(user ? "Edit account" : "Add account", "Accounts and role changes are saved in this local workspace.", body);
 }
 
 function showModal(kind, id = "") {
@@ -105,8 +133,46 @@ function refreshSearch(searchValue) {
     const matchesText = !query || row.dataset.search.includes(query);
     const matchesRole = roleFilter === "all" || row.dataset.search.includes(ROLES[roleFilter].toLowerCase());
     const matchesStatus = statusFilter === "all" || row.dataset.search.includes(statusFilter.toLowerCase());
-    row.hidden = !(matchesText && matchesRole && matchesStatus);
+    row.dataset.filteredOut = String(!(matchesText && matchesRole && matchesStatus));
   });
+  updatePagination();
+}
+
+function updatePagination(onlyRecords = null) {
+  const tables = onlyRecords ? [onlyRecords] : [...app.querySelectorAll(".records[data-page-size]")];
+  for (const table of tables) {
+    const rows = [...table.querySelectorAll(".filter-item")];
+    const visible = rows.filter((row) => row.dataset.filteredOut !== "true");
+    const pageSize = Number(table.dataset.pageSize);
+    const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
+    const page = Math.min(Number(table.dataset.page || 0), pageCount - 1);
+    table.dataset.page = String(page);
+    visible.forEach((row, index) => {
+      row.hidden = index < page * pageSize || index >= (page + 1) * pageSize;
+    });
+    rows.filter((row) => row.dataset.filteredOut === "true").forEach((row) => { row.hidden = true; });
+    let controls = table.nextElementSibling?.classList.contains("pagination") ? table.nextElementSibling : null;
+    if (pageCount <= 1) {
+      controls?.remove();
+      continue;
+    }
+    if (!controls) {
+      controls = document.createElement("nav");
+      controls.className = "pagination";
+      controls.setAttribute("aria-label", "Table pages");
+      table.after(controls);
+    }
+    table.dataset.paginationId ||= `table-${Math.random().toString(36).slice(2, 10)}`;
+    controls.innerHTML = `<button class="button secondary small" type="button" data-action="change-page" data-pagination-id="${table.dataset.paginationId}" data-direction="-1" ${page === 0 ? "disabled" : ""}>Previous</button><span class="pagination-status" aria-live="polite">Page ${page + 1} of ${pageCount}</span><button class="button secondary small" type="button" data-action="change-page" data-pagination-id="${table.dataset.paginationId}" data-direction="1" ${page >= pageCount - 1 ? "disabled" : ""}>Next</button>`;
+  }
+}
+
+function updateReportAreaChoices(barangay) {
+  const field = app.querySelector("#report-area");
+  if (!field) return;
+  const areas = areasInBarangay(barangay);
+  const selected = areas.includes(field.value) ? field.value : areas[0];
+  field.innerHTML = areas.map((area) => `<option value="${esc(area)}" ${area === selected ? "selected" : ""}>${esc(locationAreaLabels()[area] || area)}</option>`).join("");
 }
 
 function safeCsvCell(value) {
@@ -124,6 +190,26 @@ function exportCsv(filename, headers, rows) {
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   toast("Your CSV export is ready.", "success");
+}
+
+function exportReports(history = false) {
+  const reports = sortedReports(currentUser.role === "resident" ? userReports() : data.reports);
+  if (history) {
+    exportCsv("community-report-history.csv",
+      ["Report ID", "Resident", "Category", "Barangay", "Purok or area", "Street or landmark", "Status", "Date and time", "Update"],
+      reports.flatMap((report) => report.history.map((item) => [
+        report.id, report.name, report.category, report.barangay || "", report.area, report.locationDetail || "", item.status, item.at, item.note,
+      ])),
+    );
+    return;
+  }
+  exportCsv("community-reports.csv",
+    ["Report ID", "Resident", "Email", "Category", "Concern", "Barangay", "Purok or area", "Street or landmark", "Description", "Urgent", "Status", "Submitted", "Updated"],
+    reports.map((report) => [
+      report.id, report.name, report.userEmail, report.category, report.title, report.barangay || "", report.area, report.locationDetail || "",
+      report.description, report.urgent ? "Yes" : "No", report.status, report.submittedAt, report.updatedAt,
+    ]),
+  );
 }
 
 async function compressPhoto(file) {
@@ -144,11 +230,7 @@ async function compressPhoto(file) {
 }
 
 function nextReportId() {
-  const largest = data.reports.reduce((value, report) => {
-    const number = Number(report.id.split("-").at(-1));
-    return Number.isFinite(number) ? Math.max(value, number) : value;
-  }, 0);
-  return `RPT-${new Date().getFullYear()}-${String(largest + 1).padStart(3, "0")}`;
+  return `RPT-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 12)}`;
 }
 
 async function submitReportDraft() {
@@ -161,19 +243,19 @@ async function submitReportDraft() {
     category: reportDraft.category,
     title: reportDraft.category === "Other community concern" ? `Community concern in ${reportDraft.area}` : `${reportDraft.category} · ${reportDraft.area}`,
     area: reportDraft.area,
+    barangay: reportDraft.barangay,
+    locationDetail: reportDraft.locationDetail,
     description: reportDraft.description,
     urgent: Boolean(reportDraft.urgent),
     status: "Submitted",
     submittedAt: now,
     updatedAt: now,
     photos: uploadPhotos,
-    history: [{ status: "Submitted", at: now, note: "Report received in this browser." }],
+    history: [{ status: "Submitted", at: now, note: "Report received." }],
   };
   data.reports.unshift(report);
-  addRoleNotification("official", report.urgent ? `Urgent concern: ${report.title}` : `New concern: ${report.title}`, `${currentUser.name} submitted a report for ${report.area}.`, report.id);
-  addRoleNotification("administrator", "Community concern submitted", `${report.id} · ${report.title}`, report.id);
   addActivity(report.urgent ? "Submitted an urgent concern" : "Submitted a concern", `${report.id} · ${report.title}`);
-  if (!localSave()) {
+  if (!await localSave()) {
     data.reports = data.reports.filter((item) => item.id !== report.id);
     return;
   }
@@ -181,10 +263,10 @@ async function submitReportDraft() {
   uploadPhotos = [];
   selectedReportId = null;
   window.location.hash = routeUrl("resident", "reports");
-  toast(`Concern ${report.id} saved in this browser demo.`, "success");
+  toast(`Concern ${report.id} saved.`, "success");
 }
 
-function updateReportStatus(form) {
+async function updateReportStatus(form) {
   const report = getReport(form.get("reportId"));
   if (!report) throw new Error("This report could not be found. Return to the concerns list and try again.");
   const status = String(form.get("status"));
@@ -198,25 +280,24 @@ function updateReportStatus(form) {
   report.status = status;
   report.updatedAt = now;
   report.history.push({ status, at: now, note: note || `Status updated to ${status}.` });
-  addNotification(report.userEmail, `Report ${status.toLowerCase()}`, `${report.id}: ${note || `Your concern is now ${status.toLowerCase()}.`}`, report.id);
   addActivity("Updated a report", `${report.id} · ${status}`);
-  if (!localSave()) return;
+  if (!await localSave()) return;
   selectedReportId = null;
   render();
   toast(`${report.id} updated. The resident has an in-app notification.`, "success");
 }
 
-function updateCollection(form) {
+async function updateCollection(form) {
   const id = String(form.get("id") || "");
   const existing = id ? data.schedules.find((item) => item.id === id) : null;
   const date = String(form.get("date") || "");
   const area = String(form.get("area") || "");
   const status = String(form.get("status") || "");
-  if (!AREAS.includes(area) || !COLLECTION_STATUSES.includes(status) || !date) throw new Error("Choose a valid area, collection date, and service status.");
+  if (!locationAreas().includes(area) || !COLLECTION_STATUSES.includes(status) || !date) throw new Error("Choose a valid area, collection date, and service status.");
   const record = {
     ...(existing || { id: nextScheduleId(date) }),
     area,
-    zone: existing?.zone || `Zone ${String.fromCharCode(65 + Math.max(0, AREAS.indexOf(area)))}`,
+    zone: existing?.zone || `Zone ${String.fromCharCode(65 + Math.max(0, locationAreas().indexOf(area)))}`,
     date,
     wasteType: String(form.get("wasteType") || "").trim(),
     start: String(form.get("start") || "").trim(),
@@ -231,14 +312,86 @@ function updateCollection(form) {
   if (!record.wasteType || !record.start || !record.end) throw new Error("Complete the service, collection time, and waste type.");
   if (existing) Object.assign(existing, record);
   else data.schedules.push(record);
-  const message = `${record.wasteType} pickup ${status.toLowerCase()} for ${record.area} on ${dateLabel(record.date)}.`;
-  data.users.filter((user) => user.role === "resident" && user.area === record.area)
-    .forEach((user) => addNotification(user.email, `Collection update for ${record.area}`, message));
   addActivity(existing ? "Updated a collection schedule" : "Added a collection schedule", `${record.id} · ${record.area} · ${status}`);
-  if (!localSave()) return;
+  if (!await localSave()) return;
   modalState = null;
   render();
   toast("Collection schedule saved. Residents in the affected area have an in-app update.", "success");
+}
+
+async function saveLocation(form) {
+  const id = String(form.get("id") || idFor("LOC"));
+  const record = {
+    id,
+    area: String(form.get("area") || "").trim(),
+    barangay: String(form.get("barangay") || "").trim(),
+    street: String(form.get("street") || "").trim(),
+    purok: String(form.get("purok") || "").trim(),
+    landmark: String(form.get("landmark") || "").trim(),
+  };
+  if (!record.area || !record.barangay || !record.purok) throw new Error("Enter an area label, barangay, and purok.");
+  if (data.locations.some((item) => item.area.toLowerCase() === record.area.toLowerCase() && item.id !== id)) {
+    throw new Error("Another location already uses this area label.");
+  }
+  const existing = data.locations.find((item) => item.id === id);
+  if (existing) Object.assign(existing, record);
+  else data.locations.push(record);
+  addActivity(existing ? "Updated a community location" : "Added a community location", `${record.area} · ${record.barangay}`);
+  if (!await localSave()) return;
+  modalState = null;
+  render();
+  toast("Community location saved.", "success");
+}
+
+async function saveRecyclingLocation(form) {
+  const id = String(form.get("id") || idFor("REC"));
+  const record = {
+    id,
+    name: String(form.get("name") || "").trim(),
+    barangay: String(form.get("barangay") || "").trim(),
+    street: String(form.get("street") || "").trim(),
+    purok: String(form.get("purok") || "").trim(),
+    landmark: String(form.get("landmark") || "").trim(),
+    materials: String(form.get("materials") || "").trim(),
+    phone: String(form.get("phone") || "").trim(),
+    hours: String(form.get("hours") || "").trim(),
+    active: Boolean(form.get("active")),
+  };
+  if (!record.name || !record.barangay || !record.street || !record.materials) {
+    throw new Error("Enter the business name, barangay, street address, and accepted materials.");
+  }
+  const existing = data.recyclingLocations.find((item) => item.id === id);
+  if (existing) Object.assign(existing, record);
+  else data.recyclingLocations.push(record);
+  addActivity(existing ? "Updated a recycling directory listing" : "Added a recycling directory listing", record.name);
+  if (!await localSave()) return;
+  modalState = null;
+  render();
+  toast("Recycling directory listing saved.", "success");
+}
+
+async function saveAnnouncement(form) {
+  const id = String(form.get("id") || "");
+  const body = {
+    title: String(form.get("title") || "").trim(),
+    date: String(form.get("date") || ""),
+    detail: String(form.get("detail") || "").trim(),
+  };
+  if (!body.title || !body.date || !body.detail) throw new Error("Enter an announcement title, date, and message.");
+  const response = await fetch("/api/announcements", {
+    method: id ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(id ? { ...body, id } : body),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The announcement could not be saved.");
+  data = result.data;
+  dataRevision = result.revision;
+  currentUser = result.user;
+  lastPersistedSnapshot = JSON.stringify(data);
+  modalState = null;
+  render();
+  toast(id ? "Announcement updated." : "Announcement published.", "success");
 }
 
 function nextScheduleId(date) {
@@ -258,32 +411,48 @@ function timeToMinutes(value) {
   return hours * 60 + Number(match[2]);
 }
 
-function updateProfile(form) {
+async function updateProfile(form) {
   const name = String(form.get("name") || "").trim();
   const area = String(form.get("area") || "").trim();
   if (name.length < 2) throw new Error("Enter your full name.");
-  if (currentUser.role === "resident" && !AREAS.includes(area)) throw new Error("Choose an affected area.");
-  currentUser.name = name;
-  currentUser.area = area;
-  currentUser.phone = String(form.get("phone") || "").trim();
-  addActivity("Updated profile information", currentUser.email);
-  if (!localSave()) return;
+  if (currentUser.role === "resident" && !locationAreas().includes(area)) throw new Error("Choose an affected area.");
+  const response = await fetch("/api/profile", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, area, phone: String(form.get("phone") || "").trim() }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
+  currentUser = result.user;
+  data = result.data;
+  dataRevision = result.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
   render();
-  toast("Profile saved in this browser.", "success");
+  toast("Profile saved.", "success");
 }
 
 async function updatePassword(form) {
   const oldPassword = String(form.get("currentPassword") || "");
   const password = String(form.get("newPassword") || "");
   const confirm = String(form.get("confirmPassword") || "");
-  if (password.length < 10) throw new Error("Choose a password with at least 10 characters.");
+  if (password.length < 12) throw new Error("Choose a password with at least 12 characters.");
   if (password !== confirm) throw new Error("The new passwords do not match.");
-  if (!await verifyPassword(currentUser, oldPassword)) throw new Error("The current password does not match this local account.");
-  await setPassword(currentUser, password);
-  addActivity("Changed account password", currentUser.email);
-  if (!localSave()) return;
+  const response = await fetch("/api/auth/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword: oldPassword, newPassword: password, confirmPassword: confirm }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The password could not be changed.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "The account was updated, but CommUnity could not reload.");
+  data = state.data;
+  dataRevision = state.revision;
+  currentUser = state.user;
+  lastPersistedSnapshot = JSON.stringify(data);
   form.reset();
-  toast("Password updated for this browser account.", "success");
+  toast("Password updated.", "success");
 }
 
 async function createResident(form) {
@@ -293,43 +462,50 @@ async function createResident(form) {
   const confirm = String(form.get("confirmPassword") || "");
   const area = String(form.get("area") || "");
   if (name.length < 2) throw new Error("Enter your full name.");
-  if (data.users.some((user) => user.email.toLowerCase() === email)) throw new Error("An account already uses this email address. Sign in or choose another address.");
-  if (password.length < 10) throw new Error("Use a password with at least 10 characters.");
-  if (password === DEMO_PASSWORD) throw new Error("Choose a password other than the shared demo password.");
+  if (password.length < 12) throw new Error("Use a password with at least 12 characters.");
   if (password !== confirm) throw new Error("The passwords do not match.");
-  if (!AREAS.includes(area)) throw new Error("Choose a purok or affected area.");
-  const account = {
-    id: idFor("U"), email, name, area, phone: String(form.get("phone") || "").trim(),
-    role: "resident", status: "Active", joinedAt: todayISO(),
-  };
-  await setPassword(account, password);
-  data.users.push(account);
-  addActivity("Created resident account", `${name} · ${area}`);
-  if (!localSave()) {
-    data.users = data.users.filter((user) => user.email !== email);
-    return;
-  }
-  setSession(account, true);
+  if (!locationAreas().includes(area)) throw new Error("Choose a purok or affected area.");
+  const response = await fetch("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name, email, area, phone: String(form.get("phone") || "").trim(),
+      password, confirmPassword: confirm,
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Your account could not be created.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "Your account was created, but CommUnity could not load it.");
+  currentUser = state.user || result.user;
+  data = state.data;
+  dataRevision = state.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
   window.location.hash = routeUrl("resident", "dashboard");
-  toast("Your resident account is ready in this browser.", "success");
+  toast("Your resident account is ready.", "success");
 }
 
 async function login(emailInput, password, remember = false) {
-  const email = emailInput.trim().toLowerCase();
-  const account = data.users.find((user) => user.email.toLowerCase() === email);
-  if (!account || !await verifyPassword(account, password)) throw new Error("Those sign-in details do not match an account in this browser.");
-  if (account.status !== "Active") throw new Error("This local account is inactive. Ask the administrator in the demonstration to reactivate it.");
-  setSession(account, remember);
-  addActivity("Signed in", ROLES[account.role]);
-  const saved = localSave();
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: emailInput.trim().toLowerCase(), password, remember }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Those sign-in details do not match an active account.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "Signed in, but CommUnity could not load your information.");
+  currentUser = state.user || result.user;
+  data = state.data;
+  dataRevision = state.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
   selectedReportId = null;
   reportDraft = null;
-  window.location.hash = routeUrl(account.role, "dashboard");
+  window.location.hash = routeUrl(currentUser.role, "dashboard");
   render();
-  toast(
-    saved ? `Signed in to the ${ROLES[account.role]} workspace.` : "Signed in, but this browser could not save the activity record.",
-    saved ? "success" : "error",
-  );
+  toast(`Signed in to the ${ROLES[currentUser.role]} workspace.`, "success");
 }
 
 async function addOrEditUser(form) {
@@ -355,35 +531,40 @@ async function addOrEditUser(form) {
     if (oldEmail !== email) {
       data.notifications.forEach((item) => { if (item.targetEmail === oldEmail) item.targetEmail = email; });
       data.reports.forEach((report) => { if (report.userEmail === oldEmail) report.userEmail = email; });
-      if (currentUser === existing) {
-        localStorage.setItem(SESSION_KEY, email);
-        currentUser = existing;
-      }
     }
     addActivity("Updated user account", `${name} · ${ROLES[role]}`);
   } else {
     const password = String(form.get("password") || "");
-    if (password.length < 10) throw new Error("Use an initial password with at least 10 characters.");
-    const account = {
-      id: idFor("U"), email, name, area, role, status, phone: String(form.get("phone") || "").trim(), joinedAt: todayISO(),
-    };
-    await setPassword(account, password);
-    data.users.push(account);
-    addActivity("Added user account", `${name} · ${ROLES[role]}`);
+    if (password.length < 12) throw new Error("Use an initial password with at least 12 characters.");
+    const response = await fetch("/api/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, name, area, role, status, phone: String(form.get("phone") || "").trim(), password }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The account could not be added.");
+    data = result.data;
+    dataRevision = result.revision;
+    currentUser = result.user;
+    lastPersistedSnapshot = JSON.stringify(data);
+    modalState = null;
+    render();
+    toast("Account added.", "success");
+    return;
   }
-  if (!localSave()) return;
+  if (!await localSave()) return;
   modalState = null;
   render();
-  toast(existing ? "Account updated in this browser." : "Account added in this browser.", "success");
+  toast(existing ? "Account updated." : "Account added.", "success");
 }
 
-function toggleAccount(email) {
+async function toggleAccount(email) {
   const user = getUser(email);
   if (!user) throw new Error("This account could not be found.");
   if (user.email === currentUser.email) throw new Error("You cannot deactivate the administrator account you are using.");
   user.status = user.status === "Active" ? "Inactive" : "Active";
   addActivity(user.status === "Active" ? "Reactivated user account" : "Deactivated user account", `${user.name} · ${ROLES[user.role]}`);
-  if (!localSave()) return;
+  if (!await localSave()) return;
   modalState = null;
   render();
   toast(`${user.name}'s account is ${user.status.toLowerCase()}.`, "success");
@@ -392,7 +573,7 @@ function toggleAccount(email) {
 function openReport(id) {
   const report = getReport(id);
   if (!report) {
-    toast("This report could not be found in the local sample.", "error");
+    toast("This report could not be found. Return to the concerns list and try again.", "error");
     return;
   }
   if (currentUser.role === "resident" && report.userEmail !== currentUser.email) {
@@ -400,7 +581,7 @@ function openReport(id) {
     return;
   }
   selectedReportId = report.id;
-  const destination = routeUrl(currentUser.role, currentUser.role === "resident" ? "reports" : "concerns");
+  const destination = routeUrl(currentUser.role, currentUser.role === "resident" ? "reports" : currentUser.role === "administrator" ? "reports" : "concerns");
   if (window.location.hash === destination) {
     pendingReportRoute = "";
     render();
@@ -410,26 +591,17 @@ function openReport(id) {
   }
 }
 
-function markNotification(id) {
+async function markNotification(id) {
   const item = data.notifications.find((notification) => notification.id === id && notification.targetEmail === currentUser.email);
   if (!item) throw new Error("This notification could not be found.");
   item.read = true;
-  localSave();
-  render();
+  if (await localSave()) render();
 }
 
-function handleAction(button, clickEvent) {
+async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
-  if (action === "demo-login") {
-    const field = app.querySelector('#login-form input[name="email"]');
-    const password = app.querySelector('#login-form input[name="password"]');
-    if (field && password) {
-      field.value = button.dataset.email;
-      password.value = DEMO_PASSWORD;
-      login(field.value, DEMO_PASSWORD).catch((error) => toast(error.message, "error"));
-    }
-  } else if (action === "forgot-password") {
-    toast("Password recovery needs a trusted email service. Use a sample account or create a new resident account.");
+  if (action === "forgot-password") {
+    toast("Password recovery is unavailable. Contact your administrator or create a new resident account.");
   } else if (action === "toggle-password") {
     const field = app.querySelector('#login-form input[name="password"]');
     if (field) {
@@ -438,8 +610,8 @@ function handleAction(button, clickEvent) {
     }
   } else if (action === "logout") {
     if (!confirmLeaveWithUnsavedPermissions()) return;
-    addActivity("Signed out", ROLES[currentUser.role]);
-    localSave();
+    const response = await fetch("/api/auth/logout", { method: "POST" });
+    if (!response.ok) throw new Error("CommUnity could not sign you out. Try again.");
     clearSession();
     permissionDrafts = {};
     permissionOpenGroups = {};
@@ -458,11 +630,17 @@ function handleAction(button, clickEvent) {
   } else if (action === "filter-notifications") {
     notificationFilter = button.dataset.value;
     render();
+  } else if (action === "change-page") {
+    const table = app.querySelector(`.records[data-pagination-id="${button.dataset.paginationId}"]`);
+    if (table) {
+      table.dataset.page = String(Number(table.dataset.page || 0) + Number(button.dataset.direction));
+      updatePagination(table);
+    }
   } else if (action === "mark-read") {
-    markNotification(button.dataset.id);
+    await markNotification(button.dataset.id);
   } else if (action === "mark-all-read") {
     data.notifications.filter((item) => item.targetEmail === currentUser.email).forEach((item) => { item.read = true; });
-    if (localSave()) {
+    if (await localSave()) {
       render();
       toast("All notifications marked as read.", "success");
     }
@@ -475,11 +653,10 @@ function handleAction(button, clickEvent) {
     if (!schedule) throw new Error("This schedule could not be found.");
     if (window.confirm(`Remove the ${schedule.wasteType} collection schedule for ${schedule.area}? A notice will be posted to residents in the affected area.`)) {
       data.schedules = data.schedules.filter((item) => item.id !== schedule.id);
-      data.users.filter((user) => user.role === "resident" && user.area === schedule.area).forEach((user) => addNotification(user.email, "Collection schedule removed", `${schedule.wasteType} collection previously scheduled for ${schedule.area} has been removed.`, ""));
       addActivity("Removed a collection schedule", `${schedule.id} · ${schedule.area}`);
-      if (localSave()) {
+      if (await localSave()) {
         closeModal();
-        toast("Schedule removed and residents notified in this browser.", "success");
+        toast("Schedule removed and residents notified.", "success");
       }
     }
   } else if (action === "add-user") {
@@ -487,7 +664,62 @@ function handleAction(button, clickEvent) {
   } else if (action === "edit-user") {
     showModal("user", button.dataset.id);
   } else if (action === "toggle-user") {
-    toggleAccount(button.dataset.id);
+    await toggleAccount(button.dataset.id);
+  } else if (action === "add-location") {
+    showModal("location");
+  } else if (action === "edit-location") {
+    showModal("location", button.dataset.id);
+  } else if (action === "delete-location") {
+    const location = data.locations.find((item) => item.id === button.dataset.id);
+    if (!location) throw new Error("This community location could not be found.");
+    if (window.confirm(`Remove ${location.area}? Locations used by accounts, reports, or schedules cannot be removed.`)) {
+      data.locations = data.locations.filter((item) => item.id !== location.id);
+      addActivity("Removed a community location", location.area);
+      if (await localSave()) {
+        modalState = null;
+        render();
+        toast("Community location removed.", "success");
+      }
+    }
+  } else if (action === "add-recycling") {
+    showModal("recycling");
+  } else if (action === "edit-recycling") {
+    showModal("recycling", button.dataset.id);
+  } else if (action === "delete-recycling") {
+    const item = data.recyclingLocations.find((record) => record.id === button.dataset.id);
+    if (!item) throw new Error("This recycling listing could not be found.");
+    if (window.confirm(`Remove ${item.name} from the recycling directory?`)) {
+      data.recyclingLocations = data.recyclingLocations.filter((record) => record.id !== item.id);
+      addActivity("Removed a recycling directory listing", item.name);
+      if (await localSave()) {
+        modalState = null;
+        render();
+        toast("Recycling listing removed.", "success");
+      }
+    }
+  } else if (action === "add-announcement") {
+    showModal("announcement");
+  } else if (action === "edit-announcement") {
+    showModal("announcement", button.dataset.id);
+  } else if (action === "delete-announcement") {
+    const item = data.announcements.find((record) => record.id === button.dataset.id);
+    if (!item) throw new Error("This announcement could not be found.");
+    if (window.confirm(`Remove the announcement “${item.title}”?`)) {
+      const response = await fetch("/api/announcements", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: item.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "The announcement could not be removed.");
+      data = result.data;
+      dataRevision = result.revision;
+      currentUser = result.user;
+      lastPersistedSnapshot = JSON.stringify(data);
+      modalState = null;
+      render();
+      toast("Announcement removed.", "success");
+    }
   } else if (action === "select-permission-role") {
     const { role } = button.dataset;
     if (!Object.hasOwn(data.permissions, role)) throw new Error("This role could not be found.");
@@ -534,24 +766,18 @@ function handleAction(button, clickEvent) {
     }
     data.permissions[role] = { ...draft };
     changes.forEach((permission) => addActivity("Changed role permission", `${ROLES[role]} · ${permission.label}`));
-    if (localSave()) {
+    if (await localSave()) {
       delete permissionDrafts[role];
       render();
       app.querySelector('[data-action="select-permission-role"][aria-pressed="true"]')?.focus();
-      toast(`${ROLES[role]} permissions saved in this browser.`, "success");
+      toast(`${ROLES[role]} permissions saved.`, "success");
     }
   } else if (action === "export-audit") {
-    exportCsv("community-audit-demo.csv", ["Date and time", "Actor", "Role", "Action", "Details", "Result"], data.activities.map((item) => [item.at, item.actor, ROLES[item.role] || item.role, item.action, item.detail, item.result]));
-  } else if (action === "reset-data" || action === "reset-corrupt") {
-    if (window.confirm("Restore the sample accounts and reports? This permanently removes all CommUnity demonstration changes saved in this browser.")) {
-      localStorage.removeItem(DATA_KEY);
-      localStorage.removeItem(SESSION_KEY);
-      sessionStorage.removeItem(SESSION_KEY);
-      currentUser = null;
-      data = null;
-      window.location.hash = "#/login";
-      initialize().then(() => toast("Sample data restored.", "success")).catch((error) => showFatal(error));
-    }
+    exportCsv("community-audit.csv", ["Date and time", "Actor", "Role", "Action", "Details", "Result"], data.activities.map((item) => [item.at, item.actor, ROLES[item.role] || item.role, item.action, item.detail, item.result]));
+  } else if (action === "export-reports") {
+    exportReports();
+  } else if (action === "export-report-history") {
+    exportReports(true);
   } else if (action === "toggle-menu") {
     const drawer = app.querySelector("#mobile-navigation");
     drawer.hidden = false;
@@ -592,25 +818,37 @@ async function handleSubmit(formEvent) {
     } else if (formId === "report-draft-form") {
       const draft = {
         category: String(fields.get("category") || ""),
+        barangay: String(fields.get("barangay") || ""),
         area: String(fields.get("area") || ""),
+        locationDetail: String(fields.get("locationDetail") || "").trim(),
         description: String(fields.get("description") || "").trim(),
         urgent: Boolean(fields.get("urgent")),
         step: "review",
       };
-      if (!CATEGORIES.includes(draft.category) || !AREAS.includes(draft.area)) throw new Error("Choose a concern type and affected area.");
+      if (!CATEGORIES.includes(draft.category) ||
+          !data.locations.some((location) => location.area === draft.area && location.barangay === draft.barangay)) {
+        throw new Error("Choose a valid barangay and affected area.");
+      }
+      if (!draft.locationDetail || draft.locationDetail.length > 250) throw new Error("Enter a street or nearby landmark no longer than 250 characters.");
       if (draft.description.length < 12) throw new Error("Describe the concern in at least 12 characters.");
       reportDraft = draft;
       render();
     } else if (formId === "report-status-form") {
-      updateReportStatus(fields);
+      await updateReportStatus(fields);
     } else if (formId === "schedule-form") {
-      updateCollection(fields);
+      await updateCollection(fields);
     } else if (formId === "profile-form") {
-      updateProfile(fields);
+      await updateProfile(fields);
     } else if (formId === "password-form") {
       await updatePassword(fields);
     } else if (formId === "user-form") {
       await addOrEditUser(fields);
+    } else if (formId === "location-form") {
+      await saveLocation(fields);
+    } else if (formId === "recycling-form") {
+      await saveRecyclingLocation(fields);
+    } else if (formId === "announcement-form") {
+      await saveAnnouncement(fields);
     }
   } catch (error) {
     console.error(`CommUnity could not complete ${formId}.`, error);
@@ -639,38 +877,31 @@ async function handlePhotoSelection(input) {
 
 function showFatal(error) {
   console.error("CommUnity could not start.", error);
-  app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>CommUnity could not start</h1><p>${esc(error.message || "Check browser storage and reload this page.")}</p><p>Try a current browser over localhost if local file storage is unavailable.</p></main>`;
+  app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>CommUnity could not start</h1><p>${esc(error.message || "Check that the Node server is running and reload this page.")}</p>`;
 }
 
 async function initialize() {
-  if (!loadLocalData()) return;
-  if (!localStorage.getItem(DATA_KEY)) {
-    for (const demo of DEMO_USERS) {
-      const account = getUser(demo.email);
-      await setPassword(account, DEMO_PASSWORD);
-    }
-    if (!localSave()) throw new Error("Sample data could not be saved. Check this browser's local storage.");
-  }
+  await loadLocalData();
+  if (!data) return;
   for (const role of Object.keys(ROLES)) {
     data.permissions[role] ||= {};
     for (const permission of PERMISSION_DEFS) {
       if (typeof data.permissions[role][permission.id] !== "boolean") {
-        data.permissions[role][permission.id] = Boolean(seedData().permissions[role][permission.id]);
+        data.permissions[role][permission.id] = Boolean(DEFAULT_PERMISSIONS[role][permission.id]);
       }
     }
   }
   checkDataConsistency();
-  currentUser = userFromSession();
   if (!window.location.hash) window.history.replaceState(null, "", currentUser ? routeUrl(currentUser.role, "dashboard") : "#/login");
   lastKnownHash = window.location.hash;
   render();
 }
 
-app.addEventListener("click", (clickEvent) => {
+app.addEventListener("click", async (clickEvent) => {
   const button = clickEvent.target.closest("[data-action]");
   if (!button) return;
   try {
-    handleAction(button, clickEvent);
+    await handleAction(button, clickEvent);
   } catch (error) {
     console.error("CommUnity action failed.", error);
     toast(error.message || "This action could not be completed.", "error");
@@ -688,6 +919,7 @@ app.addEventListener("input", (inputEvent) => {
 app.addEventListener("change", (changeEvent) => {
   const target = changeEvent.target;
   if (target.matches("#report-photos")) handlePhotoSelection(target);
+  else if (target.matches("#report-draft-form [name=barangay]")) updateReportAreaChoices(target.value);
   else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
     const query = app.querySelector("[data-search-input]")?.value || "";
     refreshSearch(query);
@@ -723,23 +955,6 @@ window.addEventListener("beforeunload", (event) => {
   if (!hasUnsavedPermissionChanges()) return;
   event.preventDefault();
   event.returnValue = "";
-});
-
-window.addEventListener("storage", (storageEvent) => {
-  if (storageEvent.key === DATA_KEY && storageEvent.newValue) {
-    try {
-      const parsed = JSON.parse(storageEvent.newValue);
-      if (parsed.version === 1) {
-        data = parsed;
-        currentUser = userFromSession();
-        render();
-        toast("This demonstration was updated in another tab.", "success");
-      }
-    } catch (error) {
-      console.error("CommUnity could not read a cross-tab data update.", error);
-      toast("Another tab saved data that could not be read here. Reload this page.", "error");
-    }
-  }
 });
 
 initialize().catch(showFatal);

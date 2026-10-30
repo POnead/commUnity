@@ -1240,6 +1240,32 @@ a:hover {
   gap: 12px;
 }
 
+.report-detail-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.report-detail-id {
+  margin-top: 4px;
+}
+
+.report-description {
+  margin: 18px 0;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.announcement-title {
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.report-draft-description {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .text-button {
   padding: 0;
   border: 0;
@@ -1258,6 +1284,20 @@ a:hover {
 
 .records {
   display: grid;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.pagination-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .record-row {

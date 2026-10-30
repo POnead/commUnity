@@ -6,7 +6,7 @@
 web
 
 ## Stack
-Static HTML, CSS, and JavaScript for the prototype front end; no backend or database.
+HTML, CSS, and JavaScript client with a Node.js HTTP server, server-side authentication, and relational PGlite or managed PostgreSQL storage.
 
 ## Users
 - Residents of Balete, Batangas who need to check barangay collection services, report community concerns, and follow up on their reports.
@@ -20,14 +20,16 @@ CommUnity is a proposed digital platform for barangay concern management and ser
 The proposal brings community-concern management and barangay collection-service tracking into one platform.
 
 ## Operating Context
-Residents report concerns such as road damage, damaged streetlights, drainage issues, flooding, illegal dumping, and missed collection. A report may include a description, photos, urgency, and a selected barangay area such as a purok. Residents follow status changes from Submitted through Under Review and In Progress to Resolved. Officials review concerns and manage collection schedules and service status. Administrators manage accounts, roles, and audit activity.
+Residents report concerns such as road damage, damaged streetlights, drainage issues, flooding, illegal dumping, and missed collection. A report may include a description, photos, urgency, and a selected barangay area such as a purok. Residents follow status changes from Submitted through Under Review and In Progress to Resolved. Officials review concerns and manage collection schedules and service status. Administrators manage accounts, roles, audit activity, community locations, and directory listings.
 
 ## Capabilities and Constraints
 - The source documents describe resident registration, role-based portal access, concern and urgent reporting, photo attachments, area selection, report tracking and history, collection schedules and status changes, notifications, user and role management, system monitoring, audit records, and profiles.
-- This deliverable is a front-end prototype. No server, database, email delivery, verified identity, real-time service connection, or production authentication is included.
-- New accounts are resident accounts. Official and administrator functions are demonstrated with local sample accounts.
-- Browser-local prototype data may be edited by the user of that browser and does not synchronize between devices.
-- All seeded people, reports, contact details, schedules, and activity are demonstrations, not verified live barangay data.
+- Residents can browse administrator-maintained community areas and verified recycling/junkshop listings, and provide barangay, purok/area, and street or landmark details with a report.
+- Administrators monitor all reports and service activity, manage locations and directory listings, and export reports and report history. Officials and administrators can manage announcements.
+- Collection reminders and report-submission/status notices are stored in the shared database and shown in account notifications. A scheduled job creates an in-app reminder the day before an eligible collection.
+- Role checks, sessions, and data writes are enforced server-side. Local PGlite is loopback-only; shared deployments use managed PostgreSQL and HTTPS.
+- No email or SMS delivery, verified identity, live collection tracking, or emergency-service dispatch is included. Collection statuses are manually maintained.
+- Directory records and operational information must be verified by barangay staff. No real recycling-business dataset is supplied.
 
 ## Brand Commitments
 The product is named CommUnity. The supplied screen-reference PDF uses the eCommunity wordmark and a light, blue resident interface. The requested implementation keeps the resident blue identity, with separate teal official and graphite administrator themes.

@@ -1,0 +1,15 @@
+{
+  "name": "community-portal",
+  "version": "1.0.0",
+  "description": "Local CommUnity portal with a Node.js server and PGlite database.",
+  "private": true,
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.13",
+    "pg": "^8.23.1"
+  }
+}

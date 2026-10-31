@@ -19,13 +19,19 @@ $env:INITIAL_ADMIN_PASSWORD = [Net.NetworkCredential]::new("", $securePassword).
 npm start
 ```
 
-Open [http://127.0.0.1:8768](http://127.0.0.1:8768). The local server binds to loopback only and stores data in `data/pglite/`. Press **Ctrl+C** to stop it. After the first administrator is created, the two `INITIAL_ADMIN_*` variables can be cleared; they will not overwrite an existing administrator.
+After startup, open the website link printed in the terminal (by default, [http://127.0.0.1:8768](http://127.0.0.1:8768)). The local server binds to loopback only and stores data in `data/pglite/`. Press **Ctrl+C** to stop it. After the first administrator is created, the two `INITIAL_ADMIN_*` variables can be cleared; they will not overwrite an existing administrator.
 
 Resident accounts can register in the portal. Administrators can create official and other accounts. There are no shared demonstration passwords.
 
+### Optional keyless map pin picker
+
+Resident concern reports can include an optional interactive map pin in addition to the required barangay, area, and street or landmark. The map uses Leaflet and OpenStreetMap tiles, so it does not need a Google Maps API key. Residents can click the map or drag the pin; they can still submit without coordinates. Officials and administrators can open a saved pin using the Google Maps website. No device location permission or address-search service is used.
+
+Map tiles are loaded from the public OpenStreetMap tile service and require an internet connection. Keep the visible OpenStreetMap attribution on the map and follow the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/); the public tile service is not intended for offline caching or bulk/high-volume use. The coordinates and text location remain part of the CommUnity report if tiles are temporarily unavailable.
+
 ## Included workflows
 
-- Residents can submit concerns with a barangay, managed purok/area, and street or landmark; follow report status and export their reports/history as CSV.
+- Residents can submit concerns with a barangay, managed purok/area, and street or landmark, optionally add a Google Maps pin, follow report status, and export report coordinates with their reports/history as CSV.
 - Officials can review and update concerns, maintain collection schedules, and publish announcements. Administrators can browse all reports, view system monitoring, manage accounts and role permissions, and maintain community locations and recycling/junkshop listings.
 - Upcoming collections generate an in-app notification for active residents in the scheduled area on the day before pickup. Report submitters receive an in-app confirmation; assigned staff receive an in-app notice.
 - Residents can view active recycling/junkshop listings after staff add verified details. The directory starts empty; no real business locations are supplied.
@@ -58,6 +64,7 @@ Schema setup is applied at startup. The database uses separate tables for accoun
 - Collection reminders and report notices are in-app only. Email/SMS delivery, verified identities, live route tracking, and emergency dispatch are not configured.
 - The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Configure provider health alerts and operational logging separately.
 - Security headers include a restrictive Content Security Policy. The local server refuses non-loopback binds unless it is configured with a managed database and HTTPS origin.
+- The report map uses OpenStreetMap's public tile service without an API key; follow its attribution and usage policy.
 - Resident sign-up is not email-verified, and password recovery is not configured. Do not treat an email address as a verified identity. Set up an email verification/recovery provider before relying on those workflows.
 - Report photos are stored in the database; a large public service should move them to private object storage with access controls and retention rules.
 - This is not a security certification. Before using real resident records, review privacy/legal obligations, account recovery, access retention, backup/restore, monitoring, and the hosting provider's TLS, database-network, and at-rest encryption settings.

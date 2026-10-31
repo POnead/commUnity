@@ -61,7 +61,6 @@ const PERMISSION_DEFS = [
   { id: "manageRoles", label: "Change role permissions", group: "Portal administration", description: "Choose which workspace functions each role can access." },
   { id: "viewAudit", label: "Review activity history", group: "Portal administration", description: "Review recorded account and service activity." },
 ];
-const EMERGENCY_GUIDANCE = "CommUnity does not dispatch emergency services. If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service.";
 
 const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
@@ -115,7 +114,7 @@ function icon(name, extra = "") {
   return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${extra}">${icons[name] || icons.home}</svg>`;
 }
 function brandMark() {
-  return '<span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="15" rx="1.5"></rect><circle cx="12" cy="3.5" r="1.5"></circle><path d="M8 11h8M8 14.5h8M8 18h5"></path></svg></span>';
+  return '<span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="15" rx="1.5"></rect><circle cx="12" cy="3.5" r="1.5" fill="currentColor"></circle><path d="M12 5v1M8 11h8M8 14.5h8M8 18h5"></path></svg></span>';
 }
 
 function esc(value) {
@@ -517,16 +516,12 @@ function inputField(label, name, value = "", options = {}) {
   const id = options.id || name;
   const type = options.type || "text";
   const required = options.required ? "required" : "";
-  const placeholder = options.placeholder ? `placeholder="${esc(options.placeholder)}"` : "";
-  const help = options.help ? `<span class="field-help" id="${esc(id)}-help">${esc(options.help)}</span>` : "";
-  const describedBy = options.help ? `aria-describedby="${esc(id)}-help"` : "";
   const readonly = options.readonly ? "readonly" : "";
-  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${placeholder} ${required} ${describedBy} ${readonly} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}></div>`;
+  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}></div>`;
 }
 
 function selectField(label, name, items, selected, options = {}) {
   const labelMap = options.labels || {};
   const required = options.required ? "required" : "";
-  const help = options.help ? `<span class="field-help" id="${esc(name)}-help">${esc(options.help)}</span>` : "";
-  return `<div class="form-field"><label for="${esc(name)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(name)}" name="${esc(name)}" ${required} ${options.help ? `aria-describedby="${esc(name)}-help"` : ""}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select>${help}</div>`;
+  return `<div class="form-field"><label for="${esc(name)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(name)}" name="${esc(name)}" ${required}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select></div>`;
 }

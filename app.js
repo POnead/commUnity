@@ -1,15 +1,22 @@
 "use strict";
 
+let reportMapExpanded = false;
+let reportMapSelection = null;
+let reportMap = null;
+let reportMapElement = null;
+let reportMapMarker = null;
+
 function routeState() {
   const path = currentPath();
   if (!currentUser) return { type: path[0] === "register" ? "register" : "login" };
   const role = currentUser.role;
   if (path[0] !== role) return { type: "app", role, page: "dashboard" };
-  const pageName = path[1] || "dashboard";
+  const requestedPage = path[1] || "dashboard";
+  const pageName = role === "official" && requestedPage === "urgent" ? "concerns" : requestedPage;
   const pages = {
     resident: ["dashboard", "collection", "recycling", "report", "reports", "history", "notifications", "profile"],
-    official: ["dashboard", "concerns", "urgent", "collection", "history", "announcements", "notifications", "profile"],
-    administrator: ["dashboard", "reports", "monitoring", "notifications", "users", "locations", "announcements", "roles", "audit", "settings", "profile"],
+    official: ["dashboard", "concerns", "collection", "history", "announcements", "notifications", "profile"],
+    administrator: ["dashboard", "reports", "monitoring", "notifications", "users", "locations", "announcements", "roles", "audit", "profile"],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
   if (!canOpenPage(role, resolvedPage)) {
@@ -24,6 +31,14 @@ function render() {
   if (!data) return;
   const route = routeState();
   currentRoute = route;
+  if (route.type !== "app" || route.role !== "resident" || route.page !== "report") {
+    reportMapExpanded = false;
+    reportMapSelection = null;
+    reportMap?.remove();
+    reportMap = null;
+    reportMapElement = null;
+    reportMapMarker = null;
+  }
   if (currentUser && route.type === "app") {
     document.documentElement.dataset.theme = ROLE_THEME[currentUser.role];
     if (window.location.hash !== routeUrl(currentUser.role, route.page)) {
@@ -41,7 +56,7 @@ function render() {
     } else if (route.role === "official") {
       if (route.page === "dashboard") markup = dashboardOfficial();
       else if (route.page === "collection") markup = collectionOfficial();
-      else if (route.page === "concerns" || route.page === "urgent" || route.page === "history") markup = reportsPage("official", route.page);
+      else if (route.page === "concerns" || route.page === "history") markup = reportsPage("official", route.page);
       else if (route.page === "notifications") markup = notificationsPage("official");
       else if (route.page === "announcements") markup = announcementsPage("official");
       else markup = profilePage("official");
@@ -55,11 +70,11 @@ function render() {
       else if (route.page === "announcements") markup = announcementsPage("administrator");
       else if (route.page === "roles") markup = rolesPage();
       else if (route.page === "audit") markup = auditPage();
-      else if (route.page === "settings") markup = settingsPage();
       else markup = profilePage("administrator");
     }
     app.innerHTML = markup;
     updatePagination();
+    if (route.role === "resident" && route.page === "report" && reportMapExpanded) initializeReportMap();
     if (modalState) {
       const input = app.querySelector(".modal input:not([type=hidden]), .modal select");
       if (input) requestAnimationFrame(() => input.focus());
@@ -71,48 +86,59 @@ function render() {
   lastKnownHash = window.location.hash;
 }
 
-function makeModal(title, description, body) {
-  return `<div class="modal-backdrop" data-action="close-modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby="modal-description">
-    <header class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2><p id="modal-description">${esc(description)}</p></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></header>
+function makeModal(title, body) {
+  return `<div class="modal-backdrop" data-action="close-modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <header class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></header>
     <div class="modal-content">${body}</div>
   </section></div>`;
 }
 
 function modalMarkup() {
+  if (modalState.kind === "user-password") {
+    const user = getUser(modalState.id);
+    if (!user || user.email === currentUser.email) {
+      modalState = null;
+      return "";
+    }
+    const body = `<form id="user-password-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
+      <div class="modal-form-fields"><p class="field-help">Set a new password for ${esc(user.name)}. Their sessions will close. Share it privately; they can change it in Profile.</p><div class="form-grid">${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}</div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Set new password</button></div></form>`;
+    return makeModal("Reset account password", body);
+  }
   if (modalState.kind === "schedule") {
     const schedule = modalState.id ? data.schedules.find((item) => item.id === modalState.id) : null;
     const title = schedule ? "Edit collection schedule" : "Add collection schedule";
     const body = `<form id="schedule-form" class="modal-form"><input type="hidden" name="id" value="${esc(schedule?.id || "")}">
       <div class="modal-form-fields"><div class="form-grid">${selectField("Area", "area", locationAreas(), schedule?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Collection date", "date", schedule?.date || todayISO(), { type: "date", required: true })}${inputField("Waste type", "wasteType", schedule?.wasteType || "", { required: true, placeholder: "e.g. Biodegradable" })}${selectField("Service status", "status", COLLECTION_STATUSES, schedule?.status || "Scheduled", { required: true })}${inputField("Start time", "start", schedule?.start || "6:00 AM", { required: true })}${inputField("End time", "end", schedule?.end || "9:00 AM", { required: true })}${selectField("Frequency", "frequency", ["Weekly", "Bi-weekly", "Monthly", "One-time"], schedule?.frequency || "Weekly", { required: true })}${inputField("Collection team", "team", schedule?.team || "Team A · Truck 01")}</div></div>
       <div class="form-actions">${schedule ? `<button class="button danger" type="button" data-action="delete-schedule" data-id="${esc(schedule.id)}">Remove schedule</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save schedule</button></div></form>`;
-    return makeModal(title, "Service updates for this area will appear in resident workspaces.", body);
+    return makeModal(title, body);
   }
   if (modalState.kind === "location") {
     const location = data.locations.find((item) => item.id === modalState.id);
     const body = `<form id="location-form" class="modal-form"><input type="hidden" name="id" value="${esc(location?.id || "")}">
       <div class="modal-form-fields"><div class="form-grid">${inputField("Area label", "area", location?.area || "", { required: true, maxLength: 120, placeholder: "e.g. Purok 6" })}${inputField("Barangay", "barangay", location?.barangay || "Balete", { required: true, maxLength: 100 })}${inputField("Purok", "purok", location?.purok || "", { required: true, maxLength: 100 })}${inputField("Street", "street", location?.street || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Landmark", "landmark", location?.landmark || "", { maxLength: 160, placeholder: "Optional" })}</div></div>
       <div class="form-actions">${location ? `<button class="button danger" type="button" data-action="delete-location" data-id="${esc(location.id)}">Remove location</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save location</button></div></form>`;
-    return makeModal(location ? "Edit community location" : "Add community location", "Location labels are used for resident profiles, reports, and collection schedules.", body);
+    return makeModal(location ? "Edit community location" : "Add community location", body);
   }
   if (modalState.kind === "recycling") {
     const item = data.recyclingLocations.find((record) => record.id === modalState.id);
     const body = `<form id="recycling-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
       <div class="modal-form-fields"><div class="form-grid">${inputField("Business or site name", "name", item?.name || "", { required: true, maxLength: 120 })}${inputField("Barangay", "barangay", item?.barangay || "Balete", { required: true, maxLength: 100 })}${inputField("Street or address", "street", item?.street || "", { required: true, maxLength: 160 })}${inputField("Purok", "purok", item?.purok || "", { maxLength: 100, placeholder: "Optional" })}${inputField("Nearby landmark", "landmark", item?.landmark || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Contact number", "phone", item?.phone || "", { type: "tel", maxLength: 40, placeholder: "Optional" })}${inputField("Accepted materials", "materials", item?.materials || "", { required: true, maxLength: 500, placeholder: "e.g. PET bottles, cardboard, aluminum" })}${inputField("Opening hours", "hours", item?.hours || "", { maxLength: 120, placeholder: "Optional" })}<label class="checkbox-field span-all"><input name="active" type="checkbox" ${item?.active === false ? "" : "checked"}><span><strong>Show this listing to residents</strong></span></label></div></div>
       <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-recycling" data-id="${esc(item.id)}">Remove listing</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save listing</button></div></form>`;
-    return makeModal(item ? "Edit recycling location" : "Add recycling location", "Check the address and accepted materials before making a listing visible to residents.", body);
+    return makeModal(item ? "Edit recycling location" : "Add recycling location", body);
   }
   if (modalState.kind === "announcement") {
     const item = data.announcements.find((record) => record.id === modalState.id);
     const body = `<form id="announcement-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
       <div class="modal-form-fields"><div class="form-grid">${inputField("Title", "title", item?.title || "", { required: true, maxLength: 120 })}${inputField("Publish date", "date", item?.date || todayISO(), { type: "date", required: true })}<div class="form-field span-all"><label for="announcement-detail">Message *</label><textarea class="textarea" id="announcement-detail" name="detail" required maxlength="1000">${esc(item?.detail || "")}</textarea></div></div></div>
       <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save changes" : "Publish announcement"}</button></div></form>`;
-    return makeModal(item ? "Edit announcement" : "New announcement", "Announcements are visible to signed-in residents and staff.", body);
+    return makeModal(item ? "Edit announcement" : "New announcement", body);
   }
   const user = modalState.id ? getUser(modalState.id) : null;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
     <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Balete, Batangas"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 12, help: "Choose a unique password with at least 12 characters." })}</div></div>
-    <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
-  return makeModal(user ? "Edit account" : "Add account", "Accounts and role changes are saved in this local workspace.", body);
+    <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">Reset password</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
+  return makeModal(user ? "Edit account" : "Add account", body);
 }
 
 function showModal(kind, id = "") {
@@ -123,6 +149,7 @@ function showModal(kind, id = "") {
 function closeModal() {
   modalState = null;
   render();
+  app.querySelector(".workspace-main")?.focus();
 }
 
 function refreshSearch(searchValue) {
@@ -196,18 +223,18 @@ function exportReports(history = false) {
   const reports = sortedReports(currentUser.role === "resident" ? userReports() : data.reports);
   if (history) {
     exportCsv("community-report-history.csv",
-      ["Report ID", "Resident", "Category", "Barangay", "Purok or area", "Street or landmark", "Status", "Date and time", "Update"],
+      ["Report ID", "Resident", "Category", "Barangay", "Purok or area", "Street or landmark", "Latitude", "Longitude", "Status", "Date and time", "Update", "Updated by"],
       reports.flatMap((report) => report.history.map((item) => [
-        report.id, report.name, report.category, report.barangay || "", report.area, report.locationDetail || "", item.status, item.at, item.note,
+          report.id, report.name, report.category, report.barangay || "", report.area, report.locationDetail || "", report.latitude ?? "", report.longitude ?? "", item.status, item.at, item.note, item.actorName || "",
       ])),
     );
     return;
   }
   exportCsv("community-reports.csv",
-    ["Report ID", "Resident", "Email", "Category", "Concern", "Barangay", "Purok or area", "Street or landmark", "Description", "Urgent", "Status", "Submitted", "Updated"],
+    ["Report ID", "Resident", "Email", "Category", "Concern", "Barangay", "Purok or area", "Street or landmark", "Latitude", "Longitude", "Description", "Urgent", "Status", "Assigned official", "Submitted", "Updated"],
     reports.map((report) => [
       report.id, report.name, report.userEmail, report.category, report.title, report.barangay || "", report.area, report.locationDetail || "",
-      report.description, report.urgent ? "Yes" : "No", report.status, report.submittedAt, report.updatedAt,
+      report.latitude ?? "", report.longitude ?? "", report.description, report.urgent ? "Yes" : "No", report.status, report.assignedTo?.name || "", report.submittedAt, report.updatedAt,
     ]),
   );
 }
@@ -245,8 +272,11 @@ async function submitReportDraft() {
     area: reportDraft.area,
     barangay: reportDraft.barangay,
     locationDetail: reportDraft.locationDetail,
+    latitude: reportDraft.latitude,
+    longitude: reportDraft.longitude,
     description: reportDraft.description,
     urgent: Boolean(reportDraft.urgent),
+    assignedTo: null,
     status: "Submitted",
     submittedAt: now,
     updatedAt: now,
@@ -260,10 +290,12 @@ async function submitReportDraft() {
     return;
   }
   reportDraft = null;
+  reportMapExpanded = false;
+  reportMapSelection = null;
   uploadPhotos = [];
   selectedReportId = null;
   window.location.hash = routeUrl("resident", "reports");
-  toast(`Concern ${report.id} saved.`, "success");
+  toast(`Saved to this demonstration workspace; ${report.id} was not sent to barangay staff.`, "success");
 }
 
 async function updateReportStatus(form) {
@@ -285,6 +317,22 @@ async function updateReportStatus(form) {
   selectedReportId = null;
   render();
   toast(`${report.id} updated. The resident has an in-app notification.`, "success");
+}
+
+async function updateReportAssignment(id, claim) {
+  const report = getReport(id);
+  if (!report || currentUser.role !== "official") throw new Error("This concern cannot be assigned from this workspace.");
+  if (claim) {
+    if (report.assignedTo) throw new Error("This concern is already assigned. Refresh the queue before trying again.");
+    report.assignedTo = { id: currentUser.id, name: currentUser.name };
+  } else {
+    if (report.assignedTo?.id !== currentUser.id) throw new Error("You can only release a concern assigned to you.");
+    report.assignedTo = null;
+  }
+  addActivity(claim ? "Claimed a concern" : "Released a concern", `${report.id} · ${report.title}`);
+  if (!await localSave()) return;
+  render();
+  toast(claim ? `${report.id} assigned to you.` : `${report.id} released to the queue.`, "success");
 }
 
 async function updateCollection(form) {
@@ -508,6 +556,28 @@ async function login(emailInput, password, remember = false) {
   toast(`Signed in to the ${ROLES[currentUser.role]} workspace.`, "success");
 }
 
+async function resetUserPassword(form) {
+  const email = String(form.get("email") || "");
+  const password = String(form.get("newPassword") || "");
+  const confirm = String(form.get("confirmPassword") || "");
+  if (password.length < 12) throw new Error("Use a password with at least 12 characters.");
+  if (password !== confirm) throw new Error("The new passwords do not match.");
+  const response = await fetch("/api/users/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, newPassword: password, confirmPassword: confirm }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The account password could not be reset.");
+  data = result.data;
+  dataRevision = result.revision;
+  currentUser = result.user;
+  lastPersistedSnapshot = JSON.stringify(data);
+  modalState = null;
+  render();
+  toast("Password reset. Ask the account holder to sign in with the new password.", "success");
+}
+
 async function addOrEditUser(form) {
   const originalEmail = String(form.get("originalEmail") || "");
   const name = String(form.get("name") || "").trim();
@@ -598,10 +668,59 @@ async function markNotification(id) {
   if (await localSave()) render();
 }
 
+function setReportMapPin(position) {
+  const { lat: latitude, lng: longitude } = position;
+  reportMapSelection = { latitude, longitude };
+  const latitudeField = app.querySelector("#report-latitude");
+  const longitudeField = app.querySelector("#report-longitude");
+  const status = app.querySelector("#report-map-status");
+  const clearButton = app.querySelector('[data-action="clear-report-map-pin"]');
+  if (latitudeField) latitudeField.value = String(latitude);
+  if (longitudeField) longitudeField.value = String(longitude);
+  if (clearButton) clearButton.hidden = false;
+  if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
+  if (!reportMapMarker) {
+    reportMapMarker = window.L.marker([latitude, longitude], {
+      draggable: true,
+      title: "Reported concern location",
+    }).addTo(reportMap);
+    reportMapMarker.on("dragend", (event) => setReportMapPin(event.target.getLatLng()));
+  } else {
+    reportMapMarker.setLatLng([latitude, longitude]);
+  }
+  reportMap.panTo([latitude, longitude]);
+}
+
+function initializeReportMap() {
+  const mapElement = app.querySelector("#report-map");
+  if (!reportMapExpanded || !mapElement?.isConnected || !window.L) return;
+  if (reportMapElement !== mapElement) {
+    reportMap?.remove();
+    reportMapElement = mapElement;
+    reportMapMarker = null;
+    reportMap = window.L.map(mapElement).setView(
+      reportMapSelection ? [reportMapSelection.latitude, reportMapSelection.longitude] : [14.01799, 121.09465],
+      reportMapSelection ? 17 : 13,
+    );
+    const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+    }).addTo(reportMap);
+    tileLayer.on("tileerror", () => {
+      const status = app.querySelector("#report-map-status");
+      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still submit without a pin.";
+    });
+    reportMap.on("click", (event) => setReportMapPin(event.latlng));
+  } else {
+    reportMap.invalidateSize();
+  }
+  if (reportMapSelection) setReportMapPin(reportMapSelection);
+}
+
 async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
   if (action === "forgot-password") {
-    toast("Password recovery is unavailable. Contact your administrator or create a new resident account.");
+    toast("Ask your workspace administrator to set a new password in User management. Self-service resets are not available.");
   } else if (action === "toggle-password") {
     const field = app.querySelector('#login-form input[name="password"]');
     if (field) {
@@ -621,6 +740,8 @@ async function handleAction(button, clickEvent) {
     toast("You have signed out.", "success");
   } else if (action === "view-report" || action === "view-notification-report") {
     openReport(button.dataset.id);
+  } else if (action === "claim-report" || action === "release-report") {
+    await updateReportAssignment(button.dataset.id, action === "claim-report");
   } else if (action === "back-list") {
     selectedReportId = null;
     render();
@@ -663,6 +784,8 @@ async function handleAction(button, clickEvent) {
     showModal("user");
   } else if (action === "edit-user") {
     showModal("user", button.dataset.id);
+  } else if (action === "reset-user-password") {
+    showModal("user-password", button.dataset.id);
   } else if (action === "toggle-user") {
     await toggleAccount(button.dataset.id);
   } else if (action === "add-location") {
@@ -794,8 +917,29 @@ async function handleAction(button, clickEvent) {
     closeModal();
   } else if (action === "close-modal-backdrop" && button === clickEvent.target) {
     closeModal();
+  } else if (action === "toggle-report-map") {
+    reportMapExpanded = !reportMapExpanded;
+    const region = app.querySelector("#report-map-region");
+    const toggle = app.querySelector('[data-action="toggle-report-map"]');
+    region.hidden = !reportMapExpanded;
+    toggle.setAttribute("aria-expanded", String(reportMapExpanded));
+    toggle.textContent = reportMapExpanded ? "Hide map" : "Choose location on map";
+    if (reportMapExpanded) initializeReportMap();
+  } else if (action === "clear-report-map-pin") {
+    reportMapSelection = null;
+    app.querySelector("#report-latitude").value = "";
+    app.querySelector("#report-longitude").value = "";
+    app.querySelector('[data-action="clear-report-map-pin"]').hidden = true;
+    if (reportMapMarker) reportMap.removeLayer(reportMapMarker);
+    reportMapMarker = null;
+    const status = app.querySelector("#report-map-status");
+    if (status) status.textContent = "No pin selected. Click the map to place one, or continue without it.";
   } else if (action === "edit-report-draft") {
     reportDraft.step = "details";
+    reportMapSelection = reportDraft.latitude === null ? null : {
+      latitude: reportDraft.latitude,
+      longitude: reportDraft.longitude,
+    };
     render();
   } else if (action === "submit-report") {
     submitReportDraft().catch((error) => toast(error.message, "error"));
@@ -816,11 +960,17 @@ async function handleSubmit(formEvent) {
     } else if (formId === "register-form") {
       await createResident(fields);
     } else if (formId === "report-draft-form") {
+      const readOptionalCoordinate = (value) => {
+        const text = String(value || "").trim();
+        return text ? Number(text) : null;
+      };
       const draft = {
         category: String(fields.get("category") || ""),
         barangay: String(fields.get("barangay") || ""),
         area: String(fields.get("area") || ""),
         locationDetail: String(fields.get("locationDetail") || "").trim(),
+        latitude: readOptionalCoordinate(fields.get("latitude")),
+        longitude: readOptionalCoordinate(fields.get("longitude")),
         description: String(fields.get("description") || "").trim(),
         urgent: Boolean(fields.get("urgent")),
         step: "review",
@@ -831,6 +981,15 @@ async function handleSubmit(formEvent) {
       }
       if (!draft.locationDetail || draft.locationDetail.length > 250) throw new Error("Enter a street or nearby landmark no longer than 250 characters.");
       if (draft.description.length < 12) throw new Error("Describe the concern in at least 12 characters.");
+      if ((draft.latitude === null) !== (draft.longitude === null) ||
+          (draft.latitude !== null && (!Number.isFinite(draft.latitude) || draft.latitude < -90 || draft.latitude > 90 ||
+            !Number.isFinite(draft.longitude) || draft.longitude < -180 || draft.longitude > 180))) {
+        throw new Error("Choose a valid map location or clear the pin before continuing.");
+      }
+      reportMapSelection = draft.latitude === null ? null : {
+        latitude: draft.latitude,
+        longitude: draft.longitude,
+      };
       reportDraft = draft;
       render();
     } else if (formId === "report-status-form") {
@@ -843,6 +1002,8 @@ async function handleSubmit(formEvent) {
       await updatePassword(fields);
     } else if (formId === "user-form") {
       await addOrEditUser(fields);
+    } else if (formId === "user-password-form") {
+      await resetUserPassword(fields);
     } else if (formId === "location-form") {
       await saveLocation(fields);
     } else if (formId === "recycling-form") {
@@ -935,6 +1096,26 @@ document.addEventListener("keydown", (keyEvent) => {
       app.querySelector(".mobile-menu-button")?.setAttribute("aria-expanded", "false");
       app.querySelector(".mobile-menu-button")?.focus();
     }
+  }
+  if (keyEvent.key !== "Tab") return;
+  const dialog = app.querySelector(".modal-backdrop .modal, #mobile-navigation:not([hidden]) .mobile-drawer");
+  if (!dialog) return;
+  const focusable = [...dialog.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )].filter((element) => element.getClientRects().length > 0);
+  if (!focusable.length) {
+    keyEvent.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (keyEvent.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    keyEvent.preventDefault();
+    last.focus();
+  } else if (!keyEvent.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+    keyEvent.preventDefault();
+    first.focus();
   }
 });
 

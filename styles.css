@@ -277,8 +277,8 @@ a:hover {
 .icon-button svg,
 .nav-link svg,
 .button svg,
-.notice-icon svg,
-.inline-icon svg {
+.inline-icon svg,
+.password-toggle svg {
   width: 17px;
   height: 17px;
   flex: none;
@@ -324,7 +324,6 @@ a:hover {
 .page-title-block,
 .filter-row,
 .identity,
-.notice,
 .account-summary,
 .schedule-event,
 .stat-row,
@@ -356,6 +355,19 @@ a:hover {
 
 .crumb-separator {
   color: var(--quiet);
+}
+
+.demo-indicator {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .topbar-actions {
@@ -974,55 +986,35 @@ a:hover {
   border-bottom: 0;
 }
 
-.notice {
-  align-items: flex-start;
-  gap: 11px;
-  padding: 14px 15px;
-  border-radius: 9px;
-  background: var(--accent-wash);
+.safety-disclosure {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.safety-disclosure strong {
   color: var(--ink);
 }
 
-.notice[data-tone="warning"] {
-  background: var(--warning-soft);
-}
-
-.notice[data-tone="danger"] {
-  background: var(--danger-soft);
-}
-
-.notice[data-tone="success"] {
-  background: var(--success-soft);
-}
-
-.notice-copy strong,
-.notice-copy span {
-  display: block;
-}
-
-.notice-copy strong {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.notice-copy span {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.notice-icon {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  flex: none;
-  place-items: center;
-  color: var(--accent-ink);
+.safety-disclosure[data-tone="danger"] strong {
+  color: var(--danger);
 }
 
 .filter-row {
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.queue-context {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-demo-notice > strong {
+  flex: none;
 }
 
 .filter-button {
@@ -1601,6 +1593,29 @@ a:hover {
   font-size: 12px;
 }
 
+.report-map-picker {
+  display: grid;
+  gap: 10px;
+}
+
+.report-map-region {
+  display: grid;
+  gap: 8px;
+}
+
+.report-map-region p {
+  margin: 0;
+}
+
+.report-map-canvas {
+  width: 100%;
+  min-height: 320px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
 .notice-bar {
   display: flex;
   align-items: center;
@@ -1944,6 +1959,7 @@ a:hover {
 
 .login-story-content {
   max-width: 570px;
+  margin: auto 0;
   padding: 55px 0;
 }
 
@@ -1990,11 +2006,6 @@ a:hover {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.8;
-}
-
-.login-story-foot {
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .login-pane {
@@ -2354,6 +2365,15 @@ a:hover {
     display: none;
   }
 
+  .demo-indicator {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+
+  .topbar-leading {
+    gap: 8px;
+  }
+
   .workspace-layout {
     min-height: calc(100vh - 54px);
     grid-template-columns: minmax(0, 1fr);
@@ -2474,14 +2494,13 @@ a:hover {
   }
 
   .filter-row {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 3px;
-    scrollbar-width: thin;
+    flex-wrap: wrap;
+    overflow: visible;
+    padding-bottom: 0;
   }
 
   .filter-button {
-    flex: none;
+    flex: 0 1 auto;
   }
 
   .permission-role-button {
@@ -2552,8 +2571,7 @@ a:hover {
     font-size: 14px;
   }
 
-  .login-benefits,
-  .login-story-foot {
+  .login-benefits {
     display: none;
   }
 
@@ -2590,6 +2608,10 @@ a:hover {
 
   .form-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .report-map-canvas {
+    min-height: 260px;
   }
 
   .form-grid .span-all {

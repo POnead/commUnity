@@ -65,12 +65,32 @@ test("serves hardened static files and protects database routes behind sessions"
   try {
     const home = await fetch(app.origin);
     assert.equal(home.status, 200);
-    assert.match(home.headers.get("content-security-policy"), /frame-ancestors 'none'/);
+    const contentSecurityPolicy = home.headers.get("content-security-policy");
+    assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
+    assert.match(contentSecurityPolicy, /tile\.openstreetmap\.org/);
+    assert.match(contentSecurityPolicy, /script-src 'self'/);
+    assert.match(home.headers.get("referrer-policy"), /strict-origin-when-cross-origin/);
     assert.equal(home.headers.get("x-content-type-options"), "nosniff");
     assert.equal(home.headers.get("x-frame-options"), "DENY");
-    assert.match(await home.text(), /CommUnity/);
+    const homeHtml = await home.text();
+    assert.match(homeHtml, /CommUnity/);
+    assert.match(homeHtml, /node_modules\/leaflet\/dist\/leaflet\.css/);
+    assert.match(homeHtml, /node_modules\/leaflet\/dist\/leaflet\.js/);
     assert.equal((await fetch(`${app.origin}/package.json`)).status, 404);
-
+    for (const [asset, contentType] of [
+      ["/node_modules/leaflet/dist/leaflet.js", "text/javascript"],
+      ["/node_modules/leaflet/dist/leaflet.css", "text/css"],
+      ["/node_modules/leaflet/dist/images/layers.png", "image/png"],
+      ["/node_modules/leaflet/dist/images/layers-2x.png", "image/png"],
+      ["/node_modules/leaflet/dist/images/marker-icon.png", "image/png"],
+      ["/node_modules/leaflet/dist/images/marker-icon-2x.png", "image/png"],
+      ["/node_modules/leaflet/dist/images/marker-shadow.png", "image/png"],
+    ]) {
+      const response = await fetch(`${app.origin}${asset}`);
+      assert.equal(response.status, 200, asset);
+      assert.match(response.headers.get("content-type"), new RegExp(contentType), asset);
+      assert.ok(Number(response.headers.get("content-length")) > 0, asset);
+    }
     const session = await api(app, "/api/session");
     assert.equal(session.status, 200);
     assert.deepEqual(await session.json(), { user: null });
@@ -156,6 +176,8 @@ test("registers residents, scopes their data, and rejects privilege escalation",
       area: "Purok 2",
       barangay: "Balete",
       locationDetail: "Near the school entrance",
+      latitude: 14.01799,
+      longitude: 121.09465,
       description: "Water is pooling across the road near the school entrance.",
       urgent: false,
       status: "Submitted",
@@ -164,6 +186,30 @@ test("registers residents, scopes their data, and rejects privilege escalation",
       photos: [],
       history: [{ status: "Submitted", at: now, note: "Report received." }],
     });
+    const invalidCoordinates = structuredClone(residentState.data);
+    invalidCoordinates.reports.push({
+      ...reportState.reports[0],
+      id: "RPT-2026-test-invalid",
+      latitude: 91,
+    });
+    const invalidReport = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: residentState.revision, data: invalidCoordinates },
+    });
+    assert.equal(invalidReport.status, 400);
+    const incompleteCoordinates = structuredClone(residentState.data);
+    incompleteCoordinates.reports.push({
+      ...reportState.reports[0],
+      id: "RPT-2026-test-incomplete",
+      longitude: null,
+    });
+    const incompleteReport = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: residentState.revision, data: incompleteCoordinates },
+    });
+    assert.equal(incompleteReport.status, 400);
     reportState.activities.push({
       id: "A-test-1",
       actor: "Resident One",
@@ -179,7 +225,12 @@ test("registers residents, scopes their data, and rejects privilege escalation",
       body: { revision: residentState.revision, data: reportState },
     });
     assert.equal(created.status, 200);
-    assert.equal((await created.json()).data.reports.length, 1);
+    const createdResult = await created.json();
+    assert.equal(createdResult.data.reports.length, 1);
+    assert.equal(createdResult.data.reports[0].latitude, 14.01799);
+    assert.equal(createdResult.data.reports[0].longitude, 121.09465);
+    const persistedCoordinates = await app.db.query("SELECT latitude, longitude FROM reports WHERE id=$1", ["RPT-2026-test-01"]);
+    assert.deepEqual(persistedCoordinates.rows[0], { latitude: 14.01799, longitude: 121.09465 });
 
     const adminState = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
     assert.equal(adminState.data.reports.length, 1);
@@ -210,6 +261,35 @@ test("registers residents, scopes their data, and rejects privilege escalation",
     const passwordRecord = await app.db.query("SELECT password_hash FROM user_credentials WHERE user_id=(SELECT id FROM users WHERE email=$1)", ["resident@example.test"]);
     assert.match(passwordRecord.rows[0].password_hash, /^scrypt\$/);
     assert.equal(passwordRecord.rows[0].password_hash.includes("A-unique-resident-password!"), false);
+
+    const deniedReset = await api(app, "/api/users/password", {
+      method: "POST",
+      cookie: residentCookie,
+      body: {
+        email: "resident@example.test",
+        newPassword: "A-reset-resident-password!",
+        confirmPassword: "A-reset-resident-password!",
+      },
+    });
+    assert.equal(deniedReset.status, 403);
+    const reset = await api(app, "/api/users/password", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        email: "resident@example.test",
+        newPassword: "A-reset-resident-password!",
+        confirmPassword: "A-reset-resident-password!",
+      },
+    });
+    assert.equal(reset.status, 200);
+    const remainingSessions = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["resident@example.test"],
+    );
+    assert.equal(remainingSessions.rows[0].count, 0);
+    assert.equal((await api(app, "/api/session", { cookie: residentCookie }).then((response) => response.json())).user, null);
+    assert.equal((await signIn(app, "resident@example.test", "A-unique-resident-password!")).response.status, 401);
+    assert.equal((await signIn(app, "resident@example.test", "A-reset-resident-password!")).response.status, 200);
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -289,12 +369,64 @@ test("enforces official report and schedule permissions and sends resident notif
     let officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
     assert.equal(officialState.data.users.length, 0);
     assert.equal(officialState.data.reports.length, 1);
+    assert.equal(officialState.data.reports[0].latitude, null);
+    assert.equal(officialState.data.reports[0].longitude, null);
     assert.equal(officialState.data.notifications.some((item) => item.targetEmail === "official@example.test"), true);
+
+    const officialSession = await api(app, "/api/session", { cookie: officialCookie }).then((response) => response.json());
+    const forgedClaim = structuredClone(officialState.data);
+    forgedClaim.reports[0].assignedTo = { id: "another-official", name: "Another Official" };
+    const rejectedClaim = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: forgedClaim },
+    });
+    assert.equal(rejectedClaim.status, 403);
+
+    const claim = structuredClone(officialState.data);
+    claim.reports[0].assignedTo = { id: officialSession.user.id, name: "Forged Name" };
+    const claimed = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: claim },
+    });
+    assert.equal(claimed.status, 200);
+    officialState = await claimed.json();
+    assert.deepEqual(officialState.data.reports[0].assignedTo, {
+      id: officialSession.user.id,
+      name: officialSession.user.name,
+    });
+
+    const release = structuredClone(officialState.data);
+    release.reports[0].assignedTo = null;
+    const released = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: release },
+    });
+    assert.equal(released.status, 200);
+    officialState = await released.json();
+
+    const reclaim = structuredClone(officialState.data);
+    reclaim.reports[0].assignedTo = { id: officialSession.user.id, name: officialSession.user.name };
+    const reclaimed = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: reclaim },
+    });
+    assert.equal(reclaimed.status, 200);
+    officialState = await reclaimed.json();
 
     const report = officialState.data.reports[0];
     report.status = "Under Review";
     report.updatedAt = new Date().toISOString();
-    report.history.push({ status: "Under Review", at: report.updatedAt, note: "A barangay official is reviewing this report." });
+    report.history.push({
+      status: "Under Review",
+      at: report.updatedAt,
+      note: "A barangay official is reviewing this report.",
+      actorName: "Forged Name",
+      actorRole: "resident",
+    });
     officialState.data.activities.push({
       id: "A-official-review",
       actor: "Official One",
@@ -312,6 +444,13 @@ test("enforces official report and schedule permissions and sends resident notif
     assert.equal(reviewed.status, 200);
 
     officialState = await reviewed.json();
+    assert.deepEqual(officialState.data.reports[0].history.at(-1), {
+      status: "Under Review",
+      at: report.updatedAt,
+      note: "A barangay official is reviewing this report.",
+      actorName: officialSession.user.name,
+      actorRole: "official",
+    });
     officialState.data.schedules.push({
       id: "GCS-2026-900",
       area: "Purok 4",

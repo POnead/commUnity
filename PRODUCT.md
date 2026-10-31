@@ -25,11 +25,15 @@ Residents report concerns such as road damage, damaged streetlights, drainage is
 ## Capabilities and Constraints
 - The source documents describe resident registration, role-based portal access, concern and urgent reporting, photo attachments, area selection, report tracking and history, collection schedules and status changes, notifications, user and role management, system monitoring, audit records, and profiles.
 - Residents can browse administrator-maintained community areas and verified recycling/junkshop listings, and provide barangay, purok/area, and street or landmark details with a report.
+- Resident reports can optionally include a Leaflet/OpenStreetMap map pin; the existing text location remains required, and staff can open saved coordinates using the Google Maps website.
 - Administrators monitor all reports and service activity, manage locations and directory listings, and export reports and report history. Officials and administrators can manage announcements.
+- Administrators can reset another account's password from user management; resets close that account's existing sessions.
+- Officials can claim unassigned concerns and release their own assignments for team handoff. New status-history entries record the staff member who made the update; older entries remain unattributed.
 - Collection reminders and report-submission/status notices are stored in the shared database and shown in account notifications. A scheduled job creates an in-app reminder the day before an eligible collection.
 - Role checks, sessions, and data writes are enforced server-side. Local PGlite is loopback-only; shared deployments use managed PostgreSQL and HTTPS.
 - No email or SMS delivery, verified identity, live collection tracking, or emergency-service dispatch is included. Collection statuses are manually maintained.
 - Directory records and operational information must be verified by barangay staff. No real recycling-business dataset is supplied.
+- The optional map uses public OpenStreetMap tiles and needs internet access; map attribution and public tile-service usage limits apply.
 
 ## Brand Commitments
 The product is named CommUnity. The supplied screen-reference PDF uses the eCommunity wordmark and a light, blue resident interface. The requested implementation keeps the resident blue identity, with separate teal official and graphite administrator themes.

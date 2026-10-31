@@ -8,7 +8,13 @@ import { PGlite } from "@electric-sql/pglite";
 
 const scrypt = promisify(scryptCallback);
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_FILES = new Set(["index.html", "styles.css", "app-core.js", "app-views.js", "app.js"]);
+const PUBLIC_FILES = new Set([
+  "index.html", "styles.css", "app-core.js", "app-views.js", "app.js",
+  "node_modules/leaflet/dist/leaflet.js", "node_modules/leaflet/dist/leaflet.css",
+  "node_modules/leaflet/dist/images/layers.png", "node_modules/leaflet/dist/images/layers-2x.png",
+  "node_modules/leaflet/dist/images/marker-icon.png", "node_modules/leaflet/dist/images/marker-icon-2x.png",
+  "node_modules/leaflet/dist/images/marker-shadow.png",
+]);
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const SESSION_COOKIE = "community_session";
 const SESSION_HOURS = 12;
@@ -25,6 +31,7 @@ const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".png": "image/png",
 };
 
 class HttpError extends Error {
@@ -148,7 +155,16 @@ function validateReport(report) {
       typeof report.area !== "string" || report.area.length > 120 ||
       (report.barangay !== undefined && (typeof report.barangay !== "string" || report.barangay.length > 100)) ||
       (report.locationDetail !== undefined && (typeof report.locationDetail !== "string" || report.locationDetail.length > 250)) ||
+      ((report.latitude !== undefined && report.latitude !== null) !==
+        (report.longitude !== undefined && report.longitude !== null)) ||
+      (report.latitude !== undefined && report.latitude !== null &&
+        (typeof report.latitude !== "number" || !Number.isFinite(report.latitude) || report.latitude < -90 || report.latitude > 90)) ||
+      (report.longitude !== undefined && report.longitude !== null &&
+        (typeof report.longitude !== "number" || !Number.isFinite(report.longitude) || report.longitude < -180 || report.longitude > 180)) ||
       !REPORT_STATUSES.includes(report.status) || typeof report.urgent !== "boolean" ||
+      (report.assignedTo !== undefined && report.assignedTo !== null &&
+        (!report.assignedTo || typeof report.assignedTo !== "object" || !validId(report.assignedTo.id) ||
+          typeof report.assignedTo.name !== "string" || report.assignedTo.name.length > 100)) ||
       !Array.isArray(report.history) || report.history.length < 1 || report.history.length > 500 ||
       !Array.isArray(report.photos) || report.photos.length > 3) {
     throw new HttpError(400, "A report contains invalid or excessive data.");
@@ -162,7 +178,9 @@ function validateReport(report) {
   }
   for (const item of report.history) {
     if (!item || !REPORT_STATUSES.includes(item.status) || typeof item.note !== "string" || item.note.length > 2000 ||
-        typeof item.at !== "string" || Number.isNaN(Date.parse(item.at))) {
+        typeof item.at !== "string" || Number.isNaN(Date.parse(item.at)) ||
+        (item.actorName !== undefined && (typeof item.actorName !== "string" || item.actorName.length > 100)) ||
+        (item.actorRole !== undefined && !ROLES.includes(item.actorRole))) {
       throw new HttpError(400, "Report history contains invalid data.");
     }
   }
@@ -254,13 +272,16 @@ async function migrate(db) {
       id text PRIMARY KEY, user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE,
       name text NOT NULL, category text NOT NULL, title text NOT NULL, area text NOT NULL,
       barangay text NOT NULL DEFAULT '',
-      location_detail text NOT NULL DEFAULT '', description text NOT NULL, urgent boolean NOT NULL DEFAULT false,
+      location_detail text NOT NULL DEFAULT '', latitude double precision, longitude double precision,
+      description text NOT NULL, urgent boolean NOT NULL DEFAULT false,
+      assigned_to text REFERENCES users(id) ON DELETE SET NULL,
       status text NOT NULL CHECK (status IN ('Submitted', 'Under Review', 'In Progress', 'Resolved')),
       submitted_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
     );
     CREATE TABLE IF NOT EXISTS report_history (
       id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
       position integer NOT NULL, status text NOT NULL, at timestamptz NOT NULL, note text NOT NULL,
+      actor_name text NOT NULL DEFAULT '', actor_role text NOT NULL DEFAULT '',
       UNIQUE (report_id, position)
     );
     CREATE TABLE IF NOT EXISTS report_photos (
@@ -319,6 +340,13 @@ async function migrate(db) {
     CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON web_sessions(expires_at);
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS location_detail text NOT NULL DEFAULT '';
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS barangay text NOT NULL DEFAULT '';
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS latitude double precision;
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS longitude double precision;
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS assigned_to text REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
+    ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
+    UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
+      FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';
     INSERT INTO community_locations (id, area, barangay, purok) VALUES
       ('balete-purok-1', 'Purok 1', 'Balete', 'Purok 1'),
       ('balete-purok-2', 'Purok 2', 'Balete', 'Purok 2'),
@@ -327,7 +355,7 @@ async function migrate(db) {
       ('balete-purok-5', 'Purok 5', 'Balete', 'Purok 5'),
       ('balete-main-road', 'Main Road', 'Balete', 'Main Road')
     ON CONFLICT (id) DO NOTHING;
-    INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT (version) DO NOTHING;
+    INSERT INTO schema_migrations (version) VALUES (1), (2) ON CONFLICT (version) DO NOTHING;
   `;
   if (typeof db.exec === "function") await db.exec(schema);
   else await db.query(schema);
@@ -391,16 +419,19 @@ async function readFullState(db) {
   state.users = users.rows;
 
   const reports = await db.query(`
-    SELECT id, user_email AS "userEmail", name, category, title, area, barangay,
-      location_detail AS "locationDetail", description, urgent, status,
-      submitted_at AS "submittedAt", updated_at AS "updatedAt"
-    FROM reports ORDER BY submitted_at DESC, id
+    SELECT r.id, r.user_email AS "userEmail", r.name, r.category, r.title, r.area, r.barangay,
+    r.location_detail AS "locationDetail", r.latitude, r.longitude, r.description, r.urgent,
+    r.assigned_to AS "assignedToId", assignee.name AS "assignedToName", r.status,
+    r.submitted_at AS "submittedAt", r.updated_at AS "updatedAt"
+    FROM reports r LEFT JOIN users assignee ON assignee.id=r.assigned_to
+    ORDER BY submitted_at DESC, id
   `);
-  const histories = await db.query("SELECT report_id, status, at, note FROM report_history ORDER BY report_id, position");
+  const histories = await db.query(`SELECT report_id, status, at, note, actor_name AS "actorName",
+    actor_role AS "actorRole" FROM report_history ORDER BY report_id, position`);
   const historyByReport = new Map();
   for (const row of histories.rows) {
     const list = historyByReport.get(row.report_id) || [];
-    list.push({ status: row.status, at: timestamp(row.at), note: row.note });
+    list.push({ status: row.status, at: timestamp(row.at), note: row.note, actorName: row.actorName, actorRole: row.actorRole });
     historyByReport.set(row.report_id, list);
   }
   const photos = await db.query("SELECT report_id, name, data_url AS data FROM report_photos ORDER BY report_id, position");
@@ -410,13 +441,17 @@ async function readFullState(db) {
     list.push({ name: row.name, data: row.data });
     photosByReport.set(row.report_id, list);
   }
-  state.reports = reports.rows.map((report) => ({
-    ...report,
-    submittedAt: timestamp(report.submittedAt),
-    updatedAt: timestamp(report.updatedAt),
-    history: historyByReport.get(report.id) || [],
-    photos: photosByReport.get(report.id) || [],
-  }));
+  state.reports = reports.rows.map((report) => {
+    const { assignedToId, assignedToName, ...details } = report;
+    return {
+      ...details,
+      assignedTo: assignedToId ? { id: assignedToId, name: assignedToName } : null,
+      submittedAt: timestamp(report.submittedAt),
+      updatedAt: timestamp(report.updatedAt),
+      history: historyByReport.get(report.id) || [],
+      photos: photosByReport.get(report.id) || [],
+    };
+  });
   const schedules = await db.query(`
     SELECT id, area, zone, to_char(date, 'YYYY-MM-DD') AS date, waste_type AS "wasteType",
       start_time AS start, end_time AS "end", frequency, team, status
@@ -561,13 +596,14 @@ function validateScheduleCollection(schedules) {
 async function insertReport(db, report) {
   validateReport(report);
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, description, urgent, status, submitted_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, assigned_to, status, submitted_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
-    report.locationDetail || "", report.description, report.urgent, report.status, report.submittedAt, report.updatedAt]);
+    report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent,
+    report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt]);
   for (const [position, item] of report.history.entries()) {
-    await db.query("INSERT INTO report_history (report_id, position, status, at, note) VALUES ($1,$2,$3,$4,$5)",
-      [report.id, position, item.status, item.at, item.note]);
+    await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);
   }
   for (const [position, photo] of report.photos.entries()) {
     await db.query("INSERT INTO report_photos (report_id,position,name,data_url) VALUES ($1,$2,$3,$4)",
@@ -578,18 +614,20 @@ async function insertReport(db, report) {
 async function replaceReport(db, report) {
   validateReport(report);
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, description, urgent, status, submitted_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, assigned_to, status, submitted_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
     ON CONFLICT (id) DO UPDATE SET user_email=excluded.user_email, name=excluded.name, category=excluded.category,
-      title=excluded.title, area=excluded.area, barangay=excluded.barangay, location_detail=excluded.location_detail, description=excluded.description, urgent=excluded.urgent,
-      status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at
+      title=excluded.title, area=excluded.area, barangay=excluded.barangay, location_detail=excluded.location_detail,
+      latitude=excluded.latitude, longitude=excluded.longitude, description=excluded.description, urgent=excluded.urgent,
+      assigned_to=excluded.assigned_to, status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
-    report.locationDetail || "", report.description, report.urgent, report.status, report.submittedAt, report.updatedAt]);
+    report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent,
+    report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt]);
   await db.query("DELETE FROM report_history WHERE report_id = $1", [report.id]);
   await db.query("DELETE FROM report_photos WHERE report_id = $1", [report.id]);
   for (const [position, item] of report.history.entries()) {
-    await db.query("INSERT INTO report_history (report_id, position, status, at, note) VALUES ($1,$2,$3,$4,$5)",
-      [report.id, position, item.status, item.at, item.note]);
+    await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);
   }
   for (const [position, photo] of report.photos.entries()) {
     await db.query("INSERT INTO report_photos (report_id,position,name,data_url) VALUES ($1,$2,$3,$4)",
@@ -799,6 +837,10 @@ async function updateState(db, user, body) {
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
       for (const report of addedReports) {
         report.name = nextAccount.name;
+        if (report.assignedTo) throw new HttpError(403, "New reports cannot be assigned by residents.");
+        report.assignedTo = null;
+        report.history[0].actorName = nextAccount.name;
+        report.history[0].actorRole = "resident";
         await insertReport(db, report);
         const staff = await db.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
         for (const account of staff.rows) await insertNotification(db, account.email,
@@ -825,18 +867,51 @@ async function updateState(db, user, body) {
         const incoming = after.reports.find((report) => report.id === oldReport.id);
         if (!incoming) throw new HttpError(403, "Officials cannot remove resident reports.");
         if (!jsonEqual(oldReport, incoming)) {
-          const previousCore = (({ status, updatedAt, history, ...rest }) => rest)(oldReport);
-          const incomingCore = (({ status, updatedAt, history, ...rest }) => rest)(incoming);
-          if (!jsonEqual(previousCore, incomingCore) || !REPORT_STATUSES.includes(incoming.status) ||
-              incoming.history.length !== oldReport.history.length + 1 ||
-              !jsonEqual(oldReport.history, incoming.history.slice(0, -1)) ||
-              incoming.history.at(-1).status !== incoming.status) {
-            throw new HttpError(403, "Officials may only add a report status update.");
+          const previousCore = (({ status, updatedAt, history, assignedTo, ...rest }) => rest)(oldReport);
+          const incomingCore = (({ status, updatedAt, history, assignedTo, ...rest }) => rest)(incoming);
+          const assignmentChanged = !jsonEqual(oldReport.assignedTo, incoming.assignedTo);
+          const statusChanged = incoming.status !== oldReport.status ||
+            incoming.updatedAt !== oldReport.updatedAt ||
+            !jsonEqual(oldReport.history, incoming.history);
+          const validStatusUpdate = statusChanged &&
+            incoming.history.length === oldReport.history.length + 1 &&
+            jsonEqual(oldReport.history, incoming.history.slice(0, -1)) &&
+            incoming.history.at(-1).status === incoming.status &&
+            incoming.history.at(-1).at === incoming.updatedAt;
+          if (!jsonEqual(previousCore, incomingCore) ||
+              (statusChanged && !validStatusUpdate) ||
+              (!assignmentChanged && !statusChanged)) {
+            throw new HttpError(403, "Officials may only claim or release an assignment and add a report status update.");
+          }
+          if (assignmentChanged) {
+            const previousAssigneeId = oldReport.assignedTo?.id || null;
+            const nextAssigneeId = incoming.assignedTo?.id || null;
+            const claiming = !previousAssigneeId && nextAssigneeId === user.id;
+            const releasing = previousAssigneeId === user.id && !nextAssigneeId;
+            if (!claiming && !releasing) throw new HttpError(403, "Officials can only claim unassigned concerns or release their own assignment.");
+            if (claiming) {
+              const official = await db.query(
+                "SELECT id, name FROM users WHERE id=$1 AND role='official' AND status='Active'",
+                [user.id],
+              );
+              if (!official.rows.length) throw new HttpError(403, "Only an active barangay official can claim a concern.");
+              incoming.assignedTo = { id: official.rows[0].id, name: official.rows[0].name };
+            } else {
+              incoming.assignedTo = null;
+            }
+          } else {
+            incoming.assignedTo = oldReport.assignedTo;
+          }
+          if (validStatusUpdate) {
+            incoming.history.at(-1).actorName = user.name;
+            incoming.history.at(-1).actorRole = user.role;
           }
           validateReport(incoming);
           await replaceReport(db, incoming);
-          await insertNotification(db, incoming.userEmail, `Report ${incoming.status.toLowerCase()}`,
-            `${incoming.id}: ${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}`, incoming.id);
+          if (validStatusUpdate) {
+            await insertNotification(db, incoming.userEmail, `Report ${incoming.status.toLowerCase()}`,
+              `${incoming.id}: ${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}`, incoming.id);
+          }
         }
       }
       await syncSchedules(db, visibleBefore.schedules, after.schedules);
@@ -859,10 +934,14 @@ async function updateState(db, user, body) {
       }
       const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
       if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
-      for (const report of after.reports) await replaceReport(db, report);
       for (const old of before.reports) {
-        if (!after.reports.some((report) => report.id === old.id)) throw new HttpError(403, "Reports cannot be deleted from the administrator workspace.");
+        const incoming = after.reports.find((report) => report.id === old.id);
+        if (!incoming) throw new HttpError(403, "Reports cannot be deleted from the administrator workspace.");
+        if (!jsonEqual(old.assignedTo, incoming.assignedTo) || !jsonEqual(old.history, incoming.history)) {
+          throw new HttpError(403, "Report assignments and status history can only be changed through the concern queue.");
+        }
       }
+      for (const report of after.reports) await replaceReport(db, report);
       await syncSchedules(db, before.schedules, after.schedules);
       await syncLocations(db, before.locations, after.locations);
       await syncRecyclingLocations(db, before.recyclingLocations, after.recyclingLocations);
@@ -951,7 +1030,7 @@ function validateAnnouncement(body) {
 }
 
 async function handleApi(request, response, db, options) {
-  const { server, appOrigin, secureCookies } = options;
+  const { server, appOrigin, secureCookies, googleMapsApiKey } = options;
   if (!validateSameOrigin(request, server, appOrigin)) {
     sendJson(response, 403, { error: "This request did not come from the CommUnity website." });
     return;
@@ -1118,6 +1197,36 @@ async function handleApi(request, response, db, options) {
     sendJson(response, 200, { revision, data: stateForRole(state, currentUser), user: publicUser(currentUser) });
     return;
   }
+  if (url.pathname === "/api/users/password" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    const body = await readJson(request);
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    validatePassword(body.newPassword);
+    if (body.newPassword !== body.confirmPassword) throw new HttpError(400, "The new passwords do not match.");
+    if (!email || email === user.email) throw new HttpError(400, "Choose another account to reset.");
+    await withTransaction(db, async (transaction) => {
+      const target = await transaction.query("SELECT id, name FROM users WHERE email=$1", [email]);
+      if (!target.rows.length) throw new HttpError(404, "The account could not be found.");
+      await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [
+        await passwordHash(body.newPassword),
+        target.rows[0].id,
+      ]);
+      await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
+      await insertActivity(transaction, user, "Reset user password", target.rows[0].name);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const [state, revision, currentUser] = await Promise.all([
+      readFullState(db),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+      getSessionUser(request, db),
+    ]);
+    sendJson(response, 200, {
+      data: stateForRole(state, currentUser),
+      revision: Number(revision.rows[0].revision),
+      user: publicUser(currentUser),
+    });
+    return;
+  }
   if (url.pathname === "/api/users" && request.method === "POST") {
     requireRole(user, ["administrator"]);
     await createUser(db, user, await readJson(request));
@@ -1130,10 +1239,11 @@ async function handleApi(request, response, db, options) {
 
 function addSecurityHeaders(response, secure) {
   response.setHeader("Cache-Control", "no-store");
-  response.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'");
+  // Leaflet positions tiles and markers through inline style attributes.
+  response.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
   if (secure) response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
@@ -1231,6 +1341,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const { server, close } = await createCommunityServer({ port });
   server.listen(port, process.env.DATABASE_URL ? "0.0.0.0" : "127.0.0.1", () => {
     console.log(`CommUnity running on port ${port}.`);
+    console.log(`Open the website: ${process.env.APP_ORIGIN || `http://127.0.0.1:${port}`}`);
     console.log(process.env.DATABASE_URL
       ? "Using managed PostgreSQL. Configure TLS at the hosting provider."
       : "Using local PGlite storage on this computer only.");

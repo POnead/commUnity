@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.13",
+    "leaflet": "^1.9.4",
     "pg": "^8.23.1"
   }
 }

@@ -357,19 +357,6 @@ a:hover {
   color: var(--quiet);
 }
 
-.demo-indicator {
-  flex: none;
-  padding: 3px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
-}
-
 .topbar-actions {
   gap: 8px;
 }
@@ -1011,10 +998,6 @@ a:hover {
   color: var(--muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-}
-
-.report-demo-notice > strong {
-  flex: none;
 }
 
 .filter-button {
@@ -2363,11 +2346,6 @@ a:hover {
   .topbar-date,
   .topbar-role {
     display: none;
-  }
-
-  .demo-indicator {
-    padding: 2px 6px;
-    font-size: 10px;
   }
 
   .topbar-leading {

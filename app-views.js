@@ -114,7 +114,6 @@ function shell(role, page, title, description, body, actions = "") {
         <div class="topbar-leading">
           <button class="icon-button mobile-menu-button" type="button" data-action="toggle-menu" aria-label="Open navigation" aria-expanded="false" aria-controls="mobile-navigation">${icon("menu")}</button>
           <div class="crumb"><span>CommUnity</span><span class="crumb-separator" aria-hidden="true">/</span><strong>${esc(roleLabel)}</strong></div>
-          <span class="demo-indicator">Demo workspace</span>
         </div>
         <div class="topbar-actions">
           <span class="topbar-date">${esc(date)}</span>
@@ -163,7 +162,7 @@ function page(role, view, body, actions = "") {
 }
 
 function stat(label, value, note = "", tone = "") {
-  return `<div class="stat" ${tone ? `data-tone="${esc(tone)}"` : ""}><span class="stat-label">${esc(label)}</span><strong class="stat-value">${esc(value)}</strong></div>`;
+  return `<div class="stat" ${tone ? `data-tone="${esc(tone)}"` : ""}><span class="stat-label">${esc(label)}</span><strong class="stat-value">${esc(value)}</strong>${note ? `<span class="stat-note">${esc(note)}</span>` : ""}</div>`;
 }
 
 function statsStrip(items) {
@@ -308,6 +307,7 @@ function dashboardResident() {
     <div class="grid-main-side">
       <div class="content-stack">
         ${panel("Next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div><div class="form-actions">${linkButton("View collection schedule", routeUrl("resident", "collection"), "secondary", "small")}</div>` : `<div class="empty-state"><strong>No upcoming pickup posted</strong>Check back for a schedule update from your barangay.</div>`)}
+        ${reports.some((report) => report.urgent && report.status !== "Resolved") ? `<div class="notice-bar"><span>Immediate danger?</span><strong>If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service. CommUnity does not dispatch emergency services.</strong></div>` : ""}
         ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon(report.urgent && report.status !== "Resolved" ? "alert" : "clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div>${report.urgent && report.status !== "Resolved" ? statusPill("urgent", "Urgent") : statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
       </div>
       <div class="content-stack">
@@ -484,7 +484,6 @@ function reportFormMarkup() {
           <div class="wizard-step ${reportDraft?.step === "review" ? "done" : "current"}"><strong>${reportDraft?.step === "review" ? icon("check") : "1"}</strong><span>Concern details</span></div><span class="wizard-divider"></span>
           <div class="wizard-step ${reportDraft?.step === "review" ? "current" : ""}"><strong>2</strong><span>Review & submit</span></div>
         </div>
-        <div class="notice-bar report-demo-notice" role="note"><strong>Demonstration only</strong><span>Reports stay here and are not sent to barangay staff.</span></div>
         ${reportDraft?.step === "review" ? `
           <div class="content-stack">
             <div class="notice-bar"><span>Concern</span><strong>${esc(draft.category)}</strong></div>
@@ -493,6 +492,7 @@ function reportFormMarkup() {
             <div class="notice-bar"><span>Street or landmark</span><strong>${esc(draft.locationDetail)}</strong></div>
             <div class="notice-bar"><span>Map pin</span><strong>${draft.latitude == null ? "Not selected" : `${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`}</strong></div>
             <div class="notice-bar"><span>Urgency</span><strong>${draft.urgent ? "Flagged for prompt attention" : "Standard report"}</strong></div>
+            <div class="notice-bar"><span>Immediate danger?</span><strong>${draft.urgent ? "Flagged for prompt attention. " : ""}If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service. CommUnity does not dispatch emergency services.</strong></div>
             <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
             <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.data}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
             <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
@@ -517,7 +517,7 @@ function reportFormMarkup() {
               </div>
               <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
               <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><span class="upload-box">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></span><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.data}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></div>
-              <label class="checkbox-field span-all"><input name="urgent" type="checkbox" ${draft.urgent ? "checked" : ""}><span><strong>This concern needs urgent attention</strong><small class="field-help">This flag does not contact emergency services.</small></span></label>
+              <label class="checkbox-field span-all"><input name="urgent" type="checkbox" ${draft.urgent ? "checked" : ""}><span><strong>This concern needs urgent attention</strong><small class="field-help">This flag does not contact emergency services. If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service.</small></span></label>
             </div>
             <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
           </form>`}

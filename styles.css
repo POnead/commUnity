@@ -2431,6 +2431,11 @@ a:hover {
     white-space: normal;
   }
 
+  .record-secondary {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .record-date {
     font-variant-numeric: tabular-nums;
     white-space: nowrap;

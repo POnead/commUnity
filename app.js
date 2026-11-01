@@ -5,6 +5,8 @@ let reportMapSelection = null;
 let reportMap = null;
 let reportMapElement = null;
 let reportMapMarker = null;
+let reportDetailMap = null;
+let reportDetailMapElement = null;
 
 function routeState() {
   const path = currentPath();
@@ -83,6 +85,7 @@ function render() {
     document.documentElement.dataset.theme = "auth";
     app.innerHTML = route.type === "register" ? registerMarkup() : loginMarkup();
   }
+  initializeReportDetailMap();
   lastKnownHash = window.location.hash;
 }
 
@@ -715,6 +718,51 @@ function initializeReportMap() {
     reportMap.invalidateSize();
   }
   if (reportMapSelection) setReportMapPin(reportMapSelection);
+}
+
+function initializeReportDetailMap() {
+  const mapElement = app.querySelector("#report-detail-map");
+  if (!mapElement || !window.L) {
+    reportDetailMap?.remove();
+    reportDetailMap = null;
+    reportDetailMapElement = null;
+    if (mapElement) {
+      const status = app.querySelector("#report-detail-map-status");
+      if (status) status.textContent = "The interactive map is unavailable. Use the directions link to open this location.";
+    }
+    return;
+  }
+  if (reportDetailMapElement === mapElement) {
+    reportDetailMap.invalidateSize();
+    return;
+  }
+
+  reportDetailMap?.remove();
+  reportDetailMap = null;
+  reportDetailMapElement = mapElement;
+  const latitude = Number(mapElement.dataset.latitude);
+  const longitude = Number(mapElement.dataset.longitude);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+      !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    const status = app.querySelector("#report-detail-map-status");
+    if (status) status.textContent = "This report's saved map coordinates are invalid.";
+    reportDetailMapElement = null;
+    return;
+  }
+
+  reportDetailMap = window.L.map(mapElement).setView([latitude, longitude], 17);
+  const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+  }).addTo(reportDetailMap);
+  const statusElement = app.querySelector("#report-detail-map-status");
+  window.L.marker([latitude, longitude], {
+    title: "Exact concern location",
+    alt: "Exact concern location",
+  }).addTo(reportDetailMap);
+  tileLayer.on("tileerror", () => {
+    if (statusElement) statusElement.textContent = "Map tiles could not be loaded. Check your internet connection; the saved pin and directions link are still available.";
+  });
 }
 
 async function handleAction(button, clickEvent) {

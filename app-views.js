@@ -247,6 +247,12 @@ function reportDetail(report, role) {
   const photos = (report.photos || []).length
     ? `<div class="photo-preview">${report.photos.map((photo) => `<a class="photo-thumb" href="${photo.data}" target="_blank" rel="noreferrer" aria-label="Open report photo ${esc(photo.name)}"><img src="${photo.data}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
     : `<p class="muted small">No photo was attached to this report.</p>`;
+  const hasMapPin = Number.isFinite(report.latitude) && Number.isFinite(report.longitude);
+  const reportLocation = role !== "administrator"
+    ? panel("Exact map location", hasMapPin
+      ? `<div id="report-detail-map" class="report-map-canvas report-detail-map" data-latitude="${report.latitude}" data-longitude="${report.longitude}" role="region" aria-label="Map centered on this concern's reported location"></div><p class="map-status" id="report-detail-map-status" role="status" aria-live="polite">Map pin at ${report.latitude.toFixed(6)}, ${report.longitude.toFixed(6)}.</p><a class="text-button map-directions-link" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open directions in Google Maps</a>`
+      : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`)
+    : "";
   const body = `
     <div class="content-stack">
       <div class="profile-layout">
@@ -257,9 +263,10 @@ function reportDetail(report, role) {
             <div class="notice-bar"><span>Barangay</span><strong>${esc(report.barangay || "—")}</strong></div>
             <div class="notice-bar mt-16"><span>Purok or area</span><strong>${esc(report.area)}</strong></div>
             <div class="notice-bar mt-16"><span>Street or landmark</span><strong>${esc(report.locationDetail || "Not provided")}</strong></div>
-            ${role !== "resident" && Number.isFinite(report.latitude) && Number.isFinite(report.longitude) ? `<div class="notice-bar mt-16"><span>Exact map location</span><a href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
+            ${role === "administrator" && hasMapPin ? `<div class="notice-bar mt-16"><span>Exact map location</span><a href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
             <div class="inline-between mt-16"><span class="muted small">Submitted ${esc(dateTimeLabel(report.submittedAt))}</span><span class="muted small">Updated ${esc(dateTimeLabel(report.updatedAt))}</span></div>
           </div></section>
+          ${reportLocation}
           ${panel("Attached photos", photos)}
           ${role === "official" ? panel("Record an update", statusForm) : ""}
         </div>

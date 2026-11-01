@@ -25,7 +25,7 @@ Resident accounts can register in the portal. Administrators can create official
 
 ### Optional keyless map pin picker
 
-Resident concern reports can include an optional interactive map pin in addition to the required barangay, area, and street or landmark. The map uses Leaflet and OpenStreetMap tiles, so it does not need a Google Maps API key. Residents can click the map or drag the pin; they can still submit without coordinates. Officials and administrators can open a saved pin using the Google Maps website. No device location permission or address-search service is used.
+Resident concern reports can include an optional interactive map pin in addition to the required barangay, area, and street or landmark. The map uses Leaflet and OpenStreetMap tiles, so it does not need a Google Maps API key. Residents can click the map or drag the pin; they can still submit without coordinates. Residents see their saved pin in their report details. Officials see a saved pin in the concern detail. Both can optionally open directions in Google Maps; administrators can open saved pins using Google Maps. No device location permission or address-search service is used.
 
 Map tiles are loaded from the public OpenStreetMap tile service and require an internet connection. Keep the visible OpenStreetMap attribution on the map and follow the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/); the public tile service is not intended for offline caching or bulk/high-volume use. The coordinates and text location remain part of the CommUnity report if tiles are temporarily unavailable.
 

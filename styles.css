@@ -1599,6 +1599,22 @@ a:hover {
   background: var(--surface-muted);
 }
 
+.report-detail-map {
+  height: 300px;
+  min-height: 300px;
+}
+
+.map-status {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.map-directions-link {
+  display: inline-flex;
+  margin-top: 8px;
+}
+
 .notice-bar {
   display: flex;
   align-items: center;

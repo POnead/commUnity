@@ -25,7 +25,7 @@ Residents report concerns such as road damage, damaged streetlights, drainage is
 ## Capabilities and Constraints
 - The source documents describe resident registration, role-based portal access, concern and urgent reporting, photo attachments, area selection, report tracking and history, collection schedules and status changes, notifications, user and role management, system monitoring, audit records, and profiles.
 - Residents can browse administrator-maintained community areas and verified recycling/junkshop listings, and provide barangay, purok/area, and street or landmark details with a report.
-- Resident reports can optionally include a Leaflet/OpenStreetMap map pin; the existing text location remains required, and staff can open saved coordinates using the Google Maps website.
+- Resident reports can optionally include a Leaflet/OpenStreetMap map pin; the existing text location remains required. Residents see their saved pin on an inline map in their report details. Officials see the saved pin in the concern detail; residents and officials can optionally open directions in Google Maps.
 - Administrators monitor all reports and service activity, manage locations and directory listings, and export reports and report history. Officials and administrators can manage announcements.
 - Administrators can reset another account's password from user management; resets close that account's existing sessions.
 - Officials can claim unassigned concerns and release their own assignments for team handoff. New status-history entries record the staff member who made the update; older entries remain unattributed.

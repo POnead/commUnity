@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import {
   createCommunityServer,
   pruneExpiredAuthState,
@@ -88,6 +89,70 @@ test("uses forwarded addresses only behind explicitly trusted proxies", () => {
     ),
     "10.0.0.2",
   );
+});
+
+test("renders saved concern pins inline for residents and officials with a directions fallback", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {
+    STATUSES: ["Submitted", "Under Review", "In Progress", "Resolved"],
+    currentUser: { id: "official-one" },
+    esc: (value) => String(value ?? ""),
+    panel: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
+    statusPill: (status) => `<span>${status}</span>`,
+    selectField: () => "",
+    reportAssignmentAction: () => "",
+    timelineMarkup: () => "",
+    initials: () => "",
+    dateTimeLabel: () => "",
+    getUser: () => null,
+    page: (_role, _listPage, body) => body,
+  };
+  runInNewContext(views, context);
+  context.panel = (title, body) => `<section><h2>${title}</h2>${body}</section>`;
+  context.page = (_role, _listPage, body) => body;
+  const report = {
+    id: "RPT-map-test",
+    title: "Blocked drainage",
+    category: "Drainage problem",
+    status: "Submitted",
+    description: "The drain is blocked beside the community hall.",
+    barangay: "Balete",
+    area: "Purok 2",
+    locationDetail: "Beside the community hall",
+    latitude: 14.01799,
+    longitude: 121.09465,
+    submittedAt: "2026-11-01T10:00:00.000Z",
+    updatedAt: "2026-11-01T10:00:00.000Z",
+    history: [],
+    photos: [],
+    assignedTo: null,
+    name: "Resident Example",
+    userEmail: "resident@example.test",
+  };
+
+  const officialDetail = context.reportDetail(report, "official");
+  assert.match(officialDetail, /id="report-detail-map"/);
+  assert.match(officialDetail, /data-latitude="14\.01799"/);
+  assert.match(officialDetail, /data-longitude="121\.09465"/);
+  assert.match(officialDetail, /Open directions in Google Maps/);
+  assert.match(officialDetail, /Beside the community hall/);
+
+  const withoutPin = context.reportDetail({ ...report, latitude: null, longitude: null }, "official");
+  assert.doesNotMatch(withoutPin, /id="report-detail-map"/);
+  assert.match(withoutPin, /did not include a map pin/);
+  assert.match(withoutPin, /Beside the community hall/);
+
+  const residentDetail = context.reportDetail(report, "resident");
+  assert.match(residentDetail, /id="report-detail-map"/);
+  assert.match(residentDetail, /data-latitude="14\.01799"/);
+  assert.match(residentDetail, /data-longitude="121\.09465"/);
+  assert.match(residentDetail, /Open directions in Google Maps/);
+  assert.match(residentDetail, /Beside the community hall/);
+
+  const residentWithoutPin = context.reportDetail({ ...report, latitude: null, longitude: null }, "resident");
+  assert.doesNotMatch(residentWithoutPin, /id="report-detail-map"/);
+  assert.match(residentWithoutPin, /You did not add a map pin/);
+  assert.match(residentWithoutPin, /Beside the community hall/);
 });
 
 test("serves hardened static files and protects database routes behind sessions", async () => {

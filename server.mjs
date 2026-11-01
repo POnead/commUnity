@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSa
 import { promisify } from "node:util";
 import { mkdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
@@ -16,6 +17,7 @@ const PUBLIC_FILES = new Set([
   "node_modules/leaflet/dist/images/marker-shadow.png",
 ]);
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_PASSWORD_LENGTH = 200;
 const SESSION_COOKIE = "community_session";
 const SESSION_HOURS = 12;
 const REMEMBER_DAYS = 30;
@@ -43,6 +45,46 @@ class HttpError extends Error {
 
 function hash(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function logError(message, error, context = {}) {
+  console.error(JSON.stringify({
+    level: "error",
+    message,
+    ...context,
+    error: {
+      name: error?.name || "Error",
+      message: error?.message || String(error),
+      ...(error?.code ? { code: error.code } : {}),
+    },
+  }));
+}
+
+function normalizeIpAddress(address) {
+  const normalized = String(address || "").trim().toLowerCase();
+  return normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+}
+
+export function requestClientAddress(request, trustedProxyAddresses = new Set()) {
+  const remoteAddress = normalizeIpAddress(request.socket.remoteAddress);
+  if (!trustedProxyAddresses.has(remoteAddress)) return remoteAddress;
+  const forwardedFor = request.headers["x-forwarded-for"];
+  if (typeof forwardedFor !== "string") return remoteAddress;
+  const chain = forwardedFor.split(",").map(normalizeIpAddress);
+  if (!chain.length || chain.some((address) => !isIP(address))) return remoteAddress;
+  for (const address of chain.reverse()) {
+    if (!trustedProxyAddresses.has(address)) return address;
+  }
+  return remoteAddress;
+}
+
+function parseTrustedProxyAddresses(value) {
+  if (!value) return new Set();
+  const addresses = value.split(",").map(normalizeIpAddress);
+  if (addresses.some((address) => !isIP(address))) {
+    throw new Error("TRUSTED_PROXY_IPS must contain only comma-separated IPv4 or IPv6 addresses.");
+  }
+  return new Set(addresses);
 }
 
 async function passwordHash(password) {
@@ -139,8 +181,8 @@ async function assertKnownArea(db, area, barangay = "") {
 }
 
 function validatePassword(password) {
-  if (typeof password !== "string" || password.length < 12 || password.length > 200) {
-    throw new HttpError(400, "Use a password between 12 and 200 characters.");
+  if (typeof password !== "string" || password.length < 12 || password.length > MAX_PASSWORD_LENGTH) {
+    throw new HttpError(400, `Use a password between 12 and ${MAX_PASSWORD_LENGTH} characters.`);
   }
 }
 
@@ -234,13 +276,14 @@ function makeDefaultState() {
   };
 }
 
-async function createDatabase({ dataDir, databaseUrl }) {
+async function createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeoutMillis }) {
   if (databaseUrl) {
     const { Pool } = await import("pg");
     const pool = new Pool({
       connectionString: databaseUrl,
       ssl: { rejectUnauthorized: true },
-      max: 10,
+      max: poolMax,
+      connectionTimeoutMillis,
       idleTimeoutMillis: 30000,
     });
     await pool.query("SELECT 1");
@@ -413,10 +456,15 @@ async function ensureAdministrator(db, email, password) {
   });
 }
 
-async function readFullState(db) {
+async function readFullState(db, user = null) {
   const state = makeDefaultState();
-  const users = await db.query("SELECT id, email, name, area, phone, role, status, to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
-  state.users = users.rows;
+  if (!user || user.role === "administrator") {
+    const users = await db.query("SELECT id, email, name, area, phone, role, status, to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
+    state.users = users.rows;
+  } else if (user.role === "resident") {
+    const users = await db.query("SELECT id, email, name, area, phone, role, status, to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
+    state.users = users.rows;
+  }
 
   const reports = await db.query(`
     SELECT r.id, r.user_email AS "userEmail", r.name, r.category, r.title, r.area, r.barangay,
@@ -424,34 +472,44 @@ async function readFullState(db) {
     r.assigned_to AS "assignedToId", assignee.name AS "assignedToName", r.status,
     r.submitted_at AS "submittedAt", r.updated_at AS "updatedAt"
     FROM reports r LEFT JOIN users assignee ON assignee.id=r.assigned_to
+    ${user?.role === "resident" ? "WHERE r.user_email=$1" : ""}
     ORDER BY submitted_at DESC, id
-  `);
-  const histories = await db.query(`SELECT report_id, status, at, note, actor_name AS "actorName",
-    actor_role AS "actorRole" FROM report_history ORDER BY report_id, position`);
-  const historyByReport = new Map();
-  for (const row of histories.rows) {
-    const list = historyByReport.get(row.report_id) || [];
-    list.push({ status: row.status, at: timestamp(row.at), note: row.note, actorName: row.actorName, actorRole: row.actorRole });
-    historyByReport.set(row.report_id, list);
+  `, user?.role === "resident" ? [user.email] : []);
+  const reportIds = reports.rows.map((report) => report.id);
+  if (reportIds.length) {
+    const histories = await db.query(`SELECT report_id, status, at, note, actor_name AS "actorName",
+      actor_role AS "actorRole" FROM report_history
+      ${user?.role === "resident" ? "WHERE report_id=ANY($1::text[])" : ""}
+      ORDER BY report_id, position`, user?.role === "resident" ? [reportIds] : []);
+    const historyByReport = new Map();
+    for (const row of histories.rows) {
+      const list = historyByReport.get(row.report_id) || [];
+      list.push({ status: row.status, at: timestamp(row.at), note: row.note, actorName: row.actorName, actorRole: row.actorRole });
+      historyByReport.set(row.report_id, list);
+    }
+    const photos = await db.query(`
+      SELECT report_id, name, data_url AS data FROM report_photos
+      ${user?.role === "resident" ? "WHERE report_id=ANY($1::text[])" : ""}
+      ORDER BY report_id, position
+    `, user?.role === "resident" ? [reportIds] : []);
+    const photosByReport = new Map();
+    for (const row of photos.rows) {
+      const list = photosByReport.get(row.report_id) || [];
+      list.push({ name: row.name, data: row.data });
+      photosByReport.set(row.report_id, list);
+    }
+    state.reports = reports.rows.map((report) => {
+      const { assignedToId, assignedToName, ...details } = report;
+      return {
+        ...details,
+        assignedTo: assignedToId ? { id: assignedToId, name: assignedToName } : null,
+        submittedAt: timestamp(report.submittedAt),
+        updatedAt: timestamp(report.updatedAt),
+        history: historyByReport.get(report.id) || [],
+        photos: photosByReport.get(report.id) || [],
+      };
+    });
   }
-  const photos = await db.query("SELECT report_id, name, data_url AS data FROM report_photos ORDER BY report_id, position");
-  const photosByReport = new Map();
-  for (const row of photos.rows) {
-    const list = photosByReport.get(row.report_id) || [];
-    list.push({ name: row.name, data: row.data });
-    photosByReport.set(row.report_id, list);
-  }
-  state.reports = reports.rows.map((report) => {
-    const { assignedToId, assignedToName, ...details } = report;
-    return {
-      ...details,
-      assignedTo: assignedToId ? { id: assignedToId, name: assignedToName } : null,
-      submittedAt: timestamp(report.submittedAt),
-      updatedAt: timestamp(report.updatedAt),
-      history: historyByReport.get(report.id) || [],
-      photos: photosByReport.get(report.id) || [],
-    };
-  });
   const schedules = await db.query(`
     SELECT id, area, zone, to_char(date, 'YYYY-MM-DD') AS date, waste_type AS "wasteType",
       start_time AS start, end_time AS "end", frequency, team, status
@@ -460,11 +518,15 @@ async function readFullState(db) {
   state.schedules = schedules.rows;
   const notifications = await db.query(`
     SELECT id, target_email AS "targetEmail", report_id AS "reportId", title, body,
-      created_at AS "createdAt", read FROM notifications ORDER BY created_at DESC, id
-  `);
+      created_at AS "createdAt", read FROM notifications
+    ${user ? "WHERE target_email=$1" : ""}
+    ORDER BY created_at DESC, id
+  `, user ? [user.email] : []);
   state.notifications = notifications.rows.map((item) => ({ ...item, reportId: item.reportId || "", createdAt: timestamp(item.createdAt) }));
-  const activities = await db.query("SELECT id, actor, role, action, detail, at, result FROM activities ORDER BY at DESC, id");
-  state.activities = activities.rows.map((item) => ({ ...item, at: timestamp(item.at) }));
+  if (!user || user.role === "administrator") {
+    const activities = await db.query("SELECT id, actor, role, action, detail, at, result FROM activities ORDER BY at DESC, id");
+    state.activities = activities.rows.map((item) => ({ ...item, at: timestamp(item.at) }));
+  }
   const permissions = await db.query("SELECT role, permission, enabled FROM role_permissions ORDER BY role, permission");
   for (const { role, permission, enabled } of permissions.rows) {
     state.permissions[role] ||= {};
@@ -476,7 +538,8 @@ async function readFullState(db) {
   state.locations = locations.rows;
   const recyclingLocations = await db.query(`
     SELECT id, name, barangay, street, purok, landmark, materials, phone, hours, active
-    FROM recycling_locations ORDER BY active DESC, name
+    FROM recycling_locations ${user && user.role !== "administrator" ? "WHERE active=true" : ""}
+    ORDER BY active DESC, name
   `);
   state.recyclingLocations = recyclingLocations.rows;
   return state;
@@ -516,7 +579,7 @@ async function issueSession(response, db, user, remember, secure) {
   response.setHeader("Set-Cookie", cookieHeader(token, { secure, remember }));
 }
 
-async function recordAttempt(db, key) {
+async function recordAttempt(db, key, limit = 10) {
   const result = await db.query(`
     INSERT INTO auth_attempts (attempt_key, attempts, window_started_at) VALUES ($1, 1, now())
     ON CONFLICT (attempt_key) DO UPDATE SET
@@ -524,7 +587,13 @@ async function recordAttempt(db, key) {
       window_started_at = CASE WHEN auth_attempts.window_started_at < now() - interval '15 minutes' THEN now() ELSE auth_attempts.window_started_at END
     RETURNING attempts
   `, [key]);
-  if (Number(result.rows[0].attempts) > 10) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
+  if (Number(result.rows[0].attempts) > limit) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
+}
+
+export async function pruneExpiredAuthState(db) {
+  const attempts = await db.query("DELETE FROM auth_attempts WHERE window_started_at < now() - interval '24 hours'");
+  const sessions = await db.query("DELETE FROM web_sessions WHERE expires_at <= now()");
+  return { attempts: attempts.rowCount, sessions: sessions.rowCount };
 }
 
 function requireRole(user, roles) {
@@ -800,7 +869,7 @@ async function updateState(db, user, body) {
     const db = transaction;
     const revision = await db.query("SELECT revision FROM app_meta WHERE id=1 FOR UPDATE");
     if (Number(revision.rows[0].revision) !== body.revision) throw new HttpError(409, "Data changed in another session. Reload before saving.");
-    const before = await readFullState(db);
+    const before = await readFullState(db, user);
     const visibleBefore = stateForRole(before, user);
     const after = body.data;
     if (user.role === "resident") {
@@ -1030,7 +1099,7 @@ function validateAnnouncement(body) {
 }
 
 async function handleApi(request, response, db, options) {
-  const { server, appOrigin, secureCookies, googleMapsApiKey } = options;
+  const { server, appOrigin, secureCookies, trustedProxyAddresses } = options;
   if (!validateSameOrigin(request, server, appOrigin)) {
     sendJson(response, 403, { error: "This request did not come from the CommUnity website." });
     return;
@@ -1074,7 +1143,7 @@ async function handleApi(request, response, db, options) {
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     const [state, revision] = await Promise.all([
-      readFullState(db),
+      readFullState(db, user),
       db.query("SELECT revision FROM app_meta WHERE id=1"),
     ]);
     sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
@@ -1092,10 +1161,10 @@ async function handleApi(request, response, db, options) {
       await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const [state, revision, updatedUser] = await Promise.all([
-      readFullState(db),
+    const updatedUser = await getSessionUser(request, db);
+    const [state, revision] = await Promise.all([
+      readFullState(db, updatedUser),
       db.query("SELECT revision FROM app_meta WHERE id=1"),
-      getSessionUser(request, db),
     ]);
     sendJson(response, 200, {
       data: stateForRole(state, updatedUser),
@@ -1111,9 +1180,12 @@ async function handleApi(request, response, db, options) {
   if (url.pathname === "/api/auth/login" && request.method === "POST") {
     const body = await readJson(request);
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    const password = typeof body.password === "string" ? body.password : "";
-    const attemptKey = hash(`${request.socket.remoteAddress || ""}:${email}`);
-    await recordAttempt(db, attemptKey);
+    const password = typeof body.password === "string" && body.password.length <= MAX_PASSWORD_LENGTH ? body.password : "";
+    const clientAddress = requestClientAddress(request, trustedProxyAddresses);
+    const ipAttemptKey = hash(`login-ip:${clientAddress}`);
+    const accountAttemptKey = hash(`login-account:${email}`);
+    await recordAttempt(db, ipAttemptKey, 100);
+    await recordAttempt(db, accountAttemptKey);
     const result = await db.query(`
       SELECT u.id,u.email,u.name,u.area,u.phone,u.role,u.status,to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",c.password_hash
       FROM users u JOIN user_credentials c ON c.user_id=u.id WHERE u.email=$1
@@ -1124,7 +1196,7 @@ async function handleApi(request, response, db, options) {
     if (!account || !passwordMatches || account.status !== "Active") {
       throw new HttpError(401, "Those sign-in details do not match an active account.");
     }
-    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
+    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [accountAttemptKey]);
     await issueSession(response, db, account, Boolean(body.remember), secureCookies);
     await insertActivity(db, account, "Signed in", account.role);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
@@ -1134,7 +1206,7 @@ async function handleApi(request, response, db, options) {
   if (url.pathname === "/api/auth/register" && request.method === "POST") {
     const body = await readJson(request);
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    await recordAttempt(db, hash(`register:${request.socket.remoteAddress || ""}`));
+    await recordAttempt(db, hash(`register:${requestClientAddress(request, trustedProxyAddresses)}`));
     validateAccount({ email, name: body.name, area: body.area, phone: body.phone || "" });
     validatePassword(body.password);
     if (body.password !== body.confirmPassword) throw new HttpError(400, "The passwords do not match.");
@@ -1183,7 +1255,7 @@ async function handleApi(request, response, db, options) {
   if (url.pathname === "/api/state" && request.method === "GET") {
     requireRole(user, ROLES);
     const [state, revision] = await Promise.all([
-      readFullState(db),
+      readFullState(db, user),
       db.query("SELECT revision FROM app_meta WHERE id=1"),
     ]);
     sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
@@ -1193,7 +1265,8 @@ async function handleApi(request, response, db, options) {
     requireRole(user, ROLES);
     const body = await readJson(request);
     const revision = await updateState(db, user, body);
-    const [state, currentUser] = await Promise.all([readFullState(db), getSessionUser(request, db)]);
+    const currentUser = await getSessionUser(request, db);
+    const state = await readFullState(db, currentUser);
     sendJson(response, 200, { revision, data: stateForRole(state, currentUser), user: publicUser(currentUser) });
     return;
   }
@@ -1215,10 +1288,10 @@ async function handleApi(request, response, db, options) {
       await insertActivity(transaction, user, "Reset user password", target.rows[0].name);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const [state, revision, currentUser] = await Promise.all([
-      readFullState(db),
+    const currentUser = await getSessionUser(request, db);
+    const [state, revision] = await Promise.all([
+      readFullState(db, currentUser),
       db.query("SELECT revision FROM app_meta WHERE id=1"),
-      getSessionUser(request, db),
     ]);
     sendJson(response, 200, {
       data: stateForRole(state, currentUser),
@@ -1230,7 +1303,7 @@ async function handleApi(request, response, db, options) {
   if (url.pathname === "/api/users" && request.method === "POST") {
     requireRole(user, ["administrator"]);
     await createUser(db, user, await readJson(request));
-    const [state, revision] = await Promise.all([readFullState(db), db.query("SELECT revision FROM app_meta WHERE id=1")]);
+    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
     sendJson(response, 201, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
     return;
   }
@@ -1255,6 +1328,9 @@ export async function createCommunityServer({
   port = 8768,
   host = databaseUrl ? "0.0.0.0" : "127.0.0.1",
   appOrigin = process.env.APP_ORIGIN || "",
+  trustedProxyIps = process.env.TRUSTED_PROXY_IPS || "",
+  poolMax = Number(process.env.PG_POOL_MAX || 10),
+  connectionTimeoutMillis = Number(process.env.PG_CONNECTION_TIMEOUT_MS || 5000),
   initialAdminEmail = process.env.INITIAL_ADMIN_EMAIL || "",
   initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD || "",
   production = process.env.NODE_ENV === "production",
@@ -1270,20 +1346,38 @@ export async function createCommunityServer({
   if ((production || databaseUrl) && appOrigin && new URL(appOrigin).protocol !== "https:") {
     throw new Error("Shared deployment APP_ORIGIN must use HTTPS.");
   }
-  const db = await createDatabase({ dataDir, databaseUrl });
+  if (!Number.isInteger(poolMax) || poolMax < 1 || poolMax > 100) throw new Error("PG_POOL_MAX must be an integer between 1 and 100.");
+  if (!Number.isInteger(connectionTimeoutMillis) || connectionTimeoutMillis < 100 || connectionTimeoutMillis > 60000) {
+    throw new Error("PG_CONNECTION_TIMEOUT_MS must be an integer between 100 and 60000.");
+  }
+  const trustedProxyAddresses = parseTrustedProxyAddresses(trustedProxyIps);
+  const db = await createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeoutMillis });
   await migrate(db);
   await ensureAdministrator(db, initialAdminEmail, initialAdminPassword);
+  await pruneExpiredAuthState(db);
   await runScheduleReminders(db);
   const reminderTimer = setInterval(() => {
-    runScheduleReminders(db).catch((error) => console.error("CommUnity could not create collection reminders.", error));
+    runScheduleReminders(db).catch((error) => logError("CommUnity could not create collection reminders.", error));
+    pruneExpiredAuthState(db).catch((error) => logError("CommUnity could not prune expired authentication data.", error));
   }, 15 * 60 * 1000);
   reminderTimer.unref();
   const server = createServer(async (request, response) => {
     const secure = production || Boolean(databaseUrl);
     addSecurityHeaders(response, secure);
+    const requestId = randomUUID();
+    response.setHeader("X-Request-Id", requestId);
     try {
+      if (request.url?.split("?")[0] === "/healthz") {
+        if (request.method !== "GET") {
+          response.writeHead(405, { Allow: "GET" }).end();
+          return;
+        }
+        await db.query("SELECT 1");
+        sendJson(response, 200, { status: "ok" });
+        return;
+      }
       if (request.url?.startsWith("/api/")) {
-        await handleApi(request, response, db, { server, appOrigin, secureCookies: secure });
+        await handleApi(request, response, db, { server, appOrigin, secureCookies: secure, trustedProxyAddresses });
         return;
       }
       if (request.method !== "GET" && request.method !== "HEAD") {
@@ -1320,7 +1414,11 @@ export async function createCommunityServer({
         sendJson(response, 409, { error: "A record with that identifier or email already exists." });
         return;
       }
-      console.error("CommUnity server request failed.", error);
+      logError("CommUnity server request failed.", error, {
+        requestId,
+        method: request.method,
+        path: request.url?.split("?")[0] || "/",
+      });
       sendJson(response, 500, { error: "The server could not complete this request." });
     }
   });

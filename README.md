@@ -49,8 +49,12 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 | `APP_ORIGIN` | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash) |
 | `INITIAL_ADMIN_EMAIL` | Email for the first administrator |
 | `INITIAL_ADMIN_PASSWORD` | Unique password of at least 12 characters |
+| `PG_POOL_MAX` | Optional PostgreSQL pool size per instance (default `10`, maximum `100`) |
+| `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`) |
+| `TRUSTED_PROXY_IPS` | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For` |
 
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
+The `/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
 
 Schema setup is applied at startup. The database uses separate tables for accounts and password hashes, reports and status history, report photos, schedules and reminder deduplication, notifications, role permissions, activity, announcements, community locations, and recycling listings, with foreign keys, checks, and indexes. Sessions are stored as hashes in PostgreSQL. Configure the provider's automated backups and test restore procedures before using real information.
 
@@ -61,8 +65,11 @@ Schema setup is applied at startup. The database uses separate tables for accoun
 - Passwords are hashed on the server with scrypt; browser storage does not contain passwords or session identifiers.
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` for shared HTTPS deployments. API writes require the exact configured website origin.
 - The server checks roles and ownership, validates request data, rate-limits sign-in and registration attempts, and only returns data needed by the signed-in role.
+- Sign-in limits are shared through the database across server instances, and expired sign-in limits and sessions are periodically pruned.
+- Login limits include both a per-account failure bucket and a per-client request bucket. Forwarded client addresses are used only when the immediate proxy is explicitly trusted.
+- PostgreSQL is accessed only by the server; row-level security is not currently enabled. Add database policies before allowing browser or other untrusted clients to connect directly.
 - Collection reminders and report notices are in-app only. Email/SMS delivery, verified identities, live route tracking, and emergency dispatch are not configured.
-- The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Configure provider health alerts and operational logging separately.
+- The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Use `/healthz` for provider readiness checks and forward the server's structured error logs to an operational logging service.
 - Security headers include a restrictive Content Security Policy. The local server refuses non-loopback binds unless it is configured with a managed database and HTTPS origin.
 - The report map uses OpenStreetMap's public tile service without an API key; follow its attribution and usage policy.
 - Resident sign-up is not email-verified, and password recovery is not configured. Do not treat an email address as a verified identity. Set up an email verification/recovery provider before relying on those workflows.

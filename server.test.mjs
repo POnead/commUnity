@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createCommunityServer, runScheduleReminders, withTransaction } from "./server.mjs";
+import {
+  createCommunityServer,
+  pruneExpiredAuthState,
+  requestClientAddress,
+  runScheduleReminders,
+  withTransaction,
+} from "./server.mjs";
 
 const ADMIN_EMAIL = "admin@example.test";
 const ADMIN_PASSWORD = "LocalTestPassword-2026!";
@@ -59,6 +66,30 @@ test("pins PostgreSQL transaction queries to one checked-out connection", async 
   assert.equal(released, 1);
 });
 
+test("uses forwarded addresses only behind explicitly trusted proxies", () => {
+  const directRequest = {
+    socket: { remoteAddress: "::ffff:192.0.2.12" },
+    headers: { "x-forwarded-for": "198.51.100.4" },
+  };
+  assert.equal(requestClientAddress(directRequest), "192.0.2.12");
+
+  const proxiedRequest = {
+    socket: { remoteAddress: "::ffff:10.0.0.2" },
+    headers: { "x-forwarded-for": "198.51.100.4, 10.0.0.1" },
+  };
+  assert.equal(
+    requestClientAddress(proxiedRequest, new Set(["10.0.0.1", "10.0.0.2"])),
+    "198.51.100.4",
+  );
+  assert.equal(
+    requestClientAddress(
+      { ...proxiedRequest, headers: { "x-forwarded-for": "malformed" } },
+      new Set(["10.0.0.2"]),
+    ),
+    "10.0.0.2",
+  );
+});
+
 test("serves hardened static files and protects database routes behind sessions", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-auth-"));
   const app = await startServer(dataDir);
@@ -72,6 +103,10 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.match(home.headers.get("referrer-policy"), /strict-origin-when-cross-origin/);
     assert.equal(home.headers.get("x-content-type-options"), "nosniff");
     assert.equal(home.headers.get("x-frame-options"), "DENY");
+    const health = await fetch(`${app.origin}/healthz`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).status, "ok");
+    assert.ok(health.headers.get("x-request-id"));
     const homeHtml = await home.text();
     assert.match(homeHtml, /CommUnity/);
     assert.match(homeHtml, /node_modules\/leaflet\/dist\/leaflet\.css/);
@@ -126,6 +161,56 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.equal(forbiddenWrite.status, 401);
     const reset = await api(app, "/api/state", { method: "DELETE", cookie: signedIn.cookie });
     assert.equal(reset.status, 404);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("limits repeated login attempts and prunes expired authentication data", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-auth-limits-"));
+  const app = await startServer(dataDir);
+  try {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const response = await api(app, "/api/auth/login", {
+        method: "POST",
+        body: { email: "unknown@example.test", password: "wrong-password" },
+      });
+      assert.equal(response.status, 401);
+    }
+    const limited = await api(app, "/api/auth/login", {
+      method: "POST",
+      body: { email: "unknown@example.test", password: "wrong-password" },
+    });
+    assert.equal(limited.status, 429);
+
+    const ipKey = createHash("sha256").update("login-ip:127.0.0.1").digest("hex");
+    await app.db.query(`
+      INSERT INTO auth_attempts (attempt_key,attempts,window_started_at)
+      VALUES ($1,100,now())
+      ON CONFLICT (attempt_key) DO UPDATE SET attempts=100,window_started_at=now()
+    `, [ipKey]);
+    const ipLimited = await api(app, "/api/auth/login", {
+      method: "POST",
+      body: { email: "different-account@example.test", password: "wrong-password" },
+    });
+    assert.equal(ipLimited.status, 429);
+
+    const administrator = await app.db.query("SELECT id FROM users WHERE email=$1", [ADMIN_EMAIL]);
+    await app.db.query(
+      "INSERT INTO auth_attempts (attempt_key,attempts,window_started_at) VALUES ('expired-test',1,now()-interval '2 days')",
+    );
+    await app.db.query(
+      "INSERT INTO web_sessions (token_hash,user_id,expires_at) VALUES ('expired-test',$1,now()-interval '1 minute')",
+      [administrator.rows[0].id],
+    );
+    assert.deepEqual(await pruneExpiredAuthState(app.db), { attempts: 1, sessions: 1 });
+    const expiredRows = await app.db.query(`
+      SELECT
+        (SELECT count(*) FROM auth_attempts WHERE attempt_key='expired-test')::integer AS attempts,
+        (SELECT count(*) FROM web_sessions WHERE token_hash='expired-test')::integer AS sessions
+    `);
+    assert.deepEqual(expiredRows.rows[0], { attempts: 0, sessions: 0 });
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -671,5 +756,13 @@ test("keeps database sessions valid across server restarts and rejects public bi
   await assert.rejects(
     createCommunityServer({ dataDir: ":memory:", host: "0.0.0.0", databaseUrl: "" }),
     /must bind to loopback/,
+  );
+  await assert.rejects(
+    createCommunityServer({ dataDir: ":memory:", trustedProxyIps: "not-an-ip" }),
+    /TRUSTED_PROXY_IPS/,
+  );
+  await assert.rejects(
+    createCommunityServer({ dataDir: ":memory:", poolMax: 0 }),
+    /PG_POOL_MAX/,
   );
 });

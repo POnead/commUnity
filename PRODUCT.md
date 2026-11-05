@@ -9,7 +9,7 @@ web
 HTML, CSS, and JavaScript client with a Node.js HTTP server, server-side authentication, and relational PGlite or managed PostgreSQL storage.
 
 ## Users
-- Residents of Balete, Batangas who need to check barangay collection services, report community concerns, and follow up on their reports.
+- Residents of Palsara who need to check barangay collection services, report community concerns, and follow up on their reports.
 - Barangay officials who need to review and update resident concerns and collection schedules.
 - Administrators who need to manage user accounts, roles, and system activity.
 

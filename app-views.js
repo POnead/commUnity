@@ -42,6 +42,10 @@ function canOpenPage(role, pageName) {
   return !permission || Boolean(data.permissions?.[role]?.[permission]);
 }
 
+function userAvatar(user, extra = "") {
+  return `<span class="avatar ${extra}" aria-hidden="true">${esc(initials(user?.name || ""))}</span>`;
+}
+
 function checkDataConsistency() {
   const counts = STATUSES.map((status) => data.reports.filter((report) => report.status === status).length);
   console.assert(counts.reduce((sum, count) => sum + count, 0) === data.reports.length, "Every community report must have one valid status.");
@@ -107,7 +111,7 @@ function shell(role, page, title, description, body, actions = "") {
   const roleLabel = ROLES[role];
   const unread = unreadCount();
   const date = new Intl.DateTimeFormat("en-PH", { weekday: "short", month: "short", day: "numeric" }).format(new Date());
-  const account = `<div class="user-chip"><div class="avatar" aria-hidden="true">${esc(initials(currentUser.name))}</div><div class="user-chip-copy"><strong>${esc(currentUser.name)}</strong><span>${esc(roleLabel)}</span></div></div>`;
+  const account = `<div class="user-chip">${userAvatar(currentUser)}<div class="user-chip-copy"><strong>${esc(currentUser.name)}</strong><span>${esc(roleLabel)}</span></div></div>`;
   return `
     <div class="workspace">
       <header class="topbar">
@@ -125,9 +129,9 @@ function shell(role, page, title, description, body, actions = "") {
         <aside class="sidebar" aria-label="Main navigation">
           <a class="brand-lockup" href="${routeUrl(role, "dashboard")}">
             ${brandMark()}
-            <span><span class="brand-name">CommUnity</span><span class="brand-caption">Balete community desk</span></span>
+            <span><span class="brand-name">CommUnity</span><span class="brand-caption">Palsara community desk</span></span>
           </a>
-          <div class="sidebar-place">${icon("pin")}<span>${role === "resident" ? esc(currentUser.area || "Balete, Batangas") : "Balete, Batangas"}</span></div>
+          <div class="sidebar-place">${icon("pin")}<span>${role === "resident" ? esc(currentUser.area || "Palsara") : "Palsara"}</span></div>
           ${navMarkup(role, page)}
           <div class="sidebar-bottom">
             ${account}
@@ -144,10 +148,10 @@ function shell(role, page, title, description, body, actions = "") {
       <div class="mobile-drawer-backdrop" id="mobile-navigation" hidden>
         <aside class="mobile-drawer" role="dialog" aria-modal="true" aria-label="Navigation">
           <div class="mobile-drawer-header">
-            <a class="brand-lockup" href="${routeUrl(role, "dashboard")}">${brandMark()}<span><span class="brand-name">CommUnity</span><span class="brand-caption">Balete community desk</span></span></a>
+            <a class="brand-lockup" href="${routeUrl(role, "dashboard")}">${brandMark()}<span><span class="brand-name">CommUnity</span><span class="brand-caption">Palsara community desk</span></span></a>
             <button class="icon-button" type="button" data-action="close-menu" aria-label="Close navigation">${icon("close")}</button>
           </div>
-          <div class="sidebar-place">${icon("pin")}<span>${role === "resident" ? esc(currentUser.area || "Balete, Batangas") : "Balete, Batangas"}</span></div>
+          <div class="sidebar-place">${icon("pin")}<span>${role === "resident" ? esc(currentUser.area || "Palsara") : "Palsara"}</span></div>
           ${navMarkup(role, page)}
           <div class="sidebar-bottom">${account}<button class="button secondary" type="button" data-action="logout">${icon("logout")} Sign out</button></div>
         </aside>
@@ -245,7 +249,7 @@ function reportDetail(report, role) {
       <div class="form-actions"><button class="button" type="submit">Save report update</button></div>
     </form>` : "";
   const photos = (report.photos || []).length
-    ? `<div class="photo-preview">${report.photos.map((photo) => `<a class="photo-thumb" href="${photo.data}" target="_blank" rel="noreferrer" aria-label="Open report photo ${esc(photo.name)}"><img src="${photo.data}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
+    ? `<div class="photo-preview">${report.photos.map((photo, index) => `<a class="photo-thumb" href="/api/reports/${encodeURIComponent(report.id)}/photos/${index}" target="_blank" rel="noopener" aria-label="Open report photo ${esc(photo.name)}"><img src="${photo.data}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
     : `<p class="muted small">No photo was attached to this report.</p>`;
   const hasMapPin = Number.isFinite(report.latitude) && Number.isFinite(report.longitude);
   const reportLocation = role !== "administrator"
@@ -271,7 +275,7 @@ function reportDetail(report, role) {
           ${role === "official" ? panel("Record an update", statusForm) : ""}
         </div>
         <div class="content-stack">
-          ${role !== "resident" ? `<section class="panel"><header class="panel-head"><div><h2>Reported by</h2></div></header><div class="panel-body"><div class="account-summary"><div class="avatar" aria-hidden="true">${esc(initials(report.name))}</div><div><strong>${esc(report.name)}</strong><span>${esc((getUser(report.userEmail)?.area || report.area) + " · Resident")}</span><span>${esc(report.userEmail)}</span></div></div></div></section>` : ""}
+          ${role !== "resident" ? `<section class="panel"><header class="panel-head"><div><h2>Reported by</h2></div></header><div class="panel-body"><div class="account-summary">${userAvatar({ name: report.name })}<div><strong>${esc(report.name)}</strong><span>${esc((getUser(report.userEmail)?.area || report.area) + " · Resident")}</span><span>${esc(report.userEmail)}</span></div></div></div></section>` : ""}
           ${role === "official" ? panel("Assignment", `<div class="inline-between"><span>${report.assignedTo ? `Assigned to ${esc(report.assignedTo.name)}` : "Unassigned"}</span>${reportAssignmentAction(report)}</div>`) : ""}
           <section class="panel"><header class="panel-head"><div><h2>Status history</h2></div></header><div class="panel-body">${timelineMarkup(report.history)}</div></section>
         </div>
@@ -523,7 +527,7 @@ function reportFormMarkup() {
                 </div>
               </div>
               <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
-              <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><span class="upload-box">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></span><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.data}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></div>
+              <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.data}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></div>
               <label class="checkbox-field span-all"><input name="urgent" type="checkbox" ${draft.urgent ? "checked" : ""}><span><strong>This concern needs urgent attention</strong><small class="field-help">This flag does not contact emergency services. If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service.</small></span></label>
             </div>
             <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
@@ -608,7 +612,7 @@ function profilePage(role) {
     <div class="profile-layout">
       <div class="content-stack">
         <section class="panel">
-          <div class="profile-intro"><div class="avatar large" aria-hidden="true">${esc(initials(currentUser.name))}</div><div><strong>${esc(currentUser.name)}</strong><span>${esc(ROLES[role])} · ${esc(currentUser.area || "Balete, Batangas")}</span></div></div>
+          <div class="profile-intro">${userAvatar(currentUser, "large")}<div><strong>${esc(currentUser.name)}</strong><span>${esc(ROLES[role])} · ${esc(currentUser.area || "Palsara")}</span></div></div>
           <div class="panel-body">
             <form id="profile-form" class="form-stack">
               <div class="section-heading"><div><h2>Personal information</h2></div></div>
@@ -616,7 +620,7 @@ function profilePage(role) {
                 ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
                 ${inputField("Email address", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
                 ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
-                ${role === "resident" ? selectField("Purok or area", "area", locationAreas(), currentUser.area, { required: true, labels: locationAreaLabels() }) : inputField("Barangay", "area", currentUser.area || "Balete, Batangas", { readonly: true })}
+                ${role === "resident" ? selectField("Purok or area", "area", locationAreas(), currentUser.area, { required: true, labels: locationAreaLabels() }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
               </div>
               <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
             </form>
@@ -627,15 +631,15 @@ function profilePage(role) {
             <div class="section-heading"><div><h2>Account password</h2></div></div>
             ${inputField("Current password", "currentPassword", "", { type: "password", required: true, autocomplete: "current-password" })}
             <div class="form-grid">
-              ${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}
-              ${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}
+              ${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
+              ${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
             </div>
             <div class="form-actions"><button class="button secondary" type="submit">Update password</button></div>
           </form>
         </div></section>
       </div>
       <div class="content-stack">
-        ${panel("Your workspace", `<div class="account-summary"><div class="avatar" aria-hidden="true">${esc(initials(currentUser.name))}</div><div><strong>${esc(ROLES[role])}</strong><span>${esc(currentUser.email)}</span></div></div><div class="notice-bar mt-16"><span>Account status</span>${statusPill(currentUser.status || "Active")}</div>`)}
+        ${panel("Your workspace", `<div class="account-summary">${userAvatar(currentUser)}<div><strong>${esc(ROLES[role])}</strong><span>${esc(currentUser.email)}</span></div></div><div class="notice-bar mt-16"><span>Account status</span>${statusPill(currentUser.status || "Active")}</div>`)}
       </div>
     </div>`;
   return page(role, "profile", body);
@@ -644,7 +648,7 @@ function profilePage(role) {
 function userRowsMarkup(users) {
   if (!users.length) return `<div class="empty-state"><strong>No accounts match</strong>Try another name, email, role, or status.</div>`;
   return `<div class="records" data-page-size="10" role="table" aria-label="User accounts"><div class="record-row record-head user-record-head" role="row"><span role="columnheader">Account</span><span role="columnheader">Role</span><span role="columnheader">Area</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>${users.map((user) => `<div class="record-row user-record filter-item" role="row" data-search="${esc(`${user.name} ${user.email} ${ROLES[user.role]} ${user.area} ${user.status}`.toLowerCase())}">
-    <div class="identity" role="cell"><span class="avatar" aria-hidden="true">${esc(initials(user.name))}</span><span><strong class="record-primary">${esc(user.name)}</strong><span class="record-secondary">${esc(user.email)}</span></span></div>
+    <div class="identity" role="cell">${userAvatar(user)}<span><strong class="record-primary">${esc(user.name)}</strong><span class="record-secondary">${esc(user.email)}</span></span></div>
     <div class="record-meta" role="cell" data-label="Role">${esc(ROLES[user.role] || user.role)}</div>
     <div class="record-meta" role="cell" data-label="Area">${esc(user.area || "—")}</div>
     <div role="cell" data-label="Status">${statusPill(user.status || "Active")}</div>
@@ -730,11 +734,13 @@ function loginMarkup() {
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
-        <a class="brand-lockup" href="#/login">${brandMark()}<span><span class="brand-name">CommUnity</span><span class="brand-caption">Balete, Batangas</span></span></a>
+        <div class="auth-brand">
+          ${brandMark()}
+          <div class="auth-brand-copy"><strong>CommUnity</strong><span>Palsara community desk</span></div>
+        </div>
       </section>
       <section class="login-pane" aria-labelledby="login-title">
         <div class="login-box">
-          ${brandMark()}
           <h1 id="login-title">Welcome to CommUnity</h1>
           <form class="login-form" id="login-form">
             ${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "username" })}
@@ -752,12 +758,15 @@ function registerMarkup() {
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
-        <a class="brand-lockup" href="#/login">${brandMark()}<span><span class="brand-name">CommUnity</span><span class="brand-caption">Balete, Batangas</span></span></a>
+        <div class="auth-brand">
+          ${brandMark()}
+          <div class="auth-brand-copy"><strong>CommUnity</strong><span>Palsara community desk</span></div>
+        </div>
       </section>
       <section class="login-pane" aria-labelledby="register-title"><div class="register-box">
-        ${brandMark()}<h1 id="register-title">Create a resident account</h1>
+        <h1 id="register-title">Create a resident account</h1>
         <form class="form-stack" id="register-form">
-          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${selectField("Purok or area", "area", locationAreas(), locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}</div>
+          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${selectField("Purok or area", "area", locationAreas(), locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Create account</button></div>
         </form>
       </div></section>

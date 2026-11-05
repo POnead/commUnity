@@ -10,7 +10,7 @@ Install Node.js, then install dependencies:
 npm install
 ```
 
-Set the first administrator credentials in the same PowerShell window, then start the server. Choose a unique password of at least 12 characters:
+Set the first administrator credentials in the same PowerShell window, then start the server. Choose a unique password of at least 8 characters:
 
 ```powershell
 $env:INITIAL_ADMIN_EMAIL = "admin@gmail.com"
@@ -48,7 +48,7 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 | `DATABASE_URL` | PostgreSQL connection string with TLS enabled |
 | `APP_ORIGIN` | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash) |
 | `INITIAL_ADMIN_EMAIL` | Email for the first administrator |
-| `INITIAL_ADMIN_PASSWORD` | Unique password of at least 12 characters |
+| `INITIAL_ADMIN_PASSWORD` | Unique password of at least 8 characters |
 | `PG_POOL_MAX` | Optional PostgreSQL pool size per instance (default `10`, maximum `100`) |
 | `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`) |
 | `TRUSTED_PROXY_IPS` | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For` |
@@ -64,7 +64,7 @@ Schema setup is applied at startup. The database uses separate tables for accoun
 
 - Passwords are hashed on the server with scrypt; browser storage does not contain passwords or session identifiers.
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` for shared HTTPS deployments. API writes require the exact configured website origin.
-- The server checks roles and ownership, validates request data, rate-limits sign-in and registration attempts, and only returns data needed by the signed-in role.
+- The server checks roles and ownership, validates request data, rate-limits sign-in, registration, and password-change attempts, and only returns data needed by the signed-in role.
 - Sign-in limits are shared through the database across server instances, and expired sign-in limits and sessions are periodically pruned.
 - Login limits include both a per-account failure bucket and a per-client request bucket. Forwarded client addresses are used only when the immediate proxy is explicitly trusted.
 - PostgreSQL is accessed only by the server; row-level security is not currently enabled. Add database policies before allowing browser or other untrusted clients to connect directly.

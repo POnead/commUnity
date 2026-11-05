@@ -6,3 +6,6 @@ data/
 .env
 .env.*
 !.env.example
+
+# Local run artifacts
+.run/

@@ -116,7 +116,7 @@ test("renders saved concern pins inline for residents and officials with a direc
     category: "Drainage problem",
     status: "Submitted",
     description: "The drain is blocked beside the community hall.",
-    barangay: "Balete",
+    barangay: "Palsara",
     area: "Purok 2",
     locationDetail: "Beside the community hall",
     latitude: 14.01799,
@@ -217,6 +217,21 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.deepEqual(state.data.users.map((user) => user.email), [ADMIN_EMAIL]);
     assert.equal("passwordHash" in state.data.users[0], false);
     assert.equal("password_hash" in state.data.users[0], false);
+    const reportId = "RPT-photo-test";
+    const photoData = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/";
+    await app.db.query(`
+      INSERT INTO reports (id,user_email,name,category,title,area,description,status,submitted_at,updated_at)
+      VALUES ($1,$2,'Test resident','Road damage','Test report','Purok 1','A report with a photo','Submitted',now(),now())
+    `, [reportId, ADMIN_EMAIL]);
+    await app.db.query(
+      "INSERT INTO report_photos (report_id,position,name,data_url) VALUES ($1,0,'test.jpg',$2)",
+      [reportId, photoData],
+    );
+    const photoResponse = await api(app, `/api/reports/${reportId}/photos/0`, { cookie: signedIn.cookie });
+    assert.equal(photoResponse.status, 200);
+    assert.equal(photoResponse.headers.get("content-type"), "image/jpeg");
+    assert.deepEqual(Buffer.from((await photoResponse.arrayBuffer()).slice(0, 4)), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+    assert.equal((await api(app, `/api/reports/${reportId}/photos/1`, { cookie: signedIn.cookie })).status, 404);
 
     const forbiddenWrite = await api(app, "/api/state", {
       method: "PUT",
@@ -282,6 +297,38 @@ test("limits repeated login attempts and prunes expired authentication data", as
   }
 });
 
+test("throttles repeated current-password guesses for a signed-in account", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-password-limits-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const attempt = () => api(app, "/api/auth/password", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { currentPassword: "not-the-password", newPassword: "A-rotated-password-2026!", confirmPassword: "A-rotated-password-2026!" },
+    });
+    for (let guess = 0; guess < 5; guess += 1) assert.equal((await attempt()).status, 400);
+    assert.equal((await attempt()).status, 429);
+
+    const adminId = (await app.db.query("SELECT id FROM users WHERE email=$1", [ADMIN_EMAIL])).rows[0].id;
+    await app.db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [createHash("sha256").update(`password-change:${adminId}`).digest("hex")]);
+    const changed = await api(app, "/api/auth/password", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { currentPassword: ADMIN_PASSWORD, newPassword: "A-rotated-password-2026!", confirmPassword: "A-rotated-password-2026!" },
+    });
+    assert.equal(changed.status, 200);
+    const attempts = await app.db.query("SELECT count(*)::integer AS count FROM auth_attempts WHERE attempt_key=$1", [
+      createHash("sha256").update(`password-change:${adminId}`).digest("hex"),
+    ]);
+    assert.equal(attempts.rows[0].count, 0);
+    assert.equal((await signIn(app, ADMIN_EMAIL, "A-rotated-password-2026!")).response.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("registers residents, scopes their data, and rejects privilege escalation", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-rbac-"));
   const app = await startServer(dataDir);
@@ -324,7 +371,7 @@ test("registers residents, scopes their data, and rejects privilege escalation",
       category: "Flooding",
       title: "Flooding · Purok 2",
       area: "Purok 2",
-      barangay: "Balete",
+      barangay: "Palsara",
       locationDetail: "Near the school entrance",
       latitude: 14.01799,
       longitude: 121.09465,
@@ -457,7 +504,7 @@ test("enforces official report and schedule permissions and sends resident notif
       body: {
         name: "Official One",
         email: "official@example.test",
-        area: "Balete, Batangas",
+        area: "Palsara",
         phone: "",
         role: "official",
         status: "Active",
@@ -487,7 +534,7 @@ test("enforces official report and schedule permissions and sends resident notif
       category: "Road damage",
       title: "Road damage · Purok 4",
       area: "Purok 4",
-      barangay: "Balete",
+      barangay: "Palsara",
       locationDetail: "Near the community hall",
       description: "There is a damaged patch of road near the community hall.",
       urgent: false,
@@ -687,15 +734,15 @@ test("manages locations and announcements and sends idempotent collection remind
     adminState.data.locations.push({
       id: "LOC-test-6",
       area: "Purok 6",
-      barangay: "Balete",
+      barangay: "Palsara",
       street: "Mabini Street",
       purok: "Purok 6",
       landmark: "Community Hall",
     });
     adminState.data.recyclingLocations.push({
       id: "REC-test-1",
-      name: "Balete Materials Recovery Center",
-      barangay: "Balete",
+      name: "Palsara Materials Recovery Center",
+      barangay: "Palsara",
       street: "Mabini Street",
       purok: "Purok 6",
       landmark: "Community Hall",
@@ -729,7 +776,7 @@ test("manages locations and announcements and sends idempotent collection remind
       body: {
         name: "Directory Official",
         email: "directory-official@example.test",
-        area: "Balete, Batangas",
+        area: "Palsara",
         role: "official",
         status: "Active",
         password: "A-unique-official-password!",

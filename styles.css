@@ -33,11 +33,11 @@
 html[data-theme="official"] {
   --page: #f4f9f7;
   --surface-soft: #e9f4f0;
-  --accent: #287568;
-  --accent-strong: #1f6056;
-  --accent-soft: #e2f1ec;
-  --accent-wash: #f0f7f4;
-  --accent-ink: #1c5d53;
+  --accent: #556b2f;
+  --accent-strong: #405322;
+  --accent-soft: #e9efdf;
+  --accent-wash: #f4f7ed;
+  --accent-ink: #405322;
   --line: #e2ebe7;
 }
 
@@ -57,12 +57,20 @@ html[data-theme="auth"] {
 html[data-theme="admin"] {
   --page: #f6f7f8;
   --surface-soft: #edf0f2;
-  --accent: #4b5964;
-  --accent-strong: #38434c;
-  --accent-soft: #e9edf0;
-  --accent-wash: #f1f3f5;
-  --accent-ink: #38434c;
+  --accent: #25a36f;
+  --accent-strong: #1b7d54;
+  --accent-soft: #e1f3eb;
+  --accent-wash: #f0faf5;
+  --accent-ink: #176b49;
   --line: #e4e7e9;
+}
+
+html[data-theme="resident"] {
+  --accent: #195905;
+  --accent-strong: #124103;
+  --accent-soft: #e5f0e2;
+  --accent-wash: #f1f7ef;
+  --accent-ink: #164b07;
 }
 
 * {
@@ -163,19 +171,16 @@ a:hover {
   width: 40px;
   height: 40px;
   place-items: center;
-  border-radius: 12px 12px 12px 4px;
-  background: var(--accent);
-  color: #fff;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent);
+  overflow: hidden;
 }
 
-.brand-mark svg {
-  width: 22px;
-  height: 22px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.65;
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .fatal-screen p {
@@ -1947,13 +1952,42 @@ a:hover {
   display: flex;
   min-height: 100vh;
   flex-direction: column;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: center;
   padding: clamp(28px, 5vw, 72px);
   background: var(--surface-soft);
 }
 
-.login-story .brand-lockup {
-  padding: 0;
+.auth-brand {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  gap: 18px;
+  text-align: center;
+}
+
+.auth-brand .brand-mark {
+  width: clamp(180px, 26vw, 300px);
+  height: clamp(180px, 26vw, 300px);
+  border-radius: 50%;
+}
+
+.auth-brand-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.auth-brand-copy strong {
+  color: var(--ink);
+  font-size: clamp(28px, 3vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+}
+
+.auth-brand-copy span {
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: 0.02em;
 }
 
 .login-story-content {
@@ -2019,13 +2053,9 @@ a:hover {
   width: min(100%, 408px);
 }
 
-.login-box .brand-mark {
-  margin-bottom: 22px;
-}
-
 .login-box h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 29px;
   font-weight: 620;
   letter-spacing: -0.035em;
 }

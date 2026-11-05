@@ -8,7 +8,7 @@ This application surface is an operational portal, not a marketing page. The vis
 
 The app-style draw is Accent ladder (seed 1293282914): one role hue carries small actions and data; pale tints carry active navigation and restrained grouping. Keep that move while preserving the reference's lighter, welcoming blue resident identity.
 
-Use a pinned noticeboard mark and a Balete locality caption to ground the identity in the service itself. Let verified place and service information carry the character rather than invented local symbols.
+Use the Palsara photo as the locality mark and caption to ground the identity in the service itself. Let verified place and service information carry the character rather than invented local symbols.
 
 ## Role palettes
 Role comes from the signed-in account; never present the resident theme before sign-in or let a user choose privileged roles during public registration.

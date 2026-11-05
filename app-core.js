@@ -43,8 +43,8 @@ function locationAreaLabels() {
 }
 const DEMO_USERS = [
   { email: "juan.delacruz@community.demo", role: "resident", name: "Juan Dela Cruz", area: "Purok 3" },
-  { email: "maria.santos@community.demo", role: "official", name: "Maria Santos", area: "Balete, Batangas" },
-  { email: "admin@gmail.com", role: "administrator", name: "Community administrator", area: "Balete, Batangas" },
+  { email: "maria.santos@community.demo", role: "official", name: "Maria Santos", area: "Palsara" },
+  { email: "admin@gmail.com", role: "administrator", name: "Community administrator", area: "Palsara" },
 ];
 const DEFAULT_PERMISSIONS = {
   resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageAnnouncements: false, manageUsers: false, manageRoles: false, viewAudit: false },
@@ -114,7 +114,7 @@ function icon(name, extra = "") {
   return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${extra}">${icons[name] || icons.home}</svg>`;
 }
 function brandMark() {
-  return '<span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="15" rx="1.5"></rect><circle cx="12" cy="3.5" r="1.5" fill="currentColor"></circle><path d="M12 5v1M8 11h8M8 14.5h8M8 18h5"></path></svg></span>';
+  return '<span class="brand-mark"><img src="/logo/palsara-transparent.png" alt="Palsara barangay logo"></span>';
 }
 
 function esc(value) {
@@ -182,9 +182,9 @@ function seedData() {
     { email: "carla.mendoza@community.demo", name: "Carla Mendoza", area: "Purok 2", phone: "0917 000 0045", role: "resident", status: "Active", joinedAt: "2026-10-06" },
     { email: "rosa.villanueva@community.demo", name: "Rosa Villanueva", area: "Purok 4", phone: "0917 000 0046", role: "resident", status: "Active", joinedAt: "2026-10-08" },
     { email: "jose.garcia@community.demo", name: "Jose Garcia", area: "Purok 1", phone: "0917 000 0047", role: "resident", status: "Active", joinedAt: "2026-10-11" },
-    { email: DEMO_USERS[1].email, name: DEMO_USERS[1].name, area: "Balete, Batangas", phone: "0917 000 0010", role: "official", status: "Active", joinedAt: "2026-09-12" },
-    { email: "liza.cruz@community.demo", name: "Liza Cruz", area: "Balete, Batangas", phone: "0917 000 0011", role: "official", status: "Active", joinedAt: "2026-09-19" },
-    { email: DEMO_USERS[2].email, name: DEMO_USERS[2].name, area: "Balete, Batangas", phone: "", role: "administrator", status: "Active", joinedAt: "2026-09-01" },
+    { email: DEMO_USERS[1].email, name: DEMO_USERS[1].name, area: "Palsara", phone: "0917 000 0010", role: "official", status: "Active", joinedAt: "2026-09-12" },
+    { email: "liza.cruz@community.demo", name: "Liza Cruz", area: "Palsara", phone: "0917 000 0011", role: "official", status: "Active", joinedAt: "2026-09-19" },
+    { email: DEMO_USERS[2].email, name: DEMO_USERS[2].name, area: "Palsara", phone: "", role: "administrator", status: "Active", joinedAt: "2026-09-01" },
   ];
 
   const reports = [
@@ -493,7 +493,7 @@ function sortedNotifications(items = data.notifications || []) {
 }
 
 function selectedAreaFor(user = currentUser) {
-  return user?.area || "Balete, Batangas";
+  return user?.area || "Palsara";
 }
 
 function routeUrl(role, page) {

@@ -104,7 +104,7 @@ function modalMarkup() {
       return "";
     }
     const body = `<form id="user-password-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
-      <div class="modal-form-fields"><p class="field-help">Set a new password for ${esc(user.name)}. Their sessions will close. Share it privately; they can change it in Profile.</p><div class="form-grid">${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 12, autocomplete: "new-password" })}</div></div>
+      <div class="modal-form-fields"><p class="field-help">Set a new password for ${esc(user.name)}. Their sessions will close. Share it privately; they can change it in Profile.</p><div class="form-grid">${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div></div>
       <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Set new password</button></div></form>`;
     return makeModal("Reset account password", body);
   }
@@ -119,14 +119,14 @@ function modalMarkup() {
   if (modalState.kind === "location") {
     const location = data.locations.find((item) => item.id === modalState.id);
     const body = `<form id="location-form" class="modal-form"><input type="hidden" name="id" value="${esc(location?.id || "")}">
-      <div class="modal-form-fields"><div class="form-grid">${inputField("Area label", "area", location?.area || "", { required: true, maxLength: 120, placeholder: "e.g. Purok 6" })}${inputField("Barangay", "barangay", location?.barangay || "Balete", { required: true, maxLength: 100 })}${inputField("Purok", "purok", location?.purok || "", { required: true, maxLength: 100 })}${inputField("Street", "street", location?.street || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Landmark", "landmark", location?.landmark || "", { maxLength: 160, placeholder: "Optional" })}</div></div>
+      <div class="modal-form-fields"><div class="form-grid">${inputField("Area label", "area", location?.area || "", { required: true, maxLength: 120, placeholder: "e.g. Purok 6" })}${inputField("Barangay", "barangay", location?.barangay || "Palsara", { required: true, maxLength: 100 })}${inputField("Purok", "purok", location?.purok || "", { required: true, maxLength: 100 })}${inputField("Street", "street", location?.street || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Landmark", "landmark", location?.landmark || "", { maxLength: 160, placeholder: "Optional" })}</div></div>
       <div class="form-actions">${location ? `<button class="button danger" type="button" data-action="delete-location" data-id="${esc(location.id)}">Remove location</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save location</button></div></form>`;
     return makeModal(location ? "Edit community location" : "Add community location", body);
   }
   if (modalState.kind === "recycling") {
     const item = data.recyclingLocations.find((record) => record.id === modalState.id);
     const body = `<form id="recycling-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
-      <div class="modal-form-fields"><div class="form-grid">${inputField("Business or site name", "name", item?.name || "", { required: true, maxLength: 120 })}${inputField("Barangay", "barangay", item?.barangay || "Balete", { required: true, maxLength: 100 })}${inputField("Street or address", "street", item?.street || "", { required: true, maxLength: 160 })}${inputField("Purok", "purok", item?.purok || "", { maxLength: 100, placeholder: "Optional" })}${inputField("Nearby landmark", "landmark", item?.landmark || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Contact number", "phone", item?.phone || "", { type: "tel", maxLength: 40, placeholder: "Optional" })}${inputField("Accepted materials", "materials", item?.materials || "", { required: true, maxLength: 500, placeholder: "e.g. PET bottles, cardboard, aluminum" })}${inputField("Opening hours", "hours", item?.hours || "", { maxLength: 120, placeholder: "Optional" })}<label class="checkbox-field span-all"><input name="active" type="checkbox" ${item?.active === false ? "" : "checked"}><span><strong>Show this listing to residents</strong></span></label></div></div>
+      <div class="modal-form-fields"><div class="form-grid">${inputField("Business or site name", "name", item?.name || "", { required: true, maxLength: 120 })}${inputField("Barangay", "barangay", item?.barangay || "Palsara", { required: true, maxLength: 100 })}${inputField("Street or address", "street", item?.street || "", { required: true, maxLength: 160 })}${inputField("Purok", "purok", item?.purok || "", { maxLength: 100, placeholder: "Optional" })}${inputField("Nearby landmark", "landmark", item?.landmark || "", { maxLength: 160, placeholder: "Optional" })}${inputField("Contact number", "phone", item?.phone || "", { type: "tel", maxLength: 40, placeholder: "Optional" })}${inputField("Accepted materials", "materials", item?.materials || "", { required: true, maxLength: 500, placeholder: "e.g. PET bottles, cardboard, aluminum" })}${inputField("Opening hours", "hours", item?.hours || "", { maxLength: 120, placeholder: "Optional" })}<label class="checkbox-field span-all"><input name="active" type="checkbox" ${item?.active === false ? "" : "checked"}><span><strong>Show this listing to residents</strong></span></label></div></div>
       <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-recycling" data-id="${esc(item.id)}">Remove listing</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save listing</button></div></form>`;
     return makeModal(item ? "Edit recycling location" : "Add recycling location", body);
   }
@@ -139,7 +139,7 @@ function modalMarkup() {
   }
   const user = modalState.id ? getUser(modalState.id) : null;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
-    <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Balete, Batangas"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 12, help: "Choose a unique password with at least 12 characters." })}</div></div>
+    <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Palsara"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
     <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">Reset password</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
   return makeModal(user ? "Edit account" : "Add account", body);
 }
@@ -245,7 +245,22 @@ function exportReports(history = false) {
 async function compressPhoto(file) {
   if (!["image/jpeg", "image/png"].includes(file.type)) throw new Error(`${file.name}: choose a JPG or PNG image.`);
   if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name}: each photo must be 5 MB or smaller.`);
-  const image = await createImageBitmap(file);
+  const image = typeof createImageBitmap === "function"
+    ? await createImageBitmap(file)
+    : await new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(file);
+      const fallbackImage = new Image();
+      fallbackImage.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(fallbackImage);
+      };
+      fallbackImage.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error(`${file.name}: this image could not be opened.`));
+      };
+      fallbackImage.src = objectUrl;
+    });
+  if (!image.width || !image.height) throw new Error(`${file.name}: this image has no usable dimensions.`);
   const scale = Math.min(1, 1200 / Math.max(image.width, image.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(image.width * scale));
@@ -255,7 +270,7 @@ async function compressPhoto(file) {
   context.fillStyle = "#fff";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  image.close();
+  if (typeof image.close === "function") image.close();
   return { name: file.name.slice(0, 120), data: canvas.toDataURL("image/jpeg", 0.72) };
 }
 
@@ -486,7 +501,7 @@ async function updatePassword(form) {
   const oldPassword = String(form.get("currentPassword") || "");
   const password = String(form.get("newPassword") || "");
   const confirm = String(form.get("confirmPassword") || "");
-  if (password.length < 12) throw new Error("Choose a password with at least 12 characters.");
+  if (password.length < 8) throw new Error("Choose a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The new passwords do not match.");
   const response = await fetch("/api/auth/password", {
     method: "POST",
@@ -513,7 +528,7 @@ async function createResident(form) {
   const confirm = String(form.get("confirmPassword") || "");
   const area = String(form.get("area") || "");
   if (name.length < 2) throw new Error("Enter your full name.");
-  if (password.length < 12) throw new Error("Use a password with at least 12 characters.");
+  if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The passwords do not match.");
   if (!locationAreas().includes(area)) throw new Error("Choose a purok or affected area.");
   const response = await fetch("/api/auth/register", {
@@ -563,7 +578,7 @@ async function resetUserPassword(form) {
   const email = String(form.get("email") || "");
   const password = String(form.get("newPassword") || "");
   const confirm = String(form.get("confirmPassword") || "");
-  if (password.length < 12) throw new Error("Use a password with at least 12 characters.");
+  if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The new passwords do not match.");
   const response = await fetch("/api/users/password", {
     method: "POST",
@@ -608,7 +623,7 @@ async function addOrEditUser(form) {
     addActivity("Updated user account", `${name} · ${ROLES[role]}`);
   } else {
     const password = String(form.get("password") || "");
-    if (password.length < 12) throw new Error("Use an initial password with at least 12 characters.");
+    if (password.length < 8) throw new Error("Use an initial password with at least 8 characters.");
     const response = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1077,6 +1092,7 @@ async function handlePhotoSelection(input) {
     const prepared = [];
     for (const file of files) prepared.push(await compressPhoto(file));
     uploadPhotos.push(...prepared);
+    input.value = "";
     render();
   } catch (error) {
     console.error("CommUnity could not prepare the selected report photo.", error);

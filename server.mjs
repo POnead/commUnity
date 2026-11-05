@@ -11,6 +11,8 @@ const scrypt = promisify(scryptCallback);
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_FILES = new Set([
   "index.html", "styles.css", "app-core.js", "app-views.js", "app.js",
+  "logo/palsara-transparent.png",
+  "favicon.png",
   "node_modules/leaflet/dist/leaflet.js", "node_modules/leaflet/dist/leaflet.css",
   "node_modules/leaflet/dist/images/layers.png", "node_modules/leaflet/dist/images/layers-2x.png",
   "node_modules/leaflet/dist/images/marker-icon.png", "node_modules/leaflet/dist/images/marker-icon-2x.png",
@@ -34,6 +36,9 @@ const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
 };
 
 class HttpError extends Error {
@@ -181,8 +186,8 @@ async function assertKnownArea(db, area, barangay = "") {
 }
 
 function validatePassword(password) {
-  if (typeof password !== "string" || password.length < 12 || password.length > MAX_PASSWORD_LENGTH) {
-    throw new HttpError(400, `Use a password between 12 and ${MAX_PASSWORD_LENGTH} characters.`);
+  if (typeof password !== "string" || password.length < 8 || password.length > MAX_PASSWORD_LENGTH) {
+    throw new HttpError(400, `Use a password between 8 and ${MAX_PASSWORD_LENGTH} characters.`);
   }
 }
 
@@ -391,13 +396,14 @@ async function migrate(db) {
     UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
       FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';
     INSERT INTO community_locations (id, area, barangay, purok) VALUES
-      ('balete-purok-1', 'Purok 1', 'Balete', 'Purok 1'),
-      ('balete-purok-2', 'Purok 2', 'Balete', 'Purok 2'),
-      ('balete-purok-3', 'Purok 3', 'Balete', 'Purok 3'),
-      ('balete-purok-4', 'Purok 4', 'Balete', 'Purok 4'),
-      ('balete-purok-5', 'Purok 5', 'Balete', 'Purok 5'),
-      ('balete-main-road', 'Main Road', 'Balete', 'Main Road')
-    ON CONFLICT (id) DO NOTHING;
+      ('balete-purok-1', 'Purok 1', 'Palsara', 'Purok 1'),
+      ('balete-purok-2', 'Purok 2', 'Palsara', 'Purok 2'),
+      ('balete-purok-3', 'Purok 3', 'Palsara', 'Purok 3'),
+      ('balete-purok-4', 'Purok 4', 'Palsara', 'Purok 4'),
+      ('balete-purok-5', 'Purok 5', 'Palsara', 'Purok 5'),
+      ('balete-main-road', 'Main Road', 'Palsara', 'Main Road')
+    ON CONFLICT (id) DO UPDATE SET barangay=excluded.barangay, area=excluded.area, purok=excluded.purok;
+    UPDATE community_locations SET barangay='Palsara' WHERE barangay='Balete';
     INSERT INTO schema_migrations (version) VALUES (1), (2) ON CONFLICT (version) DO NOTHING;
   `;
   if (typeof db.exec === "function") await db.exec(schema);
@@ -435,7 +441,7 @@ async function ensureAdministrator(db, email, password) {
   const configured = Boolean(email || password);
   if (configured && (!email || !password)) throw new Error("Set both INITIAL_ADMIN_EMAIL and INITIAL_ADMIN_PASSWORD.");
   if (configured) {
-    validateAccount({ email, name: "Portal administrator", area: "Balete, Batangas" });
+    validateAccount({ email, name: "Portal administrator", area: "Palsara" });
     validatePassword(password);
   }
   const count = await db.query("SELECT count(*)::integer AS count FROM users WHERE role = 'administrator' AND status = 'Active'");
@@ -446,7 +452,7 @@ async function ensureAdministrator(db, email, password) {
     const db = transaction;
     await db.query(
       "INSERT INTO users (id, email, name, area, role, status) VALUES ($1, $2, $3, $4, 'administrator', 'Active') ON CONFLICT (email) DO NOTHING",
-      [randomUUID(), email.trim().toLowerCase(), "Portal administrator", "Balete, Batangas"],
+      [randomUUID(), email.trim().toLowerCase(), "Portal administrator", "Palsara"],
     );
     const user = await db.query("SELECT id, role, status FROM users WHERE email = $1", [email.trim().toLowerCase()]);
     if (user.rows[0]?.role !== "administrator" || user.rows[0]?.status !== "Active") {
@@ -583,11 +589,11 @@ async function recordAttempt(db, key, limit = 10) {
   const result = await db.query(`
     INSERT INTO auth_attempts (attempt_key, attempts, window_started_at) VALUES ($1, 1, now())
     ON CONFLICT (attempt_key) DO UPDATE SET
-      attempts = CASE WHEN auth_attempts.window_started_at < now() - interval '15 minutes' THEN 1 ELSE auth_attempts.attempts + 1 END,
-      window_started_at = CASE WHEN auth_attempts.window_started_at < now() - interval '15 minutes' THEN now() ELSE auth_attempts.window_started_at END
+      attempts = CASE WHEN auth_attempts.window_started_at < now() - interval '5 minutes' THEN 1 ELSE auth_attempts.attempts + 1 END,
+      window_started_at = CASE WHEN auth_attempts.window_started_at < now() - interval '5 minutes' THEN now() ELSE auth_attempts.window_started_at END
     RETURNING attempts
   `, [key]);
-  if (Number(result.rows[0].attempts) > limit) throw new HttpError(429, "Too many attempts. Wait 15 minutes and try again.");
+  if (Number(result.rows[0].attempts) > limit) throw new HttpError(429, "Too many attempts. Wait 5 minutes and try again.");
 }
 
 export async function pruneExpiredAuthState(db) {
@@ -1106,6 +1112,30 @@ async function handleApi(request, response, db, options) {
   }
   const url = new URL(request.url, `http://${request.headers.host}`);
   const user = await getSessionUser(request, db);
+  const reportPhotoMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/photos\/(\d+)$/);
+  if (reportPhotoMatch && request.method === "GET") {
+    requireRole(user, ROLES);
+    const reportId = decodeURIComponent(reportPhotoMatch[1]);
+    const position = Number(reportPhotoMatch[2]);
+    const report = await db.query("SELECT user_email FROM reports WHERE id=$1", [reportId]);
+    if (!report.rows.length) throw new HttpError(404, "The report photo could not be found.");
+    if (user.role === "resident" && report.rows[0].user_email !== user.email) {
+      throw new HttpError(403, "You cannot access this report photo.");
+    }
+    const photo = await db.query("SELECT data_url FROM report_photos WHERE report_id=$1 AND position=$2", [reportId, position]);
+    const dataUrl = photo.rows[0]?.data_url || "";
+    const match = dataUrl.match(/^data:(image\/jpeg);base64,([A-Za-z0-9+/]+=*)$/);
+    if (!match) throw new HttpError(404, "The report photo could not be found.");
+    const image = Buffer.from(match[2], "base64");
+    response.writeHead(200, {
+      "Cache-Control": "private, no-store",
+      "Content-Type": match[1],
+      "Content-Length": image.length,
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(image);
+    return;
+  }
   if (url.pathname === "/api/locations" && request.method === "GET") {
     const locations = await db.query("SELECT id,area,barangay,street,purok,landmark FROM community_locations ORDER BY barangay,purok,street,id");
     sendJson(response, 200, { locations: locations.rows });
@@ -1240,12 +1270,15 @@ async function handleApi(request, response, db, options) {
     const body = await readJson(request);
     validatePassword(body.newPassword);
     if (body.newPassword !== body.confirmPassword) throw new HttpError(400, "The new passwords do not match.");
+    const attemptKey = hash(`password-change:${user.id}`);
+    await recordAttempt(db, attemptKey, 5);
     const current = await db.query("SELECT password_hash FROM user_credentials WHERE user_id=$1", [user.id]);
     if (!await verifyPassword(String(body.currentPassword || ""), current.rows[0]?.password_hash)) {
       throw new HttpError(400, "The current password does not match this account.");
     }
     const token = cookieValue(request, SESSION_COOKIE);
     await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(body.newPassword), user.id]);
+    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
     await db.query("DELETE FROM web_sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hash(token)]);
     await insertActivity(db, user, "Changed account password", user.email);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");

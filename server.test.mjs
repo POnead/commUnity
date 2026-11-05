@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -19,6 +19,7 @@ const ADMIN_PASSWORD = "LocalTestPassword-2026!";
 async function startServer(dataDir) {
   const instance = await createCommunityServer({
     dataDir,
+    uploadsDir: path.join(path.dirname(dataDir), "uploads"),
     port: 0,
     initialAdminEmail: ADMIN_EMAIL,
     initialAdminPassword: ADMIN_PASSWORD,
@@ -218,20 +219,22 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.equal("passwordHash" in state.data.users[0], false);
     assert.equal("password_hash" in state.data.users[0], false);
     const reportId = "RPT-photo-test";
-    const photoData = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/";
+    const photoData = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    await mkdir(path.join(path.dirname(dataDir), "uploads", reportId), { recursive: true });
+    await writeFile(path.join(path.dirname(dataDir), "uploads", reportId, "test.jpg"), photoData);
     await app.db.query(`
       INSERT INTO reports (id,user_email,name,category,title,area,description,status,submitted_at,updated_at)
       VALUES ($1,$2,'Test resident','Road damage','Test report','Purok 1','A report with a photo','Submitted',now(),now())
     `, [reportId, ADMIN_EMAIL]);
     await app.db.query(
-      "INSERT INTO report_photos (report_id,position,name,data_url) VALUES ($1,0,'test.jpg',$2)",
-      [reportId, photoData],
+      "INSERT INTO report_photos (report_id,position,name,photo_url) VALUES ($1,0,'test.jpg',$2)",
+      [reportId, `/api/reports/${reportId}/photos/0/test.jpg`],
     );
-    const photoResponse = await api(app, `/api/reports/${reportId}/photos/0`, { cookie: signedIn.cookie });
+    const photoResponse = await api(app, `/api/reports/${reportId}/photos/0/test.jpg`, { cookie: signedIn.cookie });
     assert.equal(photoResponse.status, 200);
     assert.equal(photoResponse.headers.get("content-type"), "image/jpeg");
     assert.deepEqual(Buffer.from((await photoResponse.arrayBuffer()).slice(0, 4)), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
-    assert.equal((await api(app, `/api/reports/${reportId}/photos/1`, { cookie: signedIn.cookie })).status, 404);
+    assert.equal((await api(app, `/api/reports/${reportId}/photos/1/test.jpg`, { cookie: signedIn.cookie })).status, 404);
 
     const forbiddenWrite = await api(app, "/api/state", {
       method: "PUT",

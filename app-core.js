@@ -74,6 +74,7 @@ let pendingReportRoute = "";
 let reportFilter = "all";
 let notificationFilter = "all";
 let uploadPhotos = [];
+let smtpSettings = { host: "", port: "", user: "", from: "", configured: false };
 let reportDraft = null;
 let modalState = null;
 let selectedPermissionRole = "resident";
@@ -93,6 +94,7 @@ const icons = {
   users: '<path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"></path><circle cx="9.5" cy="7" r="3.5"></circle><path d="M17 11a3.5 3.5 0 1 0-1.2-6.8M17 14.5h1a4 4 0 0 1 4 4V20"></path>',
   shield: '<path d="M12 3 19 6v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"></path><path d="m9 12 2 2 4-4"></path>',
   settings: '<circle cx="12" cy="12" r="3"></circle><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.9 1.1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.9-1.1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2.2l-1.4-1.1L6.9 9.3l1.7.7a8 8 0 0 1 1.9-1.1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.9 1.1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1-.1 2.2Z"></path>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m3 7 9 6 9-6"></path>',
   search: '<circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 4 4"></path>',
   chevron: '<path d="m8 10 4 4 4-4"></path>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"></path>',

@@ -18,7 +18,7 @@ function routeState() {
   const pages = {
     resident: ["dashboard", "collection", "recycling", "report", "reports", "history", "notifications", "profile"],
     official: ["dashboard", "concerns", "collection", "history", "announcements", "notifications", "profile"],
-    administrator: ["dashboard", "reports", "monitoring", "notifications", "users", "locations", "announcements", "roles", "audit", "profile"],
+    administrator: ["dashboard", "reports", "monitoring", "notifications", "users", "locations", "announcements", "roles", "audit", "settings", "profile"],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
   if (!canOpenPage(role, resolvedPage)) {
@@ -72,9 +72,11 @@ function render() {
       else if (route.page === "announcements") markup = announcementsPage("administrator");
       else if (route.page === "roles") markup = rolesPage();
       else if (route.page === "audit") markup = auditPage();
+      else if (route.page === "settings") markup = settingsPage();
       else markup = profilePage("administrator");
     }
     app.innerHTML = markup;
+    if (route.role === "administrator" && route.page === "settings") loadSmtpSettings();
     updatePagination();
     if (route.role === "resident" && route.page === "report" && reportMapExpanded) initializeReportMap();
     if (modalState) {
@@ -271,7 +273,8 @@ async function compressPhoto(file) {
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   if (typeof image.close === "function") image.close();
-  return { name: file.name.slice(0, 120), data: canvas.toDataURL("image/jpeg", 0.72) };
+  const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error(`${file.name}: this image could not be prepared.`)), "image/jpeg", 0.72));
+  return { name: file.name.slice(0, 120), file: new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" }), previewUrl: URL.createObjectURL(blob) };
 }
 
 function nextReportId() {
@@ -281,8 +284,18 @@ function nextReportId() {
 async function submitReportDraft() {
   if (!reportDraft) return;
   const now = new Date().toISOString();
+  const reportId = nextReportId();
+  let photos = [];
+  if (uploadPhotos.length) {
+    const form = new FormData();
+    uploadPhotos.forEach((photo) => form.append("photos", photo.file, photo.file.name));
+    const response = await fetch(`/api/report-photos?reportId=${encodeURIComponent(reportId)}`, { method: "POST", body: form });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The report photos could not be uploaded.");
+    photos = result.photos;
+  }
   const report = {
-    id: nextReportId(),
+    id: reportId,
     userEmail: currentUser.email,
     name: currentUser.name,
     category: reportDraft.category,
@@ -298,7 +311,7 @@ async function submitReportDraft() {
     status: "Submitted",
     submittedAt: now,
     updatedAt: now,
-    photos: uploadPhotos,
+    photos,
     history: [{ status: "Submitted", at: now, note: "Report received." }],
   };
   data.reports.unshift(report);
@@ -313,7 +326,7 @@ async function submitReportDraft() {
   uploadPhotos = [];
   selectedReportId = null;
   window.location.hash = routeUrl("resident", "reports");
-  toast(`Saved to this demonstration workspace; ${report.id} was not sent to barangay staff.`, "success");
+  toast(`${report.id} was submitted to barangay staff.`, "success");
 }
 
 async function updateReportStatus(form) {
@@ -495,6 +508,52 @@ async function updateProfile(form) {
   lastPersistedSnapshot = JSON.stringify(data);
   render();
   toast("Profile saved.", "success");
+}
+
+async function loadSmtpSettings() {
+  const response = await fetch("/api/settings/smtp");
+  const result = await response.json();
+  if (!response.ok) return;
+  smtpSettings = result.settings;
+  const form = app.querySelector("#smtp-settings-form");
+  if (!form) return;
+  for (const [name, value] of Object.entries(smtpSettings)) {
+    const field = form.elements.namedItem(name);
+    if (field && name !== "configured") field.value = value || "";
+  }
+  const password = form.elements.namedItem("pass");
+  if (password && smtpSettings.configured) password.placeholder = "Leave blank to keep current password";
+}
+
+async function saveSmtpSettings(form) {
+  const body = Object.fromEntries(new FormData(form));
+  const response = await fetch("/api/settings/smtp", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "SMTP settings could not be saved.");
+  smtpSettings = result.settings;
+  form.elements.namedItem("pass").value = "";
+  toast("SMTP settings saved.", "success");
+}
+
+function applySmtpPreset(provider) {
+  const presets = {
+    gmail: ["smtp.gmail.com", "587", 'Gmail: turn on 2-Step Verification, then <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer">create an App Password</a>. Enter that generated password here.'],
+    outlook: ["smtp.office365.com", "587", 'Outlook/Microsoft 365: <a href="https://support.microsoft.com/account-billing/how-to-get-and-use-app-passwords-5896ed9c-9f7f-4d4b-ae2c-7c9f6b2c0f2a" target="_blank" rel="noopener noreferrer">learn about app passwords</a> if your account supports them. If SMTP AUTH is disabled, ask your Microsoft 365 administrator to enable it.'],
+    sendgrid: ["smtp.sendgrid.net", "587", 'SendGrid: <a href="https://docs.sendgrid.com/ui/account-and-settings/api-keys" target="_blank" rel="noopener noreferrer">create an API key</a> in Settings > API Keys. Enter apikey as the username and the generated API key as the password.'],
+    custom: ["", "587", "Other provider: open its SMTP or mail-client setup page and copy the SMTP host, port, username, and app password or service key here."],
+  };
+  const preset = presets[provider];
+  const form = app.querySelector("#smtp-settings-form");
+  if (!preset || !form) return;
+  form.elements.namedItem("host").value = preset[0];
+  form.elements.namedItem("port").value = preset[1];
+  const help = app.querySelector("#smtp-provider-help");
+  if (help) help.innerHTML = preset[2];
+  form.elements.namedItem("host").focus();
 }
 
 async function updatePassword(form) {
@@ -801,6 +860,13 @@ async function handleAction(button, clickEvent) {
     window.location.hash = "#/login";
     render();
     toast("You have signed out.", "success");
+  } else if (action === "test-smtp") {
+    const response = await fetch("/api/settings/smtp/test", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The test email could not be sent.");
+    toast("Test email sent to your administrator address.", "success");
+  } else if (action === "smtp-preset") {
+    applySmtpPreset(button.dataset.provider);
   } else if (action === "view-report" || action === "view-notification-report") {
     openReport(button.dataset.id);
   } else if (action === "claim-report" || action === "release-report") {
@@ -1061,6 +1127,8 @@ async function handleSubmit(formEvent) {
       await updateCollection(fields);
     } else if (formId === "profile-form") {
       await updateProfile(fields);
+    } else if (formId === "smtp-settings-form") {
+      await saveSmtpSettings(form);
     } else if (formId === "password-form") {
       await updatePassword(fields);
     } else if (formId === "user-form") {

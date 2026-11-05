@@ -10,9 +10,8 @@ function navGroups(role) {
     { title: "Services", links: [["collection", "Garbage collection", "calendar"], ["history", "Report history", "clock"], ["announcements", "Announcements", "activity"], ["notifications", "Notifications", "bell", unreadCount()]] },
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["reports", "Community reports", "clipboard"], ["monitoring", "System monitoring", "activity"], ["locations", "Locations & recycling", "pin"], ["announcements", "Announcements", "activity"]] },
-    { title: "Administration", links: [["users", "User management", "users"], ["roles", "Role management", "shield"], ["audit", "Audit activity", "activity"]] },
-    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["profile", "Profile", "user"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["reports", "Community reports", "clipboard"]] },
+    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"]] },
   ];
   return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage(role, key)) }));
 }
@@ -101,6 +100,7 @@ function pageTitle(role, page) {
       roles: ["Role management", "Review the permissions shown in each workspace."],
       audit: ["Audit activity", "A record of account and service activity."],
       profile: ["Your profile", "Keep your administrator account details up to date."],
+      settings: ["Settings", "Manage administrator workspace areas from one place."],
       notifications: ["Notifications", "Report and service updates for this account."],
     },
   };
@@ -249,7 +249,7 @@ function reportDetail(report, role) {
       <div class="form-actions"><button class="button" type="submit">Save report update</button></div>
     </form>` : "";
   const photos = (report.photos || []).length
-    ? `<div class="photo-preview">${report.photos.map((photo, index) => `<a class="photo-thumb" href="/api/reports/${encodeURIComponent(report.id)}/photos/${index}" target="_blank" rel="noopener" aria-label="Open report photo ${esc(photo.name)}"><img src="${photo.data}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
+    ? `<div class="photo-preview">${report.photos.map((photo) => `<a class="photo-thumb" href="${esc(photo.photoUrl)}" target="_blank" rel="noopener" aria-label="Open report photo ${esc(photo.name)}"><img src="${esc(photo.photoUrl)}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
     : `<p class="muted small">No photo was attached to this report.</p>`;
   const hasMapPin = Number.isFinite(report.latitude) && Number.isFinite(report.longitude);
   const reportLocation = role !== "administrator"
@@ -372,6 +372,23 @@ function dashboardAdmin() {
       </div>
     </div>`;
   return page("administrator", "dashboard", body, linkButton(`${icon("users")} Manage users`, routeUrl("administrator", "users"), ""));
+}
+
+function settingsPage() {
+  const accountItems = [
+    ["User management", "Accounts and status", "users", "users"],
+    ["Role management", "Workspace permissions", "shield", "roles"],
+    ["Profile and password", "Your administrator account", "user", "profile"],
+  ];
+  const workspaceItems = [
+    ["Locations and recycling", "Community areas and verified listings", "pin", "locations"],
+    ["Announcements", "Community service notices", "activity", "announcements"],
+    ["Monitoring", "Workspace status and report counts", "activity", "monitoring"],
+    ["Audit activity", "Recorded account and service activity", "activity", "audit"],
+  ];
+  const rows = (items) => items.map(([title, description, iconName, pageName]) => `<a class="settings-row" href="${routeUrl("administrator", pageName)}"><span class="settings-row-icon">${icon(iconName)}</span><span class="settings-row-copy"><strong>${esc(title)}</strong><small>${esc(description)}</small></span><span class="settings-row-arrow">${icon("arrow")}</span></a>`).join("");
+  const body = `<div class="settings-layout"><section class="settings-section"><h2>Account</h2><div class="settings-list">${rows(accountItems)}</div></section><section class="settings-section"><h2>Workspace</h2><div class="settings-list">${rows(workspaceItems)}</div></section><section class="settings-section"><h2>Email delivery</h2><form id="smtp-settings-form" class="settings-email"><div class="settings-email-head"><span class="settings-row-icon">${icon("mail")}</span><div><strong>SMTP email</strong><small>Report and collection notifications</small></div></div><div class="smtp-guide"><strong>Start with your email provider</strong><span>Choose a provider to fill the server details. Use an app password or service API key when your provider offers one; do not use your normal email password.</span><div class="smtp-provider-list"><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="gmail">Gmail</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="outlook">Outlook</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="sendgrid">SendGrid</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="custom">Other provider</button></div><p class="field-help" id="smtp-provider-help">Select a provider to see where its SMTP password or API key comes from.</p></div><div class="form-grid mt-16">${inputField("SMTP host", "host", smtpSettings.host, { required: true })}${inputField("SMTP port", "port", smtpSettings.port || "587", { type: "number", required: true, min: 1, max: 65535 })}${inputField("SMTP username", "user", smtpSettings.user, { required: true })}${inputField("Sender address", "from", smtpSettings.from, { required: true })}${inputField("SMTP password", "pass", "", { type: "password", autocomplete: "new-password", placeholder: smtpSettings.configured ? "Leave blank to keep current password" : "" })}</div><div class="form-actions"><button class="button" type="submit">Save SMTP settings</button><button class="button secondary" type="button" data-action="test-smtp">Send test email</button></div><p class="field-help">The password is encrypted on the server and never returned to this browser.</p></form></section></div>`;
+  return page("administrator", "settings", body);
 }
 
 function collectionResident() {
@@ -505,7 +522,7 @@ function reportFormMarkup() {
             <div class="notice-bar"><span>Urgency</span><strong>${draft.urgent ? "Flagged for prompt attention" : "Standard report"}</strong></div>
             <div class="notice-bar"><span>Immediate danger?</span><strong>${draft.urgent ? "Flagged for prompt attention. " : ""}If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service. CommUnity does not dispatch emergency services.</strong></div>
             <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
-            <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.data}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
+            <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
             <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
           </div>` : `
           <form id="report-draft-form" class="form-stack">
@@ -527,7 +544,7 @@ function reportFormMarkup() {
                 </div>
               </div>
               <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
-              <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.data}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></div>
+              <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
               <label class="checkbox-field span-all"><input name="urgent" type="checkbox" ${draft.urgent ? "checked" : ""}><span><strong>This concern needs urgent attention</strong><small class="field-help">This flag does not contact emergency services. If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service.</small></span></label>
             </div>
             <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
@@ -598,11 +615,14 @@ function reportsPage(role, view) {
 function notificationsPage(role) {
   const notifications = sortedNotifications(data.notifications.filter((item) => item.targetEmail === currentUser.email));
   const visible = notificationFilter === "unread" ? notifications.filter((item) => !item.read) : notifications;
+  const unread = notifications.filter((item) => !item.read).length;
+  const reportUpdates = notifications.filter((item) => item.reportId).length;
+  const serviceUpdates = notifications.length - reportUpdates;
   const body = `
     <div class="content-stack">
-      ${statsStrip([stat("All updates", notifications.length, "In this workspace"), stat("Unread", notifications.filter((item) => !item.read).length, "For this account"), stat("Report updates", notifications.filter((item) => item.reportId).length, "Concern activity"), stat("Service updates", notifications.filter((item) => !item.reportId).length, "Collection and account")])}
-      ${panel("Your notifications", `<div class="filter-row" role="group" aria-label="Filter notifications"><button type="button" class="filter-button ${notificationFilter === "all" ? "selected" : ""}" data-action="filter-notifications" data-value="all" aria-pressed="${notificationFilter === "all"}">All updates <span class="filter-count">${notifications.length}</span></button><button type="button" class="filter-button ${notificationFilter === "unread" ? "selected" : ""}" data-action="filter-notifications" data-value="unread" aria-pressed="${notificationFilter === "unread"}">Unread <span class="filter-count">${notifications.filter((item) => !item.read).length}</span></button></div>
-        <div class="notification-list mt-16">${visible.length ? visible.map((item) => `<article class="notification-item ${item.read ? "" : "notification-unread"}"><span class="item-mark">${icon(item.reportId ? "clipboard" : "bell")}</span><div class="item-copy"><strong>${esc(item.title)}</strong><span>${esc(item.body)}</span><span>${esc(dateTimeLabel(item.createdAt))}</span>${item.reportId ? `<button type="button" class="text-button mt-16" data-action="view-notification-report" data-id="${esc(item.reportId)}">View related report ${icon("arrow")}</button>` : ""}</div>${item.read ? `<span class="muted small">Read</span>` : `<button class="button secondary small" type="button" data-action="mark-read" data-id="${esc(item.id)}">Mark read</button>`}</article>`).join("") : `<div class="empty-state"><strong>All caught up</strong>There are no ${notificationFilter === "unread" ? "unread " : ""}updates for this account.</div>`}</div>`, { subtitle: "Collection reminders and report-status changes", action: notifications.some((item) => !item.read) ? actionButton("Mark all as read", "mark-all-read", "tertiary", "small") : "" })}
+      <section class="notification-summary"><div><span class="eyebrow">Updates</span><h2>Stay in the loop</h2><p>Important changes to your reports and community services.</p></div><div class="notification-summary-count"><strong>${unread}</strong><span>unread</span></div></section>
+      ${panel("Notification inbox", `<div class="notification-toolbar"><div class="filter-row" role="group" aria-label="Filter notifications"><button type="button" class="filter-button ${notificationFilter === "all" ? "selected" : ""}" data-action="filter-notifications" data-value="all" aria-pressed="${notificationFilter === "all"}">All <span class="filter-count">${notifications.length}</span></button><button type="button" class="filter-button ${notificationFilter === "unread" ? "selected" : ""}" data-action="filter-notifications" data-value="unread" aria-pressed="${notificationFilter === "unread"}">Unread <span class="filter-count">${unread}</span></button></div>${notifications.some((item) => !item.read) ? actionButton("Mark all read", "mark-all-read", "tertiary", "small") : ""}</div><div class="notification-breakdown"><span>${reportUpdates} report updates</span><span>${serviceUpdates} service updates</span></div>
+        <div class="notification-list">${visible.length ? visible.map((item) => `<article class="notification-item ${item.read ? "" : "notification-unread"}"><span class="notification-icon">${icon(item.reportId ? "clipboard" : "bell")}</span><div class="notification-content"><div class="notification-title"><strong>${esc(item.title)}</strong>${item.read ? "" : `<span class="notification-unread-label">New</span>`}</div><p>${esc(item.body)}</p><div class="notification-meta"><span>${esc(dateTimeLabel(item.createdAt))}</span>${item.reportId ? `<button type="button" class="text-button" data-action="view-notification-report" data-id="${esc(item.reportId)}">View report</button>` : ""}</div></div>${item.read ? `<span class="notification-state">Read</span>` : `<button class="button secondary small notification-read-button" type="button" data-action="mark-read" data-id="${esc(item.id)}">Mark read</button>`}</article>`).join("") : `<div class="empty-state"><strong>All caught up</strong>There are no ${notificationFilter === "unread" ? "unread " : ""}updates for this account.</div>`}</div>`, { subtitle: "Your latest account and community updates" })}
     </div>`;
   return page(role, "notifications", body);
 }

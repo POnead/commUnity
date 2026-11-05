@@ -1,14 +1,17 @@
-import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
+import Busboy from "busboy";
+import nodemailer from "nodemailer";
 
 const scrypt = promisify(scryptCallback);
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_UPLOADS_DIR = path.join(PROJECT_DIR, "data", "uploads");
 const PUBLIC_FILES = new Set([
   "index.html", "styles.css", "app-core.js", "app-views.js", "app.js",
   "logo/palsara-transparent.png",
@@ -19,6 +22,8 @@ const PUBLIC_FILES = new Set([
   "node_modules/leaflet/dist/images/marker-shadow.png",
 ]);
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const PHOTO_TYPES = new Map([["image/jpeg", ".jpg"], ["image/png", ".png"]]);
 const MAX_PASSWORD_LENGTH = 200;
 const SESSION_COOKIE = "community_session";
 const SESSION_HOURS = 12;
@@ -130,6 +135,94 @@ async function readJson(request) {
   }
 }
 
+async function readMultipart(request, { maxFiles = 3 } = {}) {
+  const contentType = request.headers["content-type"] || "";
+  if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
+    throw new HttpError(415, "Content-Type must be multipart/form-data.");
+  }
+  return new Promise((resolve, reject) => {
+    const parser = Busboy({ headers: request.headers, limits: { files: maxFiles, fileSize: MAX_PHOTO_BYTES } });
+    const files = [];
+    let failed = false;
+    parser.on("file", (fieldName, stream, info) => {
+      if (fieldName !== "photos") {
+        stream.resume();
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      stream.on("data", (chunk) => {
+        size += chunk.length;
+        chunks.push(chunk);
+      });
+      stream.on("limit", () => {
+        failed = true;
+        reject(new HttpError(413, `${info.filename}: photo files must be 5 MB or smaller.`));
+      });
+      stream.on("end", () => {
+        if (!failed) files.push({ name: info.filename, type: info.mimeType, data: Buffer.concat(chunks), size });
+      });
+    });
+    parser.on("filesLimit", () => reject(new HttpError(400, "Attach up to three photos to one report.")));
+    parser.on("error", reject);
+    parser.on("finish", () => {
+      if (!failed) resolve(files);
+    });
+    request.pipe(parser);
+  });
+}
+
+function createMailer({ smtpHost, smtpPort, smtpUser, smtpPass, smtpFrom }) {
+  if (!smtpHost || !smtpPort || !smtpUser || !smtpPass || !smtpFrom) return null;
+  return nodemailer.createTransport({
+    host: smtpHost,
+    port: Number(smtpPort),
+    secure: Number(smtpPort) === 465,
+    auth: { user: smtpUser, pass: smtpPass },
+  });
+}
+
+function queueEmail(mailer, message) {
+  if (!mailer) return;
+  mailer.sendMail(message).catch((error) => logError("CommUnity could not send an email.", error, { subject: message.subject }));
+}
+
+function encryptSettings(value, key) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", createHash("sha256").update(key).digest(), iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return [iv, cipher.getAuthTag(), encrypted].map((part) => part.toString("base64url")).join(".");
+}
+
+function decryptSettings(value, key) {
+  const [iv, tag, encrypted] = String(value).split(".").map((part) => Buffer.from(part, "base64url"));
+  const decipher = createDecipheriv("aes-256-gcm", createHash("sha256").update(key).digest(), iv);
+  decipher.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8"));
+}
+
+function publicSmtpSettings(settings) {
+  return {
+    host: settings?.host || "",
+    port: settings?.port || "",
+    user: settings?.user || "",
+    from: settings?.from || "",
+    configured: Boolean(settings?.host && settings?.port && settings?.user && settings?.pass && settings?.from),
+  };
+}
+
+async function loadSmtpSettings(db, encryptionKey, fallback) {
+  if (!encryptionKey) return fallback;
+  const result = await db.query("SELECT encrypted_value FROM app_settings WHERE key='smtp'");
+  if (!result.rows[0]) return fallback;
+  try {
+    return decryptSettings(result.rows[0].encrypted_value, encryptionKey);
+  } catch (error) {
+    logError("CommUnity could not decrypt saved SMTP settings.", error);
+    return fallback;
+  }
+}
+
 function cookieValue(request, name) {
   for (const part of (request.headers.cookie || "").split(";")) {
     const [key, ...value] = part.trim().split("=");
@@ -218,8 +311,7 @@ function validateReport(report) {
   }
   for (const photo of report.photos) {
     if (!photo || typeof photo.name !== "string" || photo.name.length > 120 ||
-        typeof photo.data !== "string" || photo.data.length > 3_000_000 ||
-        !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(photo.data)) {
+        typeof photo.photoUrl !== "string" || !photo.photoUrl.startsWith(`/api/reports/${encodeURIComponent(report.id)}/photos/`)) {
       throw new HttpError(400, "A report photo is invalid or too large.");
     }
   }
@@ -304,6 +396,7 @@ async function migrate(db) {
   const schema = `
     CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());
     CREATE TABLE IF NOT EXISTS app_meta (id integer PRIMARY KEY CHECK (id = 1), revision bigint NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, encrypted_value text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
     INSERT INTO app_meta (id, revision) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS users (
       id text PRIMARY KEY, email text NOT NULL UNIQUE,
@@ -334,7 +427,7 @@ async function migrate(db) {
     );
     CREATE TABLE IF NOT EXISTS report_photos (
       id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
-      position integer NOT NULL, name text NOT NULL, data_url text NOT NULL,
+      position integer NOT NULL, name text NOT NULL, photo_url text NOT NULL,
       UNIQUE (report_id, position)
     );
     CREATE TABLE IF NOT EXISTS schedules (
@@ -393,6 +486,8 @@ async function migrate(db) {
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS assigned_to text REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
+    ALTER TABLE report_photos ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
+    ALTER TABLE report_photos DROP COLUMN IF EXISTS data_url;
     UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
       FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';
     INSERT INTO community_locations (id, area, barangay, purok) VALUES
@@ -494,14 +589,14 @@ async function readFullState(db, user = null) {
       historyByReport.set(row.report_id, list);
     }
     const photos = await db.query(`
-      SELECT report_id, name, data_url AS data FROM report_photos
+      SELECT report_id, name, photo_url AS "photoUrl" FROM report_photos
       ${user?.role === "resident" ? "WHERE report_id=ANY($1::text[])" : ""}
       ORDER BY report_id, position
     `, user?.role === "resident" ? [reportIds] : []);
     const photosByReport = new Map();
     for (const row of photos.rows) {
       const list = photosByReport.get(row.report_id) || [];
-      list.push({ name: row.name, data: row.data });
+      list.push({ name: row.name, photoUrl: row.photoUrl });
       photosByReport.set(row.report_id, list);
     }
     state.reports = reports.rows.map((report) => {
@@ -681,8 +776,8 @@ async function insertReport(db, report) {
       [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);
   }
   for (const [position, photo] of report.photos.entries()) {
-    await db.query("INSERT INTO report_photos (report_id,position,name,data_url) VALUES ($1,$2,$3,$4)",
-      [report.id, position, photo.name, photo.data]);
+    await db.query("INSERT INTO report_photos (report_id,position,name,photo_url) VALUES ($1,$2,$3,$4)",
+      [report.id, position, photo.name, photo.photoUrl]);
   }
 }
 
@@ -705,8 +800,8 @@ async function replaceReport(db, report) {
       [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);
   }
   for (const [position, photo] of report.photos.entries()) {
-    await db.query("INSERT INTO report_photos (report_id,position,name,data_url) VALUES ($1,$2,$3,$4)",
-      [report.id, position, photo.name, photo.data]);
+    await db.query("INSERT INTO report_photos (report_id,position,name,photo_url) VALUES ($1,$2,$3,$4)",
+      [report.id, position, photo.name, photo.photoUrl]);
   }
 }
 
@@ -868,7 +963,7 @@ async function syncActivities(db, oldItems, newItems, user, administrator) {
   }
 }
 
-async function updateState(db, user, body) {
+async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {}) {
   if (!body || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new HttpError(400, "A valid database revision is required.");
   validateState(body.data);
   await withTransaction(db, async (transaction) => {
@@ -921,6 +1016,12 @@ async function updateState(db, user, body) {
         for (const account of staff.rows) await insertNotification(db, account.email,
           report.urgent ? `Urgent concern: ${report.title}` : `New concern: ${report.title}`,
           `${report.name} submitted a report for ${report.barangay}, ${report.area}, near ${report.locationDetail}.`, report.id);
+        for (const account of staff.rows) queueEmail(mailer, {
+          from: smtpFrom,
+          to: account.email,
+          subject: report.urgent ? `Urgent concern: ${report.title}` : `New concern: ${report.title}`,
+          text: `${report.name} submitted a report for ${report.barangay}, ${report.area}, near ${report.locationDetail}.\n\nReview it in CommUnity: ${appOrigin || ""}/#/official/concerns`,
+        });
         await insertNotification(db, user.email, "Report submitted",
           `Your concern ${report.id} was submitted and is now on file.`, report.id);
       }
@@ -986,6 +1087,12 @@ async function updateState(db, user, body) {
           if (validStatusUpdate) {
             await insertNotification(db, incoming.userEmail, `Report ${incoming.status.toLowerCase()}`,
               `${incoming.id}: ${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}`, incoming.id);
+            queueEmail(mailer, {
+              from: smtpFrom,
+              to: incoming.userEmail,
+              subject: `Your report ${incoming.id} is ${incoming.status.toLowerCase()}`,
+              text: `${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}\n\nView your reports in CommUnity: ${appOrigin || ""}/#/resident/reports`,
+            });
           }
         }
       }
@@ -1044,33 +1151,35 @@ async function updateState(db, user, body) {
     }
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
   });
-  await runScheduleReminders(db);
+  await runScheduleReminders(db, { mailer, smtpFrom, appOrigin });
   return Number((await db.query("SELECT revision FROM app_meta WHERE id=1")).rows[0].revision);
 }
 
-export async function runScheduleReminders(db) {
-  const result = await db.query(`
-    WITH due AS MATERIALIZED (
-      SELECT s.id AS schedule_id, s.area, s.date, s.start_time, s.waste_type, u.email AS user_email
-      FROM schedules s
-      JOIN users u ON u.area=s.area AND u.role='resident' AND u.status='Active'
-      WHERE s.date=CURRENT_DATE + 1 AND s.status NOT IN ('Completed','Cancelled')
-    ), inserted AS (
-      INSERT INTO schedule_reminders (schedule_id,user_email)
-      SELECT schedule_id,user_email FROM due
-      ON CONFLICT (schedule_id,user_email) DO NOTHING
-      RETURNING schedule_id,user_email
-    )
-    INSERT INTO notifications (id,target_email,title,body,created_at,read)
-    SELECT 'collection-reminder:' || inserted.schedule_id || ':' || md5(inserted.user_email),
-      inserted.user_email, 'Collection reminder',
-      due.waste_type || ' collection for ' || due.area || ' is scheduled tomorrow, ' ||
-        to_char(due.date,'FMMonth FMDD') || ' at ' || due.start_time || '.',
-      now(), false
-    FROM inserted
-    JOIN due ON due.schedule_id=inserted.schedule_id AND due.user_email=inserted.user_email
+export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } = {}) {
+  const due = await db.query(`
+    SELECT s.id AS schedule_id, s.area, s.date, s.start_time, s.waste_type, u.email AS user_email
+    FROM schedules s
+    JOIN users u ON u.area=s.area AND u.role='resident' AND u.status='Active'
+    WHERE s.date=CURRENT_DATE + 1 AND s.status NOT IN ('Completed','Cancelled')
   `);
-  return result.rowCount;
+  let created = 0;
+  for (const reminder of due.rows) {
+    const claimed = await db.query(
+      "INSERT INTO schedule_reminders (schedule_id,user_email) VALUES ($1,$2) ON CONFLICT (schedule_id,user_email) DO NOTHING",
+      [reminder.schedule_id, reminder.user_email],
+    );
+    if (!claimed.rowCount) continue;
+    const body = `${reminder.waste_type} collection for ${reminder.area} is scheduled tomorrow, ${new Date(reminder.date).toLocaleDateString("en-PH", { month: "long", day: "numeric" })} at ${reminder.start_time}.`;
+    await insertNotification(db, reminder.user_email, "Collection reminder", body);
+    queueEmail(mailer, {
+      from: smtpFrom,
+      to: reminder.user_email,
+      subject: `Collection reminder for ${reminder.area}`,
+      text: `${body}\n\nView your collection schedule in CommUnity: ${appOrigin || ""}/#/resident/collection`,
+    });
+    created += 1;
+  }
+  return created;
 }
 
 async function createUser(db, user, body) {
@@ -1105,14 +1214,44 @@ function validateAnnouncement(body) {
 }
 
 async function handleApi(request, response, db, options) {
-  const { server, appOrigin, secureCookies, trustedProxyAddresses } = options;
+  const { server, appOrigin, secureCookies, trustedProxyAddresses, uploadsDir, mailerState, smtpSettingsKey } = options;
+  const mailer = mailerState.mailer;
+  const smtpFrom = mailerState.settings.from;
   if (!validateSameOrigin(request, server, appOrigin)) {
     sendJson(response, 403, { error: "This request did not come from the CommUnity website." });
     return;
   }
   const url = new URL(request.url, `http://${request.headers.host}`);
   const user = await getSessionUser(request, db);
-  const reportPhotoMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/photos\/(\d+)$/);
+  const reportPhotoMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/photos\/(\d+)\/([A-Za-z0-9-]+\.(?:jpg|png))$/);
+  if (url.pathname === "/api/report-photos" && request.method === "POST") {
+    requireRole(user, ["resident"]);
+    const reportId = url.searchParams.get("reportId") || "";
+    if (!validId(reportId)) throw new HttpError(400, "The report identifier is invalid.");
+    const files = await readMultipart(request);
+    if (!files.length) throw new HttpError(400, "Choose at least one JPG or PNG photo.");
+    const reportUploadDir = path.join(uploadsDir, reportId);
+    await mkdir(reportUploadDir, { recursive: true });
+    const uploaded = [];
+    try {
+      for (const [position, file] of files.entries()) {
+        const extension = PHOTO_TYPES.get(file.type);
+        if (!extension) throw new HttpError(400, `${file.name}: choose a JPG or PNG image.`);
+        const filename = `${randomUUID()}${extension}`;
+        await writeFile(path.join(reportUploadDir, filename), file.data, { flag: "wx" });
+        uploaded.push({
+          name: String(file.name || filename).slice(0, 120),
+          photoUrl: `/api/reports/${encodeURIComponent(reportId)}/photos/${position}/${filename}`,
+          filename,
+        });
+      }
+    } catch (error) {
+      await Promise.all(uploaded.map((photo) => unlink(path.join(reportUploadDir, photo.filename)).catch(() => {})));
+      throw error;
+    }
+    sendJson(response, 201, { photos: uploaded.map(({ name, photoUrl }) => ({ name, photoUrl })) });
+    return;
+  }
   if (reportPhotoMatch && request.method === "GET") {
     requireRole(user, ROLES);
     const reportId = decodeURIComponent(reportPhotoMatch[1]);
@@ -1122,18 +1261,63 @@ async function handleApi(request, response, db, options) {
     if (user.role === "resident" && report.rows[0].user_email !== user.email) {
       throw new HttpError(403, "You cannot access this report photo.");
     }
-    const photo = await db.query("SELECT data_url FROM report_photos WHERE report_id=$1 AND position=$2", [reportId, position]);
-    const dataUrl = photo.rows[0]?.data_url || "";
-    const match = dataUrl.match(/^data:(image\/jpeg);base64,([A-Za-z0-9+/]+=*)$/);
-    if (!match) throw new HttpError(404, "The report photo could not be found.");
-    const image = Buffer.from(match[2], "base64");
+    const photo = await db.query("SELECT photo_url FROM report_photos WHERE report_id=$1 AND position=$2", [reportId, position]);
+    const photoUrl = photo.rows[0]?.photo_url || "";
+    if (photoUrl !== url.pathname) throw new HttpError(404, "The report photo could not be found.");
+    const filename = path.basename(photoUrl);
+    if (!filename || filename === "." || filename === "..") throw new HttpError(404, "The report photo could not be found.");
+    const image = await readFile(path.join(uploadsDir, reportId, filename)).catch(() => {
+      throw new HttpError(404, "The report photo could not be found.");
+    });
     response.writeHead(200, {
       "Cache-Control": "private, no-store",
-      "Content-Type": match[1],
+      "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
       "Content-Length": image.length,
       "X-Content-Type-Options": "nosniff",
     });
     response.end(image);
+    return;
+  }
+  if (url.pathname === "/api/settings/smtp" && request.method === "GET") {
+    requireRole(user, ["administrator"]);
+    sendJson(response, 200, { settings: publicSmtpSettings(mailerState.settings), encryptionReady: Boolean(smtpSettingsKey) });
+    return;
+  }
+  if (url.pathname === "/api/settings/smtp" && request.method === "PUT") {
+    requireRole(user, ["administrator"]);
+    if (!smtpSettingsKey) throw new HttpError(503, "Configure SMTP_SETTINGS_KEY on the server before saving SMTP settings.");
+    const body = await readJson(request);
+    const settings = {
+      host: String(body.host || "").trim(),
+      port: Number(body.port),
+      user: String(body.user || "").trim(),
+      pass: String(body.pass || ""),
+      from: String(body.from || "").trim(),
+    };
+    if (!settings.host || !Number.isInteger(settings.port) || settings.port < 1 || settings.port > 65535 ||
+        !settings.user || !settings.from || (!settings.pass && !mailerState.settings.pass)) {
+      throw new HttpError(400, "Enter a host, valid port, username, sender, and password.");
+    }
+    if (!settings.pass) settings.pass = mailerState.settings.pass;
+    await db.query(
+      "INSERT INTO app_settings(key,encrypted_value,updated_at) VALUES('smtp',$1,now()) ON CONFLICT(key) DO UPDATE SET encrypted_value=excluded.encrypted_value,updated_at=now()",
+      [encryptSettings(settings, smtpSettingsKey)],
+    );
+    mailerState.settings = settings;
+    mailerState.mailer = createMailer({ smtpHost: settings.host, smtpPort: settings.port, smtpUser: settings.user, smtpPass: settings.pass, smtpFrom: settings.from });
+    sendJson(response, 200, { settings: publicSmtpSettings(settings) });
+    return;
+  }
+  if (url.pathname === "/api/settings/smtp/test" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    if (!mailerState.mailer) throw new HttpError(400, "Save complete SMTP settings before sending a test email.");
+    await mailerState.mailer.sendMail({
+      from: mailerState.settings.from,
+      to: user.email,
+      subject: "CommUnity SMTP test",
+      text: "CommUnity successfully sent this test email.",
+    });
+    sendJson(response, 200, { ok: true });
     return;
   }
   if (url.pathname === "/api/locations" && request.method === "GET") {
@@ -1297,7 +1481,7 @@ async function handleApi(request, response, db, options) {
   if (url.pathname === "/api/state" && request.method === "PUT") {
     requireRole(user, ROLES);
     const body = await readJson(request);
-    const revision = await updateState(db, user, body);
+    const revision = await updateState(db, user, body, { mailer, smtpFrom, appOrigin });
     const currentUser = await getSessionUser(request, db);
     const state = await readFullState(db, currentUser);
     sendJson(response, 200, { revision, data: stateForRole(state, currentUser), user: publicUser(currentUser) });
@@ -1357,6 +1541,7 @@ function addSecurityHeaders(response, secure) {
 
 export async function createCommunityServer({
   dataDir = path.join(PROJECT_DIR, "data", "pglite"),
+  uploadsDir = process.env.UPLOADS_DIR || DEFAULT_UPLOADS_DIR,
   databaseUrl = process.env.DATABASE_URL || "",
   port = 8768,
   host = databaseUrl ? "0.0.0.0" : "127.0.0.1",
@@ -1366,6 +1551,12 @@ export async function createCommunityServer({
   connectionTimeoutMillis = Number(process.env.PG_CONNECTION_TIMEOUT_MS || 5000),
   initialAdminEmail = process.env.INITIAL_ADMIN_EMAIL || "",
   initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD || "",
+  smtpHost = process.env.SMTP_HOST || "",
+  smtpPort = process.env.SMTP_PORT || "",
+  smtpUser = process.env.SMTP_USER || "",
+  smtpPass = process.env.SMTP_PASS || "",
+  smtpFrom = process.env.SMTP_FROM || "",
+  smtpSettingsKey = process.env.SMTP_SETTINGS_KEY || "",
   production = process.env.NODE_ENV === "production",
 } = {}) {
   if (!databaseUrl && host !== "127.0.0.1" && host !== "::1") {
@@ -1386,11 +1577,13 @@ export async function createCommunityServer({
   const trustedProxyAddresses = parseTrustedProxyAddresses(trustedProxyIps);
   const db = await createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeoutMillis });
   await migrate(db);
+  const mailerState = { settings: await loadSmtpSettings(db, smtpSettingsKey, { host: smtpHost, port: smtpPort, user: smtpUser, pass: smtpPass, from: smtpFrom }), mailer: null };
+  mailerState.mailer = createMailer({ smtpHost: mailerState.settings.host, smtpPort: mailerState.settings.port, smtpUser: mailerState.settings.user, smtpPass: mailerState.settings.pass, smtpFrom: mailerState.settings.from });
   await ensureAdministrator(db, initialAdminEmail, initialAdminPassword);
   await pruneExpiredAuthState(db);
-  await runScheduleReminders(db);
+  await runScheduleReminders(db, { mailer: mailerState.mailer, smtpFrom: mailerState.settings.from, appOrigin });
   const reminderTimer = setInterval(() => {
-    runScheduleReminders(db).catch((error) => logError("CommUnity could not create collection reminders.", error));
+    runScheduleReminders(db, { mailer: mailerState.mailer, smtpFrom: mailerState.settings.from, appOrigin }).catch((error) => logError("CommUnity could not create collection reminders.", error));
     pruneExpiredAuthState(db).catch((error) => logError("CommUnity could not prune expired authentication data.", error));
   }, 15 * 60 * 1000);
   reminderTimer.unref();
@@ -1410,7 +1603,7 @@ export async function createCommunityServer({
         return;
       }
       if (request.url?.startsWith("/api/")) {
-        await handleApi(request, response, db, { server, appOrigin, secureCookies: secure, trustedProxyAddresses });
+        await handleApi(request, response, db, { server, appOrigin, secureCookies: secure, trustedProxyAddresses, uploadsDir, mailerState, smtpSettingsKey });
         return;
       }
       if (request.method !== "GET" && request.method !== "HEAD") {

@@ -33,7 +33,8 @@ Map tiles are loaded from the public OpenStreetMap tile service and require an i
 
 - Residents can submit concerns with a barangay, managed purok/area, and street or landmark, optionally add a Google Maps pin, follow report status, and export report coordinates with their reports/history as CSV.
 - Officials can review and update concerns, maintain collection schedules, and publish announcements. Administrators can browse all reports, view system monitoring, manage accounts and role permissions, and maintain community locations and recycling/junkshop listings.
-- Upcoming collections generate an in-app notification for active residents in the scheduled area on the day before pickup. Report submitters receive an in-app confirmation; assigned staff receive an in-app notice.
+- Administrators have a separate Settings page that organizes links to existing user, role, location, announcement, monitoring, audit, and profile areas without duplicating their forms.
+- Upcoming collections generate an in-app notification and, when SMTP is configured, an email for active residents in the scheduled area on the day before pickup. Report submitters and status updates work the same way.
 - Residents can view active recycling/junkshop listings after staff add verified details. The directory starts empty; no real business locations are supplied.
 - Long report, account, schedule, location, and announcement tables are paginated.
 
@@ -52,6 +53,13 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 | `PG_POOL_MAX` | Optional PostgreSQL pool size per instance (default `10`, maximum `100`) |
 | `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`) |
 | `TRUSTED_PROXY_IPS` | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For` |
+| `UPLOADS_DIR` | Photo upload directory (default `data/uploads`); use persistent storage in deployments |
+| `SMTP_HOST` | Optional SMTP server hostname |
+| `SMTP_PORT` | Optional SMTP port, usually `587` or `465` |
+| `SMTP_USER` | Optional SMTP username |
+| `SMTP_PASS` | Optional SMTP password |
+| `SMTP_FROM` | Optional sender address, for example `CommUnity <no-reply@example.com>` |
+| `SMTP_SETTINGS_KEY` | Required to save SMTP settings from the administrator UI; use a long random secret and keep it stable so saved credentials can be decrypted |
 
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
 The `/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
@@ -68,12 +76,12 @@ Schema setup is applied at startup. The database uses separate tables for accoun
 - Sign-in limits are shared through the database across server instances, and expired sign-in limits and sessions are periodically pruned.
 - Login limits include both a per-account failure bucket and a per-client request bucket. Forwarded client addresses are used only when the immediate proxy is explicitly trusted.
 - PostgreSQL is accessed only by the server; row-level security is not currently enabled. Add database policies before allowing browser or other untrusted clients to connect directly.
-- Collection reminders and report notices are in-app only. Email/SMS delivery, verified identities, live route tracking, and emergency dispatch are not configured.
+- Email is optional and best-effort. If SMTP is missing or unavailable, in-app notifications still work and the server logs the delivery error.
 - The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Use `/healthz` for provider readiness checks and forward the server's structured error logs to an operational logging service.
 - Security headers include a restrictive Content Security Policy. The local server refuses non-loopback binds unless it is configured with a managed database and HTTPS origin.
 - The report map uses OpenStreetMap's public tile service without an API key; follow its attribution and usage policy.
 - Resident sign-up is not email-verified, and password recovery is not configured. Do not treat an email address as a verified identity. Set up an email verification/recovery provider before relying on those workflows.
-- Report photos are stored in the database; a large public service should move them to private object storage with access controls and retention rules.
+- Report photos are stored as files under `UPLOADS_DIR`; the database stores only authenticated photo URLs. Back up the directory and use a persistent volume in deployment. A large public service should later move files to private object storage.
 - This is not a security certification. Before using real resident records, review privacy/legal obligations, account recovery, access retention, backup/restore, monitoring, and the hosting provider's TLS, database-network, and at-rest encryption settings.
 
 Run the API, authentication, role-access, and persistence checks with:

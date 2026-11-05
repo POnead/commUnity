@@ -3,6 +3,7 @@
 pdf files/
 node_modules/
 data/
+data/uploads/
 .env
 .env.*
 !.env.example

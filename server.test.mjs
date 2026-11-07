@@ -169,6 +169,7 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.match(home.headers.get("referrer-policy"), /strict-origin-when-cross-origin/);
     assert.equal(home.headers.get("x-content-type-options"), "nosniff");
     assert.equal(home.headers.get("x-frame-options"), "DENY");
+    assert.equal(home.headers.get("x-powered-by"), null);
     const health = await fetch(`${app.origin}/healthz`);
     assert.equal(health.status, 200);
     assert.equal((await health.json()).status, "ok");
@@ -215,9 +216,10 @@ test("serves hardened static files and protects database routes behind sessions"
     const stateResponse = await api(app, "/api/state", { cookie: signedIn.cookie });
     assert.equal(stateResponse.status, 200);
     const state = await stateResponse.json();
-    assert.deepEqual(state.data.users.map((user) => user.email), [ADMIN_EMAIL]);
-    assert.equal("passwordHash" in state.data.users[0], false);
-    assert.equal("password_hash" in state.data.users[0], false);
+    assert.deepEqual(state.data.users.map((user) => user.email), []);
+    const sessionUser = await (await api(app, "/api/session", { cookie: signedIn.cookie })).json();
+    assert.equal("passwordHash" in sessionUser.user, false);
+    assert.equal("password_hash" in sessionUser.user, false);
     const reportId = "RPT-photo-test";
     const photoData = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
     await mkdir(path.join(path.dirname(dataDir), "uploads", reportId), { recursive: true });

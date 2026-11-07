@@ -8,20 +8,11 @@ import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import Busboy from "busboy";
 import nodemailer from "nodemailer";
+import { CONTENT_TYPES, createExpressApp } from "./http-app.mjs";
 
 const scrypt = promisify(scryptCallback);
 const PROJECT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_UPLOADS_DIR = path.join(PROJECT_DIR, "data", "uploads");
-const PUBLIC_FILES = new Set([
-  "index.html", "styles.css", "app-core.js", "app-views.js", "app.js",
-  "logo/palsara-transparent.png",
-  "favicon.png",
-  "node_modules/leaflet/dist/leaflet.js", "node_modules/leaflet/dist/leaflet.css",
-  "node_modules/leaflet/dist/images/layers.png", "node_modules/leaflet/dist/images/layers-2x.png",
-  "node_modules/leaflet/dist/images/marker-icon.png", "node_modules/leaflet/dist/images/marker-icon-2x.png",
-  "node_modules/leaflet/dist/images/marker-shadow.png",
-]);
-const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const PHOTO_TYPES = new Map([["image/jpeg", ".jpg"], ["image/png", ".png"]]);
 const MAX_PASSWORD_LENGTH = 200;
@@ -35,15 +26,6 @@ const PERMISSIONS = {
   resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageAnnouncements: false, manageUsers: false, manageRoles: false, viewAudit: false },
   official: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: false, manageRoles: false, viewAudit: false },
   administrator: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: true, manageRoles: true, viewAudit: true },
-};
-const CONTENT_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
 };
 
 class HttpError extends Error {
@@ -115,23 +97,9 @@ function sendJson(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
-async function readJson(request) {
+function requireJsonBody(request) {
   if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
     throw new HttpError(415, "Content-Type must be application/json.");
-  }
-  const chunks = [];
-  let bytes = 0;
-  for await (const chunk of request) {
-    bytes += chunk.length;
-    if (bytes > MAX_BODY_BYTES) throw new HttpError(413, "Request body is too large.");
-    chunks.push(chunk);
-  }
-  try {
-    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Body must be an object.");
-    return body;
-  } catch {
-    throw new HttpError(400, "Request body must be valid JSON.");
   }
 }
 
@@ -260,8 +228,8 @@ function jsonEqual(left, right) {
 
 function publicUser(user) {
   if (!user) return null;
-  const { id, email, name, area, phone, role, status, joinedAt } = user;
-  return { id, email, name, area, phone, role, status, joinedAt };
+  const { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange } = user;
+  return { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange: Boolean(requiresPasswordChange) };
 }
 
 function validateAccount({ email, name, area, phone = "" }) {
@@ -403,6 +371,9 @@ async function migrate(db) {
       name text NOT NULL, area text NOT NULL, phone text NOT NULL DEFAULT '',
       role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
       status text NOT NULL CHECK (status IN ('Active', 'Inactive')),
+      working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM',
+      requires_password_change boolean NOT NULL DEFAULT false,
+      deactivation_reason text NOT NULL DEFAULT '',
       joined_at date NOT NULL DEFAULT CURRENT_DATE
     );
     CREATE TABLE IF NOT EXISTS user_credentials (
@@ -450,7 +421,20 @@ async function migrate(db) {
       permission text NOT NULL, enabled boolean NOT NULL, PRIMARY KEY (role, permission)
     );
     CREATE TABLE IF NOT EXISTS announcements (
-      id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL, date date NOT NULL
+      id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL, date date NOT NULL,
+      approval_status text NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('pending', 'approved', 'declined')),
+      created_by text REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS password_reset_requests (
+      id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      requested_at timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'completed', 'declined')), handled_by text REFERENCES users(id) ON DELETE SET NULL,
+      handled_at timestamptz
+    );
+    CREATE TABLE IF NOT EXISTS report_follow_ups (
+      id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+      user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
+      message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS community_locations (
       id text PRIMARY KEY, area text NOT NULL UNIQUE, barangay text NOT NULL,
@@ -484,6 +468,11 @@ async function migrate(db) {
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS latitude double precision;
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS longitude double precision;
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS assigned_to text REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_password_change boolean NOT NULL DEFAULT false;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason text NOT NULL DEFAULT '';
+    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS approval_status text NOT NULL DEFAULT 'approved';
+    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by text REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
     ALTER TABLE report_photos ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
@@ -560,10 +549,12 @@ async function ensureAdministrator(db, email, password) {
 async function readFullState(db, user = null) {
   const state = makeDefaultState();
   if (!user || user.role === "administrator") {
-    const users = await db.query("SELECT id, email, name, area, phone, role, status, to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
+    const users = user
+      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
+      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
     state.users = users.rows;
   } else if (user.role === "resident") {
-    const users = await db.query("SELECT id, email, name, area, phone, role, status, to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
+    const users = await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
     state.users = users.rows;
   }
 
@@ -633,7 +624,12 @@ async function readFullState(db, user = null) {
     state.permissions[role] ||= {};
     state.permissions[role][permission] = enabled;
   }
-  const announcements = await db.query("SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date FROM announcements ORDER BY date DESC, id DESC");
+  const announcements = await db.query(`
+    SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date, approval_status AS "approvalStatus"
+    FROM announcements
+    ${user && user.role === "resident" ? "WHERE approval_status='approved'" : ""}
+    ORDER BY date DESC, id DESC
+  `);
   state.announcements = announcements.rows.map((item) => ({ ...item, id: String(item.id) }));
   const locations = await db.query("SELECT id, area, barangay, street, purok, landmark FROM community_locations ORDER BY barangay, purok, street, id");
   state.locations = locations.rows;
@@ -663,7 +659,8 @@ async function getSessionUser(request, db) {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token || token.length > 200) return null;
   const result = await db.query(`
-    SELECT u.id, u.email, u.name, u.area, u.phone, u.role, u.status, to_char(u.joined_at, 'YYYY-MM-DD') AS "joinedAt"
+    SELECT u.id, u.email, u.name, u.area, u.phone, u.role, u.status, u.working_hours AS "workingHours",
+      u.requires_password_change AS "requiresPasswordChange", to_char(u.joined_at, 'YYYY-MM-DD') AS "joinedAt"
     FROM web_sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = $1 AND s.expires_at > now() AND u.status = 'Active'
   `, [hash(token)]);
@@ -765,6 +762,14 @@ function validateScheduleCollection(schedules) {
 
 async function insertReport(db, report) {
   validateReport(report);
+  const requestedId = report.id;
+  const generatedId = /^RPT-/i.test(requestedId)
+    ? requestedId
+    : `R${String((await db.query("SELECT COALESCE(MAX((substring(id from 2))::integer), 0) + 1 AS next_id FROM reports WHERE id ~ '^R[0-9]+$'")).rows[0].next_id).padStart(2, "0")}`;
+  report.photos = (report.photos || []).map((photo) => ({
+    ...photo,
+    photoUrl: String(photo.photoUrl || "").replace(`/api/reports/${encodeURIComponent(requestedId)}/`, `/api/reports/${encodeURIComponent(generatedId)}/`),
+  }));
   await db.query(`
     INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, assigned_to, status, submitted_at, updated_at)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
@@ -1111,8 +1116,9 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         if (old.id === user.id && (account.email !== old.email || account.role !== "administrator" || account.status !== "Active")) {
           throw new HttpError(403, "You cannot change your own administrator sign-in or access.");
         }
-        await db.query("UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6 WHERE id=$7",
-          [account.email.trim().toLowerCase(), account.name.trim(), account.area.trim(), account.phone.trim(), account.role, account.status, account.id]);
+        await db.query("UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6,working_hours=$7 WHERE id=$8",
+          [account.email.trim().toLowerCase(), account.name.trim(), account.area.trim(), account.phone.trim(), account.role, account.status,
+            String(account.workingHours || "Monday-Friday, 8:00 AM-5:00 PM").trim(), account.id]);
       }
       const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
       if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
@@ -1184,7 +1190,7 @@ export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } =
 
 async function createUser(db, user, body) {
   requireRole(user, ["administrator"]);
-  const { email, name, area, phone = "", role, status = "Active", password } = body || {};
+  const { email, name, area, phone = "", workingHours = "Monday-Friday, 8:00 AM-5:00 PM", role, status = "Active", password } = body || {};
   validateAccount({ email, name, area, phone });
   if (role === "resident") await assertKnownArea(db, area);
   validatePassword(password);
@@ -1192,8 +1198,8 @@ async function createUser(db, user, body) {
   const id = randomUUID();
   await withTransaction(db, async (transaction) => {
     const db = transaction;
-    await db.query("INSERT INTO users (id,email,name,area,phone,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-      [id, email.trim().toLowerCase(), name.trim(), area.trim(), phone.trim(), role, status]);
+    await db.query("INSERT INTO users (id,email,name,area,phone,working_hours,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+      [id, email.trim().toLowerCase(), name.trim(), area.trim(), phone.trim(), String(workingHours).trim(), role, status]);
     await db.query("INSERT INTO user_credentials (user_id,password_hash) VALUES ($1,$2)", [id, await passwordHash(password)]);
     await insertActivity(db, user, "Added user account", `${name.trim()} · ${role}`);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
@@ -1213,71 +1219,382 @@ function validateAnnouncement(body) {
   }
 }
 
+const apiHandlers = new Map([
+  ["auth", handleAuth],
+  ["reports", handleReports],
+  ["report-photos", handleReportPhotos],
+  ["settings", handleSettings],
+  ["locations", handleLocations],
+  ["announcements", handleAnnouncements],
+  ["profile", handleProfile],
+  ["session", handleSession],
+  ["state", handleState],
+  ["users", handleUsers],
+  ["community", handleCommunity],
+]);
+
 async function handleApi(request, response, db, options) {
-  const { server, appOrigin, secureCookies, trustedProxyAddresses, uploadsDir, mailerState, smtpSettingsKey } = options;
-  const mailer = mailerState.mailer;
-  const smtpFrom = mailerState.settings.from;
+  const { server, appOrigin } = options;
   if (!validateSameOrigin(request, server, appOrigin)) {
     sendJson(response, 403, { error: "This request did not come from the CommUnity website." });
     return;
   }
   const url = new URL(request.url, `http://${request.headers.host}`);
   const user = await getSessionUser(request, db);
-  const reportPhotoMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/photos\/(\d+)\/([A-Za-z0-9-]+\.(?:jpg|png))$/);
-  if (url.pathname === "/api/report-photos" && request.method === "POST") {
-    requireRole(user, ["resident"]);
-    const reportId = url.searchParams.get("reportId") || "";
-    if (!validId(reportId)) throw new HttpError(400, "The report identifier is invalid.");
-    const files = await readMultipart(request);
-    if (!files.length) throw new HttpError(400, "Choose at least one JPG or PNG photo.");
-    const reportUploadDir = path.join(uploadsDir, reportId);
-    await mkdir(reportUploadDir, { recursive: true });
-    const uploaded = [];
-    try {
-      for (const [position, file] of files.entries()) {
-        const extension = PHOTO_TYPES.get(file.type);
-        if (!extension) throw new HttpError(400, `${file.name}: choose a JPG or PNG image.`);
-        const filename = `${randomUUID()}${extension}`;
-        await writeFile(path.join(reportUploadDir, filename), file.data, { flag: "wx" });
-        uploaded.push({
-          name: String(file.name || filename).slice(0, 120),
-          photoUrl: `/api/reports/${encodeURIComponent(reportId)}/photos/${position}/${filename}`,
-          filename,
-        });
-      }
-    } catch (error) {
-      await Promise.all(uploaded.map((photo) => unlink(path.join(reportUploadDir, photo.filename)).catch(() => {})));
+  const handler = apiHandlers.get(url.pathname.split("/")[2]);
+  if (!handler) {
+    sendJson(response, 404, { error: "API endpoint not found." });
+    return;
+  }
+  await handler(request, response, db, options, user);
+}
+
+async function handleAuth(request, response, db, options, user) {
+  const { secureCookies, trustedProxyAddresses } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/auth/login" && request.method === "POST") {
+    requireJsonBody(request);
+    const body = request.body;
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" && body.password.length <= MAX_PASSWORD_LENGTH ? body.password : "";
+    const clientAddress = requestClientAddress(request, trustedProxyAddresses);
+    const ipAttemptKey = hash(`login-ip:${clientAddress}`);
+    const accountAttemptKey = hash(`login-account:${email}`);
+    await recordAttempt(db, ipAttemptKey, 100);
+    await recordAttempt(db, accountAttemptKey);
+    const result = await db.query(`
+      SELECT u.id,u.email,u.name,u.area,u.phone,u.role,u.status,u.working_hours AS "workingHours",
+        u.requires_password_change AS "requiresPasswordChange",to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",c.password_hash
+      FROM users u JOIN user_credentials c ON c.user_id=u.id WHERE u.email=$1
+    `, [email]);
+    const account = result.rows[0];
+    const passwordMatches = await verifyPassword(password, account?.password_hash ||
+      "scrypt$00000000000000000000000000000000$00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
+    if (!account || !passwordMatches || account.status !== "Active") {
+      throw new HttpError(401, "Those sign-in details do not match an active account.");
+    }
+    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [accountAttemptKey]);
+    await issueSession(response, db, account, Boolean(body.remember), secureCookies);
+    await insertActivity(db, account, "Signed in", account.role);
+    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    sendJson(response, 200, { user: publicUser(account) });
+    return;
+  }
+  if (url.pathname === "/api/auth/register" && request.method === "POST") {
+    requireJsonBody(request);
+    const body = request.body;
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    await recordAttempt(db, hash(`register:${requestClientAddress(request, trustedProxyAddresses)}`));
+    validateAccount({ email, name: body.name, area: body.area, phone: body.phone || "" });
+    validatePassword(body.password);
+    if (body.password !== body.confirmPassword) throw new HttpError(400, "The passwords do not match.");
+    const id = randomUUID();
+    const newUser = { id, email, name: body.name.trim(), area: body.area.trim(), phone: String(body.phone || "").trim(), role: "resident", status: "Active" };
+    await assertKnownArea(db, newUser.area);
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      await db.query("INSERT INTO users (id,email,name,area,phone,role,status) VALUES ($1,$2,$3,$4,$5,'resident','Active')",
+        [id, email, newUser.name, newUser.area, newUser.phone]);
+      await db.query("INSERT INTO user_credentials(user_id,password_hash) VALUES($1,$2)", [id, await passwordHash(body.password)]);
+      await insertActivity(db, newUser, "Created resident account", `${newUser.name} · ${newUser.area}`);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    }).catch((error) => {
+      if (error.code === "23505") throw new HttpError(409, "An account already uses this email address.");
       throw error;
-    }
-    sendJson(response, 201, { photos: uploaded.map(({ name, photoUrl }) => ({ name, photoUrl })) });
+    });
+    await issueSession(response, db, newUser, true, secureCookies);
+    sendJson(response, 201, { user: publicUser(newUser) });
     return;
   }
-  if (reportPhotoMatch && request.method === "GET") {
+  if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+    const token = cookieValue(request, SESSION_COOKIE);
+    if (token) await db.query("DELETE FROM web_sessions WHERE token_hash=$1", [hash(token)]);
+    response.setHeader("Set-Cookie", clearSessionCookie(secureCookies));
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (url.pathname === "/api/auth/password" && request.method === "POST") {
     requireRole(user, ROLES);
-    const reportId = decodeURIComponent(reportPhotoMatch[1]);
-    const position = Number(reportPhotoMatch[2]);
-    const report = await db.query("SELECT user_email FROM reports WHERE id=$1", [reportId]);
-    if (!report.rows.length) throw new HttpError(404, "The report photo could not be found.");
-    if (user.role === "resident" && report.rows[0].user_email !== user.email) {
-      throw new HttpError(403, "You cannot access this report photo.");
+    requireJsonBody(request);
+    const body = request.body;
+    validatePassword(body.newPassword);
+    if (body.newPassword !== body.confirmPassword) throw new HttpError(400, "The new passwords do not match.");
+    const attemptKey = hash(`password-change:${user.id}`);
+    await recordAttempt(db, attemptKey, 5);
+    const current = await db.query("SELECT password_hash FROM user_credentials WHERE user_id=$1", [user.id]);
+    if (!await verifyPassword(String(body.currentPassword || ""), current.rows[0]?.password_hash)) {
+      throw new HttpError(400, "The current password does not match this account.");
     }
-    const photo = await db.query("SELECT photo_url FROM report_photos WHERE report_id=$1 AND position=$2", [reportId, position]);
-    const photoUrl = photo.rows[0]?.photo_url || "";
-    if (photoUrl !== url.pathname) throw new HttpError(404, "The report photo could not be found.");
-    const filename = path.basename(photoUrl);
-    if (!filename || filename === "." || filename === "..") throw new HttpError(404, "The report photo could not be found.");
-    const image = await readFile(path.join(uploadsDir, reportId, filename)).catch(() => {
-      throw new HttpError(404, "The report photo could not be found.");
-    });
-    response.writeHead(200, {
-      "Cache-Control": "private, no-store",
-      "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
-      "Content-Length": image.length,
-      "X-Content-Type-Options": "nosniff",
-    });
-    response.end(image);
+    const token = cookieValue(request, SESSION_COOKIE);
+    await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(body.newPassword), user.id]);
+    await db.query("UPDATE users SET requires_password_change=false WHERE id=$1", [user.id]);
+    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
+    await db.query("DELETE FROM web_sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hash(token)]);
+    await insertActivity(db, user, "Changed account password", user.email);
+    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    sendJson(response, 200, { ok: true });
     return;
   }
+  if (url.pathname === "/api/auth/password-reset-request" && request.method === "POST") {
+    requireJsonBody(request);
+    const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
+    const account = await db.query("SELECT id, email FROM users WHERE email=$1 AND status='Active'", [email]);
+    if (account.rows[0]) {
+      await db.query("INSERT INTO password_reset_requests(user_id) VALUES($1)", [account.rows[0].id]);
+      const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+      for (const admin of admins.rows) await insertNotification(db, admin.email, "Password reset requested", `${email} requested a password reset.`);
+    }
+    sendJson(response, 202, { ok: true });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleSession(request, response, db, options, user) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/session" && request.method === "GET") {
+    sendJson(response, 200, { user: publicUser(user) });
+    return;
+  }
+
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleCommunity(request, response, db, options, user) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/community/unread-count" && request.method === "GET") {
+    requireRole(user, ROLES);
+    const result = await db.query("SELECT count(*)::integer AS count FROM notifications WHERE target_email=$1 AND read=false", [user.email]);
+    sendJson(response, 200, { count: Number(result.rows[0].count) });
+    return;
+  }
+  if (url.pathname === "/api/community/working-hours" && request.method === "GET") {
+    requireRole(user, ROLES);
+    const result = await db.query("SELECT id,name,working_hours AS \"workingHours\" FROM users WHERE role='official' AND status='Active' ORDER BY name");
+    sendJson(response, 200, { officials: result.rows });
+    return;
+  }
+  if (url.pathname === "/api/community/follow-up" && request.method === "POST") {
+    requireRole(user, ["resident"]);
+    requireJsonBody(request);
+    const reportId = String(request.body.reportId || "");
+    const message = String(request.body.message || "").trim();
+    if (!message || message.length > 1000) throw new HttpError(400, "Enter a follow-up message.");
+    const report = await db.query("SELECT id,status FROM reports WHERE id=$1 AND user_email=$2", [reportId, user.email]);
+    if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
+    if (report.rows[0].status !== "Submitted") throw new HttpError(400, "Follow-ups are only available while a report is pending.");
+    await withTransaction(db, async (transaction) => {
+      const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
+      await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,'resident')",
+        [reportId, Number(position.rows[0].position), "Submitted", `Follow-up: ${message}`, user.name]);
+      await transaction.query("INSERT INTO report_follow_ups(report_id,user_email,message) VALUES($1,$2,$3)", [reportId, user.email, message]);
+      const staff = await transaction.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
+      for (const account of staff.rows) await insertNotification(transaction, account.email, "Report follow-up received", `${reportId}: ${message}`, reportId);
+      await insertActivity(transaction, user, "Added report follow-up", `${reportId} · ${message}`);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleProfile(request, response, db, options, user) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/profile" && request.method === "PUT") {
+    requireRole(user, ROLES);
+    requireJsonBody(request);
+    const body = request.body;
+    validateAccount({ ...body, email: user.email });
+    if (user.role === "resident") await assertKnownArea(db, body.area);
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      await db.query("UPDATE users SET name=$1,area=$2,phone=$3 WHERE id=$4",
+        [body.name.trim(), body.area.trim(), String(body.phone || "").trim(), user.id]);
+      await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const updatedUser = await getSessionUser(request, db);
+    const [state, revision] = await Promise.all([
+      readFullState(db, updatedUser),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, {
+      data: stateForRole(state, updatedUser),
+      revision: Number(revision.rows[0].revision),
+      user: publicUser(updatedUser),
+    });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleState(request, response, db, options, user) {
+  const { mailer, smtpFrom, appOrigin } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/state" && request.method === "GET") {
+    requireRole(user, ROLES);
+    const [state, revision] = await Promise.all([
+      readFullState(db, user),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    return;
+  }
+  if (url.pathname === "/api/state" && request.method === "PUT") {
+    requireRole(user, ROLES);
+    requireJsonBody(request);
+    const body = request.body;
+    const revision = await updateState(db, user, body, { mailer, smtpFrom, appOrigin });
+    const currentUser = await getSessionUser(request, db);
+    const state = await readFullState(db, currentUser);
+    sendJson(response, 200, { revision, data: stateForRole(state, currentUser), user: publicUser(currentUser) });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleUsers(request, response, db, options, user) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/users/password-reset" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
+    const target = await db.query("SELECT id, name FROM users WHERE email=$1 AND email<>$2", [email, user.email]);
+    if (!target.rows.length) throw new HttpError(404, "The account could not be found.");
+    const temporaryPassword = `CommUnity-${randomBytes(5).toString("base64url")}`;
+    await withTransaction(db, async (transaction) => {
+      await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(temporaryPassword), target.rows[0].id]);
+      await transaction.query("UPDATE users SET requires_password_change=true WHERE id=$1", [target.rows[0].id]);
+      await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
+      await transaction.query("UPDATE password_reset_requests SET status='completed',handled_by=$1,handled_at=now() WHERE user_id=$2 AND status='pending'", [user.id, target.rows[0].id]);
+      await insertActivity(transaction, user, "Generated temporary password", target.rows[0].name);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { temporaryPassword });
+    return;
+  }
+  if (url.pathname === "/api/users/deactivate" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    const email = String(request.body.email || "").trim().toLowerCase();
+    const reason = String(request.body.reason || "").trim();
+    if (!reason || reason.length > 500) throw new HttpError(400, "A deactivation reason is required.");
+    if (email === user.email) throw new HttpError(400, "You cannot deactivate the administrator account you are using.");
+    const result = await db.query("UPDATE users SET status='Inactive', deactivation_reason=$1 WHERE email=$2", [reason, email]);
+    if (!result.rowCount) throw new HttpError(404, "The account could not be found.");
+    await db.query("DELETE FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)", [email]);
+    await insertActivity(db, user, "Deactivated user account", `${email} · ${reason}`);
+    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (url.pathname === "/api/users/password" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    const body = request.body;
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    validatePassword(body.newPassword);
+    if (body.newPassword !== body.confirmPassword) throw new HttpError(400, "The new passwords do not match.");
+    if (!email || email === user.email) throw new HttpError(400, "Choose another account to reset.");
+    await withTransaction(db, async (transaction) => {
+      const target = await transaction.query("SELECT id, name FROM users WHERE email=$1", [email]);
+      if (!target.rows.length) throw new HttpError(404, "The account could not be found.");
+      await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [
+        await passwordHash(body.newPassword),
+        target.rows[0].id,
+      ]);
+      await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
+      await insertActivity(transaction, user, "Reset user password", target.rows[0].name);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const currentUser = await getSessionUser(request, db);
+    const [state, revision] = await Promise.all([
+      readFullState(db, currentUser),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, {
+      data: stateForRole(state, currentUser),
+      revision: Number(revision.rows[0].revision),
+      user: publicUser(currentUser),
+    });
+    return;
+  }
+  if (url.pathname === "/api/users" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    await createUser(db, user, request.body);
+    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
+    sendJson(response, 201, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleAnnouncements(request, response, db, options, user) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/announcements" && ["POST", "PUT", "DELETE"].includes(request.method)) {
+    requireRole(user, ["official", "administrator"]);
+    if (request.method === "POST") requireRole(user, ["official"]);
+    const permission = await db.query(
+      "SELECT enabled FROM role_permissions WHERE role=$1 AND permission='manageAnnouncements'",
+      [user.role],
+    );
+    if (!permission.rows[0]?.enabled) throw new HttpError(403, "Announcement management is not enabled for this role.");
+    requireJsonBody(request);
+    const body = request.body;
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      if (request.method === "DELETE") {
+        if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
+        const deleted = await db.query("DELETE FROM announcements WHERE id=$1", [Number(body.id)]);
+        if (!deleted.rowCount) throw new HttpError(404, "This announcement could not be found.");
+        await insertActivity(db, user, "Removed an announcement", `Announcement ${body.id}`);
+      } else {
+        validateAnnouncement(body);
+        if (request.method === "POST") {
+          const approvalStatus = user.role === "official" ? "pending" : "approved";
+          await db.query("INSERT INTO announcements (title,detail,date,approval_status,created_by) VALUES ($1,$2,$3,$4,$5)",
+            [body.title.trim(), body.detail.trim(), body.date, approvalStatus, user.id]);
+          await insertActivity(db, user, approvalStatus === "pending" ? "Submitted an announcement" : "Published an announcement", body.title.trim());
+        } else {
+          if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
+          const updated = await db.query("UPDATE announcements SET title=$1,detail=$2,date=$3 WHERE id=$4",
+            [body.title.trim(), body.detail.trim(), body.date, Number(body.id)]);
+          if (!updated.rowCount) throw new HttpError(404, "This announcement could not be found.");
+          await insertActivity(db, user, "Updated an announcement", body.title.trim());
+        }
+        if (url.pathname === "/api/announcements/approval" && request.method === "POST") {
+          requireRole(user, ["administrator"]);
+          requireJsonBody(request);
+          const status = String(request.body.status || "");
+          if (!["approved", "declined"].includes(status) || !/^\d+$/.test(String(request.body.id || ""))) {
+            throw new HttpError(400, "Choose a valid announcement decision.");
+          }
+          const result = await db.query("UPDATE announcements SET approval_status=$1 WHERE id=$2", [status, Number(request.body.id)]);
+          if (!result.rowCount) throw new HttpError(404, "This announcement could not be found.");
+          await insertActivity(db, user, `${status === "approved" ? "Approved" : "Declined"} an announcement`, `Announcement ${request.body.id}`);
+          await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+          const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
+          sendJson(response, 200, { ok: true, data: stateForRole(state, user), revision: Number(revision.rows[0].revision) });
+          return;
+        }
+      }
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const [state, revision] = await Promise.all([
+      readFullState(db, user),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleSettings(request, response, db, options, user) {
+  const { mailerState, smtpSettingsKey } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/settings/smtp" && request.method === "GET") {
     requireRole(user, ["administrator"]);
     sendJson(response, 200, { settings: publicSmtpSettings(mailerState.settings), encryptionReady: Boolean(smtpSettingsKey) });
@@ -1286,7 +1603,8 @@ async function handleApi(request, response, db, options) {
   if (url.pathname === "/api/settings/smtp" && request.method === "PUT") {
     requireRole(user, ["administrator"]);
     if (!smtpSettingsKey) throw new HttpError(503, "Configure SMTP_SETTINGS_KEY on the server before saving SMTP settings.");
-    const body = await readJson(request);
+    requireJsonBody(request);
+    const body = request.body;
     const settings = {
       host: String(body.host || "").trim(),
       port: Number(body.port),
@@ -1320,223 +1638,84 @@ async function handleApi(request, response, db, options) {
     sendJson(response, 200, { ok: true });
     return;
   }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleLocations(request, response, db, options, user) {
+  const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/locations" && request.method === "GET") {
     const locations = await db.query("SELECT id,area,barangay,street,purok,landmark FROM community_locations ORDER BY barangay,purok,street,id");
     sendJson(response, 200, { locations: locations.rows });
     return;
   }
-  if (url.pathname === "/api/announcements" && ["POST", "PUT", "DELETE"].includes(request.method)) {
-    requireRole(user, ["official", "administrator"]);
-    const permission = await db.query(
-      "SELECT enabled FROM role_permissions WHERE role=$1 AND permission='manageAnnouncements'",
-      [user.role],
-    );
-    if (!permission.rows[0]?.enabled) throw new HttpError(403, "Announcement management is not enabled for this role.");
-    const body = await readJson(request);
-    await withTransaction(db, async (transaction) => {
-      const db = transaction;
-      if (request.method === "DELETE") {
-        if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
-        const deleted = await db.query("DELETE FROM announcements WHERE id=$1", [Number(body.id)]);
-        if (!deleted.rowCount) throw new HttpError(404, "This announcement could not be found.");
-        await insertActivity(db, user, "Removed an announcement", `Announcement ${body.id}`);
-      } else {
-        validateAnnouncement(body);
-        if (request.method === "POST") {
-          await db.query("INSERT INTO announcements (title,detail,date) VALUES ($1,$2,$3)",
-            [body.title.trim(), body.detail.trim(), body.date]);
-          await insertActivity(db, user, "Published an announcement", body.title.trim());
-        } else {
-          if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
-          const updated = await db.query("UPDATE announcements SET title=$1,detail=$2,date=$3 WHERE id=$4",
-            [body.title.trim(), body.detail.trim(), body.date, Number(body.id)]);
-          if (!updated.rowCount) throw new HttpError(404, "This announcement could not be found.");
-          await insertActivity(db, user, "Updated an announcement", body.title.trim());
-        }
-      }
-      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    });
-    const [state, revision] = await Promise.all([
-      readFullState(db, user),
-      db.query("SELECT revision FROM app_meta WHERE id=1"),
-    ]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
-    return;
-  }
-  if (url.pathname === "/api/profile" && request.method === "PUT") {
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleReports(request, response, db, options, user) {
+  const { uploadsDir } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  const reportPhotoMatch = url.pathname.match(/^\/api\/reports\/([^/]+)\/photos\/(\d+)\/([A-Za-z0-9-]+\.(?:jpg|png))$/);
+  if (reportPhotoMatch && request.method === "GET") {
     requireRole(user, ROLES);
-    const body = await readJson(request);
-    validateAccount({ ...body, email: user.email });
-    if (user.role === "resident") await assertKnownArea(db, body.area);
-    await withTransaction(db, async (transaction) => {
-      const db = transaction;
-      await db.query("UPDATE users SET name=$1,area=$2,phone=$3 WHERE id=$4",
-        [body.name.trim(), body.area.trim(), String(body.phone || "").trim(), user.id]);
-      await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
-      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    });
-    const updatedUser = await getSessionUser(request, db);
-    const [state, revision] = await Promise.all([
-      readFullState(db, updatedUser),
-      db.query("SELECT revision FROM app_meta WHERE id=1"),
-    ]);
-    sendJson(response, 200, {
-      data: stateForRole(state, updatedUser),
-      revision: Number(revision.rows[0].revision),
-      user: publicUser(updatedUser),
-    });
-    return;
-  }
-  if (url.pathname === "/api/session" && request.method === "GET") {
-    sendJson(response, 200, { user: publicUser(user) });
-    return;
-  }
-  if (url.pathname === "/api/auth/login" && request.method === "POST") {
-    const body = await readJson(request);
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    const password = typeof body.password === "string" && body.password.length <= MAX_PASSWORD_LENGTH ? body.password : "";
-    const clientAddress = requestClientAddress(request, trustedProxyAddresses);
-    const ipAttemptKey = hash(`login-ip:${clientAddress}`);
-    const accountAttemptKey = hash(`login-account:${email}`);
-    await recordAttempt(db, ipAttemptKey, 100);
-    await recordAttempt(db, accountAttemptKey);
-    const result = await db.query(`
-      SELECT u.id,u.email,u.name,u.area,u.phone,u.role,u.status,to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",c.password_hash
-      FROM users u JOIN user_credentials c ON c.user_id=u.id WHERE u.email=$1
-    `, [email]);
-    const account = result.rows[0];
-    const passwordMatches = await verifyPassword(password, account?.password_hash ||
-      "scrypt$00000000000000000000000000000000$00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
-    if (!account || !passwordMatches || account.status !== "Active") {
-      throw new HttpError(401, "Those sign-in details do not match an active account.");
+    const reportId = decodeURIComponent(reportPhotoMatch[1]);
+    const position = Number(reportPhotoMatch[2]);
+    const report = await db.query("SELECT user_email FROM reports WHERE id=$1", [reportId]);
+    if (!report.rows.length) throw new HttpError(404, "The report photo could not be found.");
+    if (user.role === "resident" && report.rows[0].user_email !== user.email) {
+      throw new HttpError(403, "You cannot access this report photo.");
     }
-    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [accountAttemptKey]);
-    await issueSession(response, db, account, Boolean(body.remember), secureCookies);
-    await insertActivity(db, account, "Signed in", account.role);
-    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    sendJson(response, 200, { user: publicUser(account) });
-    return;
-  }
-  if (url.pathname === "/api/auth/register" && request.method === "POST") {
-    const body = await readJson(request);
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    await recordAttempt(db, hash(`register:${requestClientAddress(request, trustedProxyAddresses)}`));
-    validateAccount({ email, name: body.name, area: body.area, phone: body.phone || "" });
-    validatePassword(body.password);
-    if (body.password !== body.confirmPassword) throw new HttpError(400, "The passwords do not match.");
-    const id = randomUUID();
-    const newUser = { id, email, name: body.name.trim(), area: body.area.trim(), phone: String(body.phone || "").trim(), role: "resident", status: "Active" };
-    await assertKnownArea(db, newUser.area);
-    await withTransaction(db, async (transaction) => {
-      const db = transaction;
-      await db.query("INSERT INTO users (id,email,name,area,phone,role,status) VALUES ($1,$2,$3,$4,$5,'resident','Active')",
-        [id, email, newUser.name, newUser.area, newUser.phone]);
-      await db.query("INSERT INTO user_credentials(user_id,password_hash) VALUES($1,$2)", [id, await passwordHash(body.password)]);
-      await insertActivity(db, newUser, "Created resident account", `${newUser.name} · ${newUser.area}`);
-      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    }).catch((error) => {
-      if (error.code === "23505") throw new HttpError(409, "An account already uses this email address.");
-      throw error;
+    const photo = await db.query("SELECT photo_url FROM report_photos WHERE report_id=$1 AND position=$2", [reportId, position]);
+    const photoUrl = photo.rows[0]?.photo_url || "";
+    if (photoUrl !== url.pathname) throw new HttpError(404, "The report photo could not be found.");
+    const filename = path.basename(photoUrl);
+    if (!filename || filename === "." || filename === "..") throw new HttpError(404, "The report photo could not be found.");
+    const image = await readFile(path.join(uploadsDir, reportId, filename)).catch(() => {
+      throw new HttpError(404, "The report photo could not be found.");
     });
-    await issueSession(response, db, newUser, true, secureCookies);
-    sendJson(response, 201, { user: publicUser(newUser) });
-    return;
-  }
-  if (url.pathname === "/api/auth/logout" && request.method === "POST") {
-    const token = cookieValue(request, SESSION_COOKIE);
-    if (token) await db.query("DELETE FROM web_sessions WHERE token_hash=$1", [hash(token)]);
-    response.setHeader("Set-Cookie", clearSessionCookie(secureCookies));
-    sendJson(response, 200, { ok: true });
-    return;
-  }
-  if (url.pathname === "/api/auth/password" && request.method === "POST") {
-    requireRole(user, ROLES);
-    const body = await readJson(request);
-    validatePassword(body.newPassword);
-    if (body.newPassword !== body.confirmPassword) throw new HttpError(400, "The new passwords do not match.");
-    const attemptKey = hash(`password-change:${user.id}`);
-    await recordAttempt(db, attemptKey, 5);
-    const current = await db.query("SELECT password_hash FROM user_credentials WHERE user_id=$1", [user.id]);
-    if (!await verifyPassword(String(body.currentPassword || ""), current.rows[0]?.password_hash)) {
-      throw new HttpError(400, "The current password does not match this account.");
-    }
-    const token = cookieValue(request, SESSION_COOKIE);
-    await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(body.newPassword), user.id]);
-    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
-    await db.query("DELETE FROM web_sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hash(token)]);
-    await insertActivity(db, user, "Changed account password", user.email);
-    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    sendJson(response, 200, { ok: true });
-    return;
-  }
-  if (url.pathname === "/api/state" && request.method === "GET") {
-    requireRole(user, ROLES);
-    const [state, revision] = await Promise.all([
-      readFullState(db, user),
-      db.query("SELECT revision FROM app_meta WHERE id=1"),
-    ]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
-    return;
-  }
-  if (url.pathname === "/api/state" && request.method === "PUT") {
-    requireRole(user, ROLES);
-    const body = await readJson(request);
-    const revision = await updateState(db, user, body, { mailer, smtpFrom, appOrigin });
-    const currentUser = await getSessionUser(request, db);
-    const state = await readFullState(db, currentUser);
-    sendJson(response, 200, { revision, data: stateForRole(state, currentUser), user: publicUser(currentUser) });
-    return;
-  }
-  if (url.pathname === "/api/users/password" && request.method === "POST") {
-    requireRole(user, ["administrator"]);
-    const body = await readJson(request);
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-    validatePassword(body.newPassword);
-    if (body.newPassword !== body.confirmPassword) throw new HttpError(400, "The new passwords do not match.");
-    if (!email || email === user.email) throw new HttpError(400, "Choose another account to reset.");
-    await withTransaction(db, async (transaction) => {
-      const target = await transaction.query("SELECT id, name FROM users WHERE email=$1", [email]);
-      if (!target.rows.length) throw new HttpError(404, "The account could not be found.");
-      await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [
-        await passwordHash(body.newPassword),
-        target.rows[0].id,
-      ]);
-      await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
-      await insertActivity(transaction, user, "Reset user password", target.rows[0].name);
-      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    response.writeHead(200, {
+      "Cache-Control": "private, no-store",
+      "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
+      "Content-Length": image.length,
+      "X-Content-Type-Options": "nosniff",
     });
-    const currentUser = await getSessionUser(request, db);
-    const [state, revision] = await Promise.all([
-      readFullState(db, currentUser),
-      db.query("SELECT revision FROM app_meta WHERE id=1"),
-    ]);
-    sendJson(response, 200, {
-      data: stateForRole(state, currentUser),
-      revision: Number(revision.rows[0].revision),
-      user: publicUser(currentUser),
-    });
-    return;
-  }
-  if (url.pathname === "/api/users" && request.method === "POST") {
-    requireRole(user, ["administrator"]);
-    await createUser(db, user, await readJson(request));
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 201, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    response.end(image);
     return;
   }
   sendJson(response, 404, { error: "API endpoint not found." });
 }
 
-function addSecurityHeaders(response, secure) {
-  response.setHeader("Cache-Control", "no-store");
-  // Leaflet positions tiles and markers through inline style attributes.
-  response.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'");
-  response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  response.setHeader("X-Content-Type-Options", "nosniff");
-  response.setHeader("X-Frame-Options", "DENY");
-  if (secure) response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+async function handleReportPhotos(request, response, db, options, user) {
+  const { uploadsDir } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/report-photos" && request.method === "POST") {
+    requireRole(user, ["resident"]);
+    const reportId = url.searchParams.get("reportId") || "";
+    if (!validId(reportId)) throw new HttpError(400, "The report identifier is invalid.");
+    const files = await readMultipart(request);
+    if (!files.length) throw new HttpError(400, "Choose at least one JPG or PNG photo.");
+    const reportUploadDir = path.join(uploadsDir, reportId);
+    await mkdir(reportUploadDir, { recursive: true });
+    const uploaded = [];
+    try {
+      for (const [position, file] of files.entries()) {
+        const extension = PHOTO_TYPES.get(file.type);
+        if (!extension) throw new HttpError(400, `${file.name}: choose a JPG or PNG image.`);
+        const filename = `${randomUUID()}${extension}`;
+        await writeFile(path.join(reportUploadDir, filename), file.data, { flag: "wx" });
+        uploaded.push({
+          name: String(file.name || filename).slice(0, 120),
+          photoUrl: `/api/reports/${encodeURIComponent(reportId)}/photos/${position}/${filename}`,
+          filename,
+        });
+      }
+    } catch (error) {
+      await Promise.all(uploaded.map((photo) => unlink(path.join(reportUploadDir, photo.filename)).catch(() => {})));
+      throw error;
+    }
+    sendJson(response, 201, { photos: uploaded.map(({ name, photoUrl }) => ({ name, photoUrl })) });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
 }
 
 export async function createCommunityServer({
@@ -1587,67 +1766,22 @@ export async function createCommunityServer({
     pruneExpiredAuthState(db).catch((error) => logError("CommUnity could not prune expired authentication data.", error));
   }, 15 * 60 * 1000);
   reminderTimer.unref();
-  const server = createServer(async (request, response) => {
-    const secure = production || Boolean(databaseUrl);
-    addSecurityHeaders(response, secure);
-    const requestId = randomUUID();
-    response.setHeader("X-Request-Id", requestId);
-    try {
-      if (request.url?.split("?")[0] === "/healthz") {
-        if (request.method !== "GET") {
-          response.writeHead(405, { Allow: "GET" }).end();
-          return;
-        }
-        await db.query("SELECT 1");
-        sendJson(response, 200, { status: "ok" });
-        return;
-      }
-      if (request.url?.startsWith("/api/")) {
-        await handleApi(request, response, db, { server, appOrigin, secureCookies: secure, trustedProxyAddresses, uploadsDir, mailerState, smtpSettingsKey });
-        return;
-      }
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        response.writeHead(405, { Allow: "GET, HEAD" }).end();
-        return;
-      }
-      const pathname = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`).pathname;
-      const filename = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
-      if (!PUBLIC_FILES.has(filename)) {
-        response.writeHead(404).end("Not found");
-        return;
-      }
-      const body = await readFile(path.join(PROJECT_DIR, filename));
-      response.writeHead(200, {
-        "Content-Length": body.length,
-        "Content-Type": CONTENT_TYPES[path.extname(filename)],
-        "Cache-Control": filename === "index.html" ? "no-cache" : "public, max-age=300",
-      });
-      response.end(request.method === "HEAD" ? undefined : body);
-    } catch (error) {
-      if (response.headersSent) {
-        response.destroy(error);
-        return;
-      }
-      if (error instanceof URIError) {
-        sendJson(response, 400, { error: "Invalid URL encoding." });
-        return;
-      }
-      if (error instanceof HttpError) {
-        sendJson(response, error.status, { error: error.message });
-        return;
-      }
-      if (error.code === "23505") {
-        sendJson(response, 409, { error: "A record with that identifier or email already exists." });
-        return;
-      }
-      logError("CommUnity server request failed.", error, {
-        requestId,
-        method: request.method,
-        path: request.url?.split("?")[0] || "/",
-      });
-      sendJson(response, 500, { error: "The server could not complete this request." });
-    }
+  const secure = production || Boolean(databaseUrl);
+  const app = createExpressApp({
+    db,
+    secure,
+    projectDir: PROJECT_DIR,
+    appOrigin,
+    trustedProxyAddresses,
+    uploadsDir,
+    mailerState,
+    smtpSettingsKey,
+    handleApi,
+    HttpError,
+    logError,
+    createRequestId: randomUUID,
   });
+  const server = createServer(app);
   return {
     db,
     server,

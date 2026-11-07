@@ -1,6 +1,6 @@
 # CommUnity
 
-CommUnity is a community-services portal for residents, barangay officials, and administrators. It provides resident reports, collection schedules, notifications, profile management, role-based workspaces, and an activity view.
+CommUnity is a community-services portal for residents, barangay officials, and administrators. It provides resident reports, collection schedules, notifications, profile management, role-based workspaces, and an activity view. The Node.js server uses Express for its HTTP middleware and domain API routing.
 
 ## Run locally
 

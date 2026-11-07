@@ -6,7 +6,7 @@
 web
 
 ## Stack
-HTML, CSS, and JavaScript client with a Node.js HTTP server, server-side authentication, and relational PGlite or managed PostgreSQL storage.
+HTML, CSS, and JavaScript client with an Express.js server on Node.js, server-side authentication, and relational PGlite or managed PostgreSQL storage.
 
 ## Users
 - Residents of Palsara who need to check barangay collection services, report community concerns, and follow up on their reports.

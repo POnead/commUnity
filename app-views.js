@@ -1,8 +1,13 @@
 "use strict";
 
+function displayReportId(id) {
+  const match = String(id || "").match(/^R(?:PT-\d{4}-)?(\d+)$/i);
+  return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
+}
+
 function navGroups(role) {
   const groups = role === "resident" ? [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["collection", "Garbage collection", "calendar"], ["recycling", "Recycling directory", "leaf"], ["report", "Report a concern", "flag"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["collection", "Garbage collection", "calendar"], ["recycling", "Recycling directory", "leaf"], ["report", "Report a concern", "flag"]] },
     { title: "Your activity", links: [["reports", "My reports", "clipboard"], ["history", "Report history", "clock"], ["notifications", "Notifications", "bell", unreadCount()]] },
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : role === "official" ? [
@@ -11,15 +16,15 @@ function navGroups(role) {
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : [
     { title: "Community", links: [["dashboard", "Overview", "home"], ["reports", "Community reports", "clipboard"]] },
-    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"]] },
+    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"], ["audit", "Activity Log", "activity"]] },
   ];
-  return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage(role, key)) }));
+  return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage({ role, email: currentUser?.email }, key)) }));
 }
 function requiredPermission(role, pageName) {
   const map = {
     resident: { collection: "viewSchedules", report: "submitReports", reports: "submitReports", history: "submitReports" },
     official: { concerns: "manageReports", history: "manageReports", collection: "manageSchedules", announcements: "manageAnnouncements" },
-    administrator: { reports: "manageReports", monitoring: "manageReports", users: "manageUsers", locations: "manageUsers", announcements: "manageAnnouncements", roles: "manageRoles", audit: "viewAudit" },
+    administrator: { reports: "manageReports", analytics: "manageReports", monitoring: "manageReports", users: "manageUsers", locations: "manageUsers", announcements: "manageAnnouncements", roles: "manageRoles", activity: "viewAudit", audit: "viewAudit" },
   };
   return map[role]?.[pageName] || "";
 }
@@ -36,9 +41,11 @@ function officialReportFilters(reports, activeFilter) {
   }).join("")}</div>`;
 }
 
-function canOpenPage(role, pageName) {
-  const permission = requiredPermission(role, pageName);
-  return !permission || Boolean(data.permissions?.[role]?.[permission]);
+function canOpenPage(user, pageName) {
+  const permission = requiredPermission(user?.role, pageName);
+  const override = user?.email ? data.accountOverrides?.[user.email] : null;
+  const allowed = override && permission ? Boolean(override[permission]) : Boolean(data.permissions?.[user?.role]?.[permission]);
+  return !permission || allowed;
 }
 
 function userAvatar(user, extra = "") {
@@ -79,6 +86,7 @@ function pageTitle(role, page) {
       reports: ["My reports", "Follow the progress of concerns you have submitted."],
       history: ["Report history", "Review previous concerns and the actions recorded."],
       notifications: ["Notifications", "Updates for your reports and barangay services."],
+      calendar: ["Calendar", "Announcements and collection schedules in one place."],
       profile: ["Your profile", "Keep your contact and area details up to date."],
     },
     official: {
@@ -93,12 +101,13 @@ function pageTitle(role, page) {
     administrator: {
       dashboard: ["System overview", "A concise view of accounts and recent activity."],
       reports: ["Community reports", "Monitor concerns submitted by residents across the barangay."],
-      monitoring: ["System monitoring", "Review report activity, collection schedules, and workspace availability."],
+      analytics: ["Analytics", "Review report activity, user activity, and service trends."],
       users: ["User management", "Review accounts and adjust access."],
       locations: ["Locations and recycling", "Manage resident areas and nearby recycling or junkshop listings."],
       announcements: ["Announcements", "Publish service notices for residents and staff."],
+      activity: ["Activity Log", "A record of account and service activity."],
       roles: ["Role management", "Review the permissions shown in each workspace."],
-      audit: ["Audit activity", "A record of account and service activity."],
+      audit: ["Activity Log", "A record of account and service activity."],
       profile: ["Your profile", "Keep your administrator account details up to date."],
       settings: ["Settings", "Manage administrator workspace areas from one place."],
       notifications: ["Notifications", "Report and service updates for this account."],
@@ -109,7 +118,6 @@ function pageTitle(role, page) {
 
 function shell(role, page, title, description, body, actions = "") {
   const roleLabel = ROLES[role];
-  const unread = unreadCount();
   const date = new Intl.DateTimeFormat("en-PH", { weekday: "short", month: "short", day: "numeric" }).format(new Date());
   const account = `<div class="user-chip">${userAvatar(currentUser)}<div class="user-chip-copy"><strong>${esc(currentUser.name)}</strong><span>${esc(roleLabel)}</span></div></div>`;
   return `
@@ -121,7 +129,6 @@ function shell(role, page, title, description, body, actions = "") {
         </div>
         <div class="topbar-actions">
           <span class="topbar-date">${esc(date)}</span>
-          <a class="icon-button notification-button" href="${routeUrl(role, "notifications")}" aria-label="Notifications${unread ? `, ${unread} unread` : ""}">${icon("bell")}${unread ? '<span class="notification-dot" aria-hidden="true"></span>' : ""}</a>
           <button class="icon-button" type="button" data-action="logout" aria-label="Sign out">${icon("logout")}</button>
         </div>
       </header>
@@ -174,7 +181,8 @@ function statsStrip(items) {
 }
 
 function panel(title, body, options = {}) {
-  return `<section class="panel ${options.className || ""}"><header class="panel-head"><div><h2>${esc(title)}</h2></div>${options.action || ""}</header><div class="panel-body">${body}</div></section>`;
+  const header = title ? `<header class="panel-head"><div><h2>${esc(title)}</h2></div>${options.action || ""}</header>` : "";
+  return `<section class="panel ${options.className || ""}">${header}<div class="panel-body">${body}</div></section>`;
 }
 
 function reportRows(reports, role) {
@@ -183,7 +191,7 @@ function reportRows(reports, role) {
     ? ["Concern", "Affected area", "Date submitted", "Status", "Action"]
     : ["Concern", "Resident", "Affected area", "Status", "Action"];
   const cells = reports.map((report) => {
-    const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(report.id)}${report.urgent ? " · Urgent" : ""}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
+    const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(displayReportId(report.id))}${report.urgent ? " · Urgent" : ""}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
     const second = role === "resident"
       ? `<div class="record-meta" role="cell" data-label="Affected area">${esc(report.area)}</div>`
       : `<div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>`;
@@ -213,7 +221,7 @@ function reportHistoryRows(reports) {
     .sort((a, b) => asDate(b.item.at) - asDate(a.item.at));
   if (!updates.length) return `<div class="empty-state"><strong>No report updates yet</strong>Status changes will appear here.</div>`;
   const rows = updates.map(({ report, item }) => `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.name} ${report.category} ${item.status} ${item.note}`.toLowerCase())}">
-    <div role="cell"><strong class="record-primary">${esc(report.title)}</strong><span class="record-secondary">${esc(report.id)}${report.urgent ? " · Urgent" : ""}</span></div>
+    <div role="cell"><strong class="record-primary">${esc(report.title)}</strong><span class="record-secondary">${esc(displayReportId(report.id))}${report.urgent ? " · Urgent" : ""}</span></div>
     <div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>
     <div role="cell" data-label="Update">${statusPill(item.status)}<span class="record-secondary">${esc(item.note)}</span>${item.actorName ? `<span class="record-secondary">By ${esc(item.actorName)}</span>` : ""}</div>
     <div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div>
@@ -257,12 +265,13 @@ function reportDetail(report, role) {
       ? `<div id="report-detail-map" class="report-map-canvas report-detail-map" data-latitude="${report.latitude}" data-longitude="${report.longitude}" role="region" aria-label="Map centered on this concern's reported location"></div><p class="map-status" id="report-detail-map-status" role="status" aria-live="polite">Map pin at ${report.latitude.toFixed(6)}, ${report.longitude.toFixed(6)}.</p><a class="text-button map-directions-link" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open directions in Google Maps</a>`
       : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`)
     : "";
+  const followUpForm = isResident && report.status === "Submitted" ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" maxlength="1000" required></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : "";
   const body = `
     <div class="content-stack">
       <div class="profile-layout">
         <div class="content-stack">
           <section class="panel"><div class="panel-body">
-            <div class="inline-between"><div><h2 class="report-detail-title">${esc(report.title)}</h2><p class="record-secondary report-detail-id">${esc(report.id)} · ${esc(report.category)}</p></div>${statusPill(report.status)}</div>
+            <div class="inline-between"><div><h2 class="report-detail-title">${esc(report.title)}</h2><p class="record-secondary report-detail-id">${esc(displayReportId(report.id))} · ${esc(report.category)}</p></div>${statusPill(report.status)}</div>
             <p class="report-description">${esc(report.description)}</p>
             <div class="notice-bar"><span>Barangay</span><strong>${esc(report.barangay || "—")}</strong></div>
             <div class="notice-bar mt-16"><span>Purok or area</span><strong>${esc(report.area)}</strong></div>
@@ -272,6 +281,7 @@ function reportDetail(report, role) {
           </div></section>
           ${reportLocation}
           ${panel("Attached photos", photos)}
+          ${followUpForm ? panel("Need to add context?", followUpForm) : ""}
           ${role === "official" ? panel("Record an update", statusForm) : ""}
         </div>
         <div class="content-stack">
@@ -318,7 +328,8 @@ function dashboardResident() {
     <div class="grid-main-side">
       <div class="content-stack">
         ${panel("Next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div><div class="form-actions">${linkButton("View collection schedule", routeUrl("resident", "collection"), "secondary", "small")}</div>` : `<div class="empty-state"><strong>No upcoming pickup posted</strong>Check back for a schedule update from your barangay.</div>`)}
-        ${reports.some((report) => report.urgent && report.status !== "Resolved") ? `<div class="notice-bar"><span>Immediate danger?</span><strong>If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service. CommUnity does not dispatch emergency services.</strong></div>` : ""}
+        ${panel("Emergency hotlines", `<ul class="plain-list">${EMERGENCY_HOTLINES.map(([label, number]) => `<li><span>${esc(label)}</span><strong>${esc(number)}</strong></li>`).join("")}</ul>`, { subtitle: "For immediate danger, call emergency services directly." })}
+        ${panel("Official working hours", `<ul class="plain-list">${(data.users || []).filter((user) => user.role === "official" && user.status === "Active").map((official) => `<li><span>${esc(official.name)}</span><strong>${esc(official.workingHours || "Monday-Friday, 8:00 AM-5:00 PM")}</strong></li>`).join("") || "<li><span>No hours posted</span></li>"}`, { subtitle: "Barangay service desk hours" })}
         ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon(report.urgent && report.status !== "Resolved" ? "alert" : "clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div>${report.urgent && report.status !== "Resolved" ? statusPill("urgent", "Urgent") : statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
       </div>
       <div class="content-stack">
@@ -326,6 +337,16 @@ function dashboardResident() {
       </div>
     </div>`;
   return page("resident", "dashboard", body, actions);
+}
+
+function calendarPage() {
+  const schedules = sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area);
+  const events = [
+    ...data.announcements.map((item) => ({ date: item.date, title: item.title, detail: item.detail, kind: "Announcement" })),
+    ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}-${item.end} · ${item.area}`, kind: "Collection" })),
+  ].sort((a, b) => asDate(a.date) - asDate(b.date));
+  const body = `<div class="content-stack">${panel("Community calendar", `<div class="calendar-list">${events.map((event) => `<article class="calendar-event"><div class="calendar-date"><strong>${esc(dateLabel(event.date, { day: "numeric", month: "short" }))}</strong><span>${esc(event.kind)}</span></div><div><h3>${esc(event.title)}</h3><p>${esc(event.detail)}</p></div></article>`).join("") || `<div class="empty-state"><strong>No upcoming events</strong>Announcements and collection schedules will appear here.</div>`}</div>`, { subtitle: "Announcements and collection schedules for your area" })}</div>`;
+  return page("resident", "calendar", body);
 }
 
 function dashboardOfficial() {
@@ -364,9 +385,8 @@ function dashboardAdmin() {
         stat("Community reports", data.reports.length, "Recorded concerns"),
       ])}
       <div class="grid-main-side">
-        ${panel("Recent activity", `<div class="activity-list">${data.activities.slice(0, 6).map((item) => `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("account") ? "users" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.actor)} · ${esc(item.detail)}</span></div><span class="item-end">${esc(dateTimeLabel(item.at))}</span></div>`).join("")}</div><div class="form-actions">${linkButton("View audit activity", routeUrl("administrator", "audit"), "secondary", "small")}</div>`, { subtitle: "Latest changes in this workspace" })}
+        ${panel("Recent activity", `<div class="activity-list">${data.activities.slice(0, 6).map((item) => `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("account") ? "users" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.actor)} · ${esc(item.detail)}</span></div><span class="item-end">${esc(dateTimeLabel(item.at))}</span></div>`).join("")}</div><div class="form-actions">${linkButton("View activity log", routeUrl("administrator", "activity"), "secondary", "small")}</div>`, { subtitle: "Latest changes in this workspace" })}
         <div class="content-stack">
-          ${panel("Workspace status", `<ul class="plain-list"><li><span>Database</span>${statusPill("active", "Available")}</li><li><span>Last activity</span><strong class="small">${data.activities.length ? esc(dateTimeLabel(data.activities[0].at)) : "—"}</strong></li></ul>`)}
           ${panel("Account roles", `<ul class="plain-list">${Object.entries(ROLES).map(([role, label]) => `<li><span>${esc(label)}</span><strong class="num">${data.users.filter((user) => user.role === role).length}</strong></li>`).join("")}</ul><div class="form-actions">${linkButton("Manage users", routeUrl("administrator", "users"), "secondary", "small")}</div>`)}
         </div>
       </div>
@@ -377,14 +397,14 @@ function dashboardAdmin() {
 function settingsPage() {
   const accountItems = [
     ["User management", "Accounts and status", "users", "users"],
-    ["Role management", "Workspace permissions", "shield", "roles"],
     ["Profile and password", "Your administrator account", "user", "profile"],
   ];
   const workspaceItems = [
     ["Locations and recycling", "Community areas and verified listings", "pin", "locations"],
     ["Announcements", "Community service notices", "activity", "announcements"],
-    ["Monitoring", "Workspace status and report counts", "activity", "monitoring"],
-    ["Audit activity", "Recorded account and service activity", "activity", "audit"],
+    ["Analytics", "Workspace report and account trends", "activity", "analytics"],
+    ["Activity Log", "Recorded account and service activity", "activity", "activity"],
+    ["Role management", "Workspace permissions", "shield", "roles"],
   ];
   const rows = (items) => items.map(([title, description, iconName, pageName]) => `<a class="settings-row" href="${routeUrl("administrator", pageName)}"><span class="settings-row-icon">${icon(iconName)}</span><span class="settings-row-copy"><strong>${esc(title)}</strong><small>${esc(description)}</small></span><span class="settings-row-arrow">${icon("arrow")}</span></a>`).join("");
   const body = `<div class="settings-layout"><section class="settings-section"><h2>Account</h2><div class="settings-list">${rows(accountItems)}</div></section><section class="settings-section"><h2>Workspace</h2><div class="settings-list">${rows(workspaceItems)}</div></section><section class="settings-section"><h2>Email delivery</h2><form id="smtp-settings-form" class="settings-email"><div class="settings-email-head"><span class="settings-row-icon">${icon("mail")}</span><div><strong>SMTP email</strong><small>Report and collection notifications</small></div></div><div class="smtp-guide"><strong>Start with your email provider</strong><span>Choose a provider to fill the server details. Use an app password or service API key when your provider offers one; do not use your normal email password.</span><div class="smtp-provider-list"><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="gmail">Gmail</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="outlook">Outlook</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="sendgrid">SendGrid</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="custom">Other provider</button></div><p class="field-help" id="smtp-provider-help">Select a provider to see where its SMTP password or API key comes from.</p></div><div class="form-grid mt-16">${inputField("SMTP host", "host", smtpSettings.host, { required: true })}${inputField("SMTP port", "port", smtpSettings.port || "587", { type: "number", required: true, min: 1, max: 65535 })}${inputField("SMTP username", "user", smtpSettings.user, { required: true })}${inputField("Sender address", "from", smtpSettings.from, { required: true })}${inputField("SMTP password", "pass", "", { type: "password", autocomplete: "new-password", placeholder: smtpSettings.configured ? "Leave blank to keep current password" : "" })}</div><div class="form-actions"><button class="button" type="submit">Save SMTP settings</button><button class="button secondary" type="button" data-action="test-smtp">Send test email</button></div><p class="field-help">The password is encrypted on the server and never returned to this browser.</p></form></section></div>`;
@@ -454,7 +474,7 @@ function announcementsPage(role) {
   const rows = announcements.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.title} ${item.detail}`.toLowerCase())}">
     <div role="cell"><strong class="record-primary">${esc(item.title)}</strong><span class="record-secondary">${esc(item.detail)}</span></div>
     <div class="record-date" role="cell" data-label="Publish date">${esc(dateLabel(item.date))}</div>
-    ${isManager ? `<div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="edit-announcement" data-id="${esc(item.id)}">Edit</button></div>` : ""}
+    ${isManager ? `<div class="record-actions" role="cell" data-label=""><span class="record-secondary">${esc(item.approvalStatus || "approved")}</span><button class="button secondary small" type="button" data-action="edit-announcement" data-id="${esc(item.id)}">Edit</button>${role === "administrator" && item.approvalStatus === "pending" ? `<button class="button small" type="button" data-action="approve-announcement" data-id="${esc(item.id)}">Approve</button><button class="button danger small" type="button" data-action="decline-announcement" data-id="${esc(item.id)}">Decline</button>` : ""}</div>` : ""}
   </div>`).join("");
   const body = `<div class="content-stack">
     ${panel("Community announcements", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search announcements</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>
@@ -481,7 +501,7 @@ function monitoringPage() {
       ${panel("Collection service", `<ul class="plain-list">${COLLECTION_STATUSES.map((status) => `<li><span>${esc(status)}</span><strong class="num">${schedules.filter((item) => item.status === status).length}</strong></li>`).join("")}</ul><div class="form-actions">${linkButton("Manage locations and listings", routeUrl("administrator", "locations"), "secondary", "small")}</div>`, { subtitle: "Schedules and statuses currently stored" })}
     </div>
   </div>`;
-  return page("administrator", "monitoring", body);
+  return page("administrator", "analytics", body);
 }
 
 function collectionOfficial() {
@@ -684,13 +704,14 @@ function usersPage() {
         stat("All accounts", data.users.length, "In this workspace"),
         ...counts.slice(0, 3).map(([role, count]) => stat(ROLES[role], count, "Accounts in workspace")),
       ])}
-      ${panel("Accounts", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search by name or email</span><input class="input" type="search" data-search-input autocomplete="off"></label><select class="select" data-user-role-filter aria-label="Filter accounts by role"><option value="all">All roles</option>${Object.entries(ROLES).map(([role, label]) => `<option value="${esc(role)}">${esc(label)}</option>`).join("")}</select><select class="select" data-user-status-filter aria-label="Filter accounts by status"><option value="all">All statuses</option><option>Active</option><option>Inactive</option></select></div><div class="mt-16" data-user-table>${userRowsMarkup([...data.users].sort((a, b) => a.name.localeCompare(b.name)))}</div>`, { subtitle: "Manage accounts and role assignments", action: actionButton(`${icon("plus")} Add user`, "add-user", "small") })}
+      ${panel("Accounts", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search by name or email</span><input class="input" type="search" data-search-input autocomplete="off"></label><select class="select" data-user-role-filter aria-label="Filter accounts by role"><option value="all">All roles</option>${Object.entries(ROLES).map(([role, label]) => `<option value="${esc(role)}">${esc(label)}</option>`).join("")}</select><select class="select" data-user-status-filter aria-label="Filter accounts by status"><option value="all">All statuses</option><option>Active</option><option>Inactive</option></select></div><div class="mt-16" data-user-table>${userRowsMarkup([...data.users].sort((a, b) => a.name.localeCompare(b.name)))}</div>`, { subtitle: "Manage accounts without changing role capabilities.", action: actionButton(`${icon("plus")} Add user`, "add-user", "small") })}
     </div>`;
   return page("administrator", "users", body);
 }
 
 function rolesPage() {
-  const roles = Object.keys(ROLES);
+  selectedPermissionRole = "official";
+  const roles = ["official"];
   const selectedRole = selectedPermissionRole;
   permissionDrafts[selectedRole] ||= { ...data.permissions[selectedRole] };
   if (!Object.hasOwn(permissionOpenGroups, selectedRole)) {
@@ -703,14 +724,42 @@ function rolesPage() {
     permissionDrafts[selectedRole][id] !== Boolean(data.permissions[selectedRole]?.[id]),
   ).length;
   const openGroups = permissionOpenGroups[selectedRole];
-  const roleTabs = roles.map((role) => `<button class="permission-role-button" type="button" data-action="select-permission-role" data-role="${esc(role)}" aria-pressed="${role === selectedRole}"><span>${esc(ROLES[role])}</span>${isDirty(role) ? '<span class="permission-unsaved">Unsaved</span>' : ""}</button>`).join("");
-  const permissionGroups = [...new Set(PERMISSION_DEFS.map(({ group }) => group))].map((group) => {
+  const canEditRole = false;
+  const officialAccounts = (data.users || []).filter((user) => user.role === "official" && user.status === "Active");
+  const permissionAccounts = selectedRole === "official" ? (officialAccounts.length ? officialAccounts.map((official) => {
+    const override = data.accountOverrides?.[official.email] || {};
+    const overrideCount = Object.keys(override).length;
+    return `
+  <details class="permission-account">
+    <summary class="permission-account-head">
+      <span class="permission-copy">
+        <strong>${esc(official.name)}</strong>
+        <small>${esc(official.email)}${overrideCount ? ` · ${overrideCount} override${overrideCount === 1 ? "" : "s"}` : ""}</small>
+      </span>
+      <span class="permission-account-toggle" aria-hidden="true">▾</span>
+    </summary>
+    <div class="permission-list">${PERMISSION_DEFS.map((permission) => {
+      const enabled = override && permission.id in override ? Boolean(override[permission.id]) : Boolean(data.permissions.official?.[permission.id]);
+      const hasOverride = override && permission.id in override;
+      return `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}${hasOverride ? " · Override active" : ""}</small></span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${esc(`Barangay official: ${official.name} · ${permission.label}`)}" data-action="toggle-account-permission" data-email="${esc(official.email)}" data-permission="${esc(permission.id)}"></button></div>`;
+    }).join("")}</div>
+    <div class="permission-account-foot">
+      <button class="button secondary small" type="button" data-action="reset-account-permissions" data-email="${esc(official.email)}">Reset to role default</button>
+    </div>
+  </details>`;
+  }).join("") : `<div class="empty-state"><strong>No accounts yet</strong>Add official accounts in User management to assign per-account permissions.</div>`) : "";
+  const roleTabs = roles.length > 1 ? roles.map((role) => `<button class="permission-role-button" type="button" data-action="select-permission-role" data-role="${esc(role)}" aria-pressed="${role === selectedRole}"><span>${esc(ROLES[role])}</span>${isDirty(role) ? '<span class="permission-unsaved">Unsaved</span>' : ""}</button>`).join("") : "";
+  const permissionGroups = selectedRole === "official" ? "" : [...new Set(PERMISSION_DEFS.map(({ group }) => group))].map((group) => {
     const items = PERMISSION_DEFS.filter((permission) => permission.group === group);
-    return `<details class="permission-group" data-permission-group="${esc(group)}" ${openGroups.includes(group) ? "open" : ""}><summary><span>${esc(group)}</span><span class="permission-group-count">${items.length} permissions</span></summary><div class="permission-list">${items.map((permission) => `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}</small></span><button class="switch" type="button" role="switch" aria-checked="${Boolean(permissionDrafts[selectedRole][permission.id])}" aria-label="${esc(`${ROLES[selectedRole]}: ${permission.label}`)}" data-action="toggle-permission" data-permission="${esc(permission.id)}"></button></div>`).join("")}</div></details>`;
+    return `<details class="permission-group" data-permission-group="${esc(group)}" ${openGroups.includes(group) ? "open" : ""}><summary><span>${esc(group)}</span></summary><div class="permission-list">${items.map((permission) => `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}</small></span><span class="permission-state">${Boolean(permissionDrafts[selectedRole]?.[permission.id]) ? "Enabled" : "Disabled"}</span></div>`).join("")}</div></details>`;
   }).join("");
   const body = `
     <div class="content-stack">
-      ${panel("Role permissions", `<div class="permission-roles" role="group" aria-label="Choose a role to edit">${roleTabs}</div><div class="permission-role-context"><strong>${esc(ROLES[selectedRole])}</strong></div><div class="permission-groups">${permissionGroups}</div><div class="permission-actions"><span class="permission-save-status" aria-live="polite">${dirtyCount ? `${dirtyCount} unsaved ${dirtyCount === 1 ? "change" : "changes"}` : "No unsaved changes"}</span><button class="button secondary" type="button" data-action="discard-permission-draft" ${dirtyCount ? "" : "disabled"}>Discard changes</button><button class="button" type="button" data-action="save-permission-draft" ${dirtyCount ? "" : "disabled"}>Save ${esc(ROLES[selectedRole])} permissions</button></div>`, { subtitle: "Edit one role at a time. Changes are applied only when saved." })}
+      ${roleTabs ? `<div class="permission-roles" role="group" aria-label="Choose a role to edit">${roleTabs}</div>` : ""}
+      ${selectedRole !== "official" ? `<div class="permission-role-context"><strong>${esc(ROLES[selectedRole])}</strong></div>` : ""}
+      ${permissionGroups ? `<div class="permission-groups">${permissionGroups}</div>` : ""}
+      ${selectedRole === "official" && permissionAccounts ? `<div class="permission-accounts-intro"><h3>Accounts</h3><p class="field-help">Each official can override the role defaults below. An unset override falls back to the role default; a set override always wins. Changes save immediately.</p></div>` : ""}
+      ${permissionAccounts}
     </div>`;
   return page("administrator", "roles", body);
 }

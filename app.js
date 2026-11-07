@@ -16,12 +16,12 @@ function routeState() {
   const requestedPage = path[1] || "dashboard";
   const pageName = role === "official" && requestedPage === "urgent" ? "concerns" : requestedPage;
   const pages = {
-    resident: ["dashboard", "collection", "recycling", "report", "reports", "history", "notifications", "profile"],
+    resident: ["dashboard", "calendar", "collection", "recycling", "report", "reports", "history", "notifications", "profile"],
     official: ["dashboard", "concerns", "collection", "history", "announcements", "notifications", "profile"],
-    administrator: ["dashboard", "reports", "monitoring", "notifications", "users", "locations", "announcements", "roles", "audit", "settings", "profile"],
+    administrator: ["dashboard", "reports", "analytics", "monitoring", "notifications", "users", "locations", "announcements", "roles", "activity", "audit", "settings", "profile"],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
-  if (!canOpenPage(role, resolvedPage)) {
+  if (!canOpenPage(currentUser, resolvedPage)) {
     window.history.replaceState(null, "", routeUrl(role, "dashboard"));
     queueMicrotask(() => toast("That workspace page is not enabled for this role.", "error"));
     return { type: "app", role, page: "dashboard" };
@@ -42,6 +42,7 @@ function render() {
     reportMapMarker = null;
   }
   if (currentUser && route.type === "app") {
+    if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) modalState = { kind: "forced-password" };
     document.documentElement.dataset.theme = ROLE_THEME[currentUser.role];
     if (window.location.hash !== routeUrl(currentUser.role, route.page)) {
       window.history.replaceState(null, "", routeUrl(currentUser.role, route.page));
@@ -49,6 +50,7 @@ function render() {
     let markup;
     if (route.role === "resident") {
       if (route.page === "dashboard") markup = dashboardResident();
+      else if (route.page === "calendar") markup = calendarPage();
       else if (route.page === "collection") markup = collectionResident();
       else if (route.page === "recycling") markup = recyclingPage();
       else if (route.page === "report") markup = reportPage();
@@ -65,12 +67,14 @@ function render() {
     } else {
       if (route.page === "dashboard") markup = dashboardAdmin();
       else if (route.page === "reports") markup = reportsPage("administrator", "reports");
-      else if (route.page === "monitoring") markup = monitoringPage();
+      else if (route.page === "analytics") markup = monitoringPage();
       else if (route.page === "notifications") markup = notificationsPage("administrator");
       else if (route.page === "users") markup = usersPage();
       else if (route.page === "locations") markup = locationsPage();
       else if (route.page === "announcements") markup = announcementsPage("administrator");
+      else if (route.page === "activity") markup = auditPage();
       else if (route.page === "roles") markup = rolesPage();
+      else if (route.page === "monitoring") markup = monitoringPage();
       else if (route.page === "audit") markup = auditPage();
       else if (route.page === "settings") markup = settingsPage();
       else markup = profilePage("administrator");
@@ -86,6 +90,7 @@ function render() {
   } else {
     document.documentElement.dataset.theme = "auth";
     app.innerHTML = route.type === "register" ? registerMarkup() : loginMarkup();
+    if (modalState) app.insertAdjacentHTML("beforeend", modalMarkup());
   }
   initializeReportDetailMap();
   lastKnownHash = window.location.hash;
@@ -99,6 +104,10 @@ function makeModal(title, body) {
 }
 
 function modalMarkup() {
+  if (modalState.kind === "forced-password") {
+    const body = `<form id="forced-password-form" class="modal-form"><div class="modal-form-fields"><p class="field-help">Your administrator issued a temporary password. Change it before continuing.</p>${inputField("Temporary password", "currentPassword", "", { type: "password", required: true, autocomplete: "current-password" })}<div class="form-grid">${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div></div><div class="form-actions"><button class="button" type="submit">Change password</button></div></form>`;
+    return makeModal("Change your password", body);
+  }
   if (modalState.kind === "user-password") {
     const user = getUser(modalState.id);
     if (!user || user.email === currentUser.email) {
@@ -139,9 +148,21 @@ function modalMarkup() {
       <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save changes" : "Publish announcement"}</button></div></form>`;
     return makeModal(item ? "Edit announcement" : "New announcement", body);
   }
+  if (modalState.kind === "forgot-password") {
+    const body = `<form id="forgot-password-form" class="modal-form"><div class="modal-form-fields"><div class="form-field span-all"><label for="forgot-email">Email address</label><p class="field-help">Enter the email address tied to your account. If an account exists, your barangay administrator will be notified to issue a reset.</p><input class="input" id="forgot-email" name="email" type="email" required autocomplete="email"></div></div><div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Send reset request</button></div></form>`;
+    return makeModal("Forgot password", body);
+  }
+  if (modalState.kind === "deactivate") {
+    const user = modalState.id ? getUser(modalState.id) : null;
+    if (!user) { modalState = null; return ""; }
+    const body = `<form id="deactivate-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
+      <div class="modal-form-fields"><p class="field-help">Why is ${esc(user.name)} being deactivated? The reason is recorded with the account.</p><div class="form-field span-all"><label for="deactivate-reason">Reason *</label><textarea class="textarea" id="deactivate-reason" name="reason" required maxlength="500"></textarea></div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button danger" type="submit">Deactivate account</button></div></form>`;
+    return makeModal("Deactivate account", body);
+  }
   const user = modalState.id ? getUser(modalState.id) : null;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
-    <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Palsara"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
+  <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Palsara"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user?.role === "official" ? inputField("Working hours", "workingHours", user.workingHours || "Monday-Friday, 8:00 AM-5:00 PM", { required: true, maxLength: 120 }) : ""}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
     <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">Reset password</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
   return makeModal(user ? "Edit account" : "Add account", body);
 }
@@ -278,7 +299,8 @@ async function compressPhoto(file) {
 }
 
 function nextReportId() {
-  return `RPT-${new Date().getFullYear()}-${crypto.randomUUID().slice(0, 12)}`;
+  const numbers = data.reports.map((report) => Number(String(report.id).match(/^R(\d+)$/i)?.[1] || 0));
+  return `R${String(Math.max(0, ...numbers) + 1).padStart(2, "0")}`;
 }
 
 async function submitReportDraft() {
@@ -359,6 +381,25 @@ async function updateReportAssignment(id, claim) {
   } else {
     if (report.assignedTo?.id !== currentUser.id) throw new Error("You can only release a concern assigned to you.");
     report.assignedTo = null;
+  }
+
+  async function submitFollowUp(form) {
+    const response = await fetch("/api/community/follow-up", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reportId: String(form.get("reportId") || ""), message: String(form.get("message") || "").trim() }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The follow-up could not be sent.");
+    const stateResponse = await fetch("/api/state");
+    const state = await stateResponse.json();
+    if (!stateResponse.ok) throw new Error(state.error || "The follow-up was sent, but the report could not be refreshed.");
+    data = state.data;
+    dataRevision = state.revision;
+    lastPersistedSnapshot = JSON.stringify(data);
+    selectedReportId = null;
+    render();
+    toast("Your follow-up was sent to barangay staff.", "success");
   }
   addActivity(claim ? "Claimed a concern" : "Released a concern", `${report.id} · ${report.title}`);
   if (!await localSave()) return;
@@ -464,10 +505,6 @@ async function saveAnnouncement(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The announcement could not be saved.");
-  data = result.data;
-  dataRevision = result.revision;
-  currentUser = result.user;
-  lastPersistedSnapshot = JSON.stringify(data);
   modalState = null;
   render();
   toast(id ? "Announcement updated." : "Announcement published.", "success");
@@ -557,9 +594,10 @@ function applySmtpPreset(provider) {
 }
 
 async function updatePassword(form) {
-  const oldPassword = String(form.get("currentPassword") || "");
-  const password = String(form.get("newPassword") || "");
-  const confirm = String(form.get("confirmPassword") || "");
+  const fields = new FormData(form);
+  const oldPassword = String(fields.get("currentPassword") || "");
+  const password = String(fields.get("newPassword") || "");
+  const confirm = String(fields.get("confirmPassword") || "");
   if (password.length < 8) throw new Error("Choose a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The new passwords do not match.");
   const response = await fetch("/api/auth/password", {
@@ -568,7 +606,7 @@ async function updatePassword(form) {
     body: JSON.stringify({ currentPassword: oldPassword, newPassword: password, confirmPassword: confirm }),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "The password could not be changed.");
+  if (!response.ok) throw new Error(response.status === 401 ? "Your session expired. Please sign in again before changing your password." : (result.error || "The password could not be changed."));
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The account was updated, but CommUnity could not reload.");
@@ -623,6 +661,7 @@ async function login(emailInput, password, remember = false) {
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "Signed in, but CommUnity could not load your information.");
   currentUser = state.user || result.user;
+  forcedPasswordDismissed = false;
   data = state.data;
   dataRevision = state.revision;
   lastPersistedSnapshot = JSON.stringify(data);
@@ -635,14 +674,10 @@ async function login(emailInput, password, remember = false) {
 
 async function resetUserPassword(form) {
   const email = String(form.get("email") || "");
-  const password = String(form.get("newPassword") || "");
-  const confirm = String(form.get("confirmPassword") || "");
-  if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
-  if (password !== confirm) throw new Error("The new passwords do not match.");
-  const response = await fetch("/api/users/password", {
+  const response = await fetch("/api/users/password-reset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, newPassword: password, confirmPassword: confirm }),
+    body: JSON.stringify({ email }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The account password could not be reset.");
@@ -652,7 +687,19 @@ async function resetUserPassword(form) {
   lastPersistedSnapshot = JSON.stringify(data);
   modalState = null;
   render();
-  toast("Password reset. Ask the account holder to sign in with the new password.", "success");
+  window.alert(`Temporary password for ${email}: ${result.temporaryPassword}`);
+  toast("Temporary password generated. The account holder must change it after signing in.", "success");
+}
+
+async function requestPasswordReset(email) {
+  const response = await fetch("/api/auth/password-reset-request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The password reset request could not be sent.");
+  toast("If that account exists, a reset request was sent to the administrator.", "success");
 }
 
 async function addOrEditUser(form) {
@@ -660,6 +707,7 @@ async function addOrEditUser(form) {
   const name = String(form.get("name") || "").trim();
   const email = String(form.get("email") || "").trim().toLowerCase();
   const role = String(form.get("role") || "");
+  const workingHours = String(form.get("workingHours") || "Monday-Friday, 8:00 AM-5:00 PM").trim();
   const area = String(form.get("area") || "");
   const status = String(form.get("status") || "");
   if (name.length < 2) throw new Error("Enter the account holder's name.");
@@ -673,7 +721,7 @@ async function addOrEditUser(form) {
   if (existing?.email === currentUser.email && (role !== "administrator" || status !== "Active")) throw new Error("You cannot remove your own administrator access or deactivate your account.");
   if (existing) {
     const oldEmail = existing.email;
-    Object.assign(existing, { name, email, role, area, status, phone: String(form.get("phone") || "").trim() });
+    Object.assign(existing, { name, email, role, area, status, workingHours, phone: String(form.get("phone") || "").trim() });
     data.reports.filter((report) => report.userEmail === oldEmail).forEach((report) => { report.name = name; });
     if (oldEmail !== email) {
       data.notifications.forEach((item) => { if (item.targetEmail === oldEmail) item.targetEmail = email; });
@@ -686,7 +734,7 @@ async function addOrEditUser(form) {
     const response = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, name, area, role, status, phone: String(form.get("phone") || "").trim(), password }),
+      body: JSON.stringify({ email, name, area, role, status, workingHours, phone: String(form.get("phone") || "").trim(), password }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The account could not be added.");
@@ -709,8 +757,29 @@ async function toggleAccount(email) {
   const user = getUser(email);
   if (!user) throw new Error("This account could not be found.");
   if (user.email === currentUser.email) throw new Error("You cannot deactivate the administrator account you are using.");
-  user.status = user.status === "Active" ? "Inactive" : "Active";
-  addActivity(user.status === "Active" ? "Reactivated user account" : "Deactivated user account", `${user.name} · ${ROLES[user.role]}`);
+  if (user.status !== "Active") {
+    user.status = "Active";
+    addActivity("Reactivated user account", `${user.name} · ${ROLES[user.role]}`);
+    if (!await localSave()) return;
+    modalState = null;
+    render();
+    toast(`${user.name}'s account is ${user.status.toLowerCase()}.`, "success");
+    return;
+  }
+  showModal("deactivate", email);
+}
+
+async function deactivateAccount(email, reason) {
+  const user = getUser(email);
+  if (!user) throw new Error("This account could not be found.");
+  const trimmedReason = String(reason || "").trim();
+  if (!trimmedReason) throw new Error("A deactivation reason is required.");
+  const response = await fetch("/api/users/deactivate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, reason: trimmedReason }) });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The account could not be deactivated.");
+  user.status = "Inactive";
+  user.deactivationReason = trimmedReason;
+  addActivity("Deactivated user account", `${user.name} · ${ROLES[user.role]}`);
   if (!await localSave()) return;
   modalState = null;
   render();
@@ -842,7 +911,7 @@ function initializeReportDetailMap() {
 async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
   if (action === "forgot-password") {
-    toast("Ask your workspace administrator to set a new password in User management. Self-service resets are not available.");
+    showModal("forgot-password");
   } else if (action === "toggle-password") {
     const field = app.querySelector('#login-form input[name="password"]');
     if (field) {
@@ -916,7 +985,9 @@ async function handleAction(button, clickEvent) {
   } else if (action === "reset-user-password") {
     showModal("user-password", button.dataset.id);
   } else if (action === "toggle-user") {
-    await toggleAccount(button.dataset.id);
+    const user = getUser(button.dataset.id);
+    if (user?.status === "Active") showModal("deactivate", button.dataset.id);
+    else await toggleAccount(button.dataset.id);
   } else if (action === "add-location") {
     showModal("location");
   } else if (action === "edit-location") {
@@ -953,6 +1024,18 @@ async function handleAction(button, clickEvent) {
     showModal("announcement");
   } else if (action === "edit-announcement") {
     showModal("announcement", button.dataset.id);
+  } else if (action === "approve-announcement" || action === "decline-announcement") {
+    const response = await fetch("/api/announcements/approval", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: button.dataset.id, status: action === "approve-announcement" ? "approved" : "declined" }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The announcement decision could not be saved.");
+    data = result.data || data;
+    if (result.revision) dataRevision = result.revision;
+    render();
+    toast(`Announcement ${action === "approve-announcement" ? "approved" : "declined"}.`, "success");
   } else if (action === "delete-announcement") {
     const item = data.announcements.find((record) => record.id === button.dataset.id);
     if (!item) throw new Error("This announcement could not be found.");
@@ -982,6 +1065,7 @@ async function handleAction(button, clickEvent) {
   } else if (action === "toggle-permission") {
     const permission = button.dataset.permission;
     const role = selectedPermissionRole;
+    if (role !== "official") throw new Error("Only the Barangay official role can have permission changes.");
     if (!Object.hasOwn(data.permissions, role) || !Object.hasOwn(data.permissions[role], permission)) throw new Error("This permission could not be found.");
     permissionDrafts[role] ||= { ...data.permissions[role] };
     permissionDrafts[role][permission] = !permissionDrafts[role][permission];
@@ -990,6 +1074,32 @@ async function handleAction(button, clickEvent) {
     [...app.querySelectorAll('[data-action="toggle-permission"]')]
       .find((item) => item.dataset.permission === permission)
       ?.focus();
+  } else if (action === "toggle-account-permission") {
+    const email = button.dataset.email;
+    const permission = button.dataset.permission;
+    const account = (data.users || []).find((user) => user.email === email);
+    if (account?.role !== "official") throw new Error("Only Barangay official accounts can have permission overrides.");
+    data.accountOverrides = data.accountOverrides || {};
+    data.accountOverrides[email] = data.accountOverrides[email] || {};
+    const current = data.accountOverrides[email][permission] ?? Boolean(data.permissions.official?.[permission]);
+    data.accountOverrides[email][permission] = !current;
+    if (await localSave()) {
+      render();
+      toast("Barangay official permissions saved.", "success");
+    }
+  } else if (action === "reset-account-permissions") {
+    const email = button.dataset.email;
+    const account = (data.users || []).find((user) => user.email === email);
+    if (account?.role !== "official") throw new Error("Only Barangay official accounts can have permission overrides.");
+    if (data.accountOverrides?.[email]) {
+      delete data.accountOverrides[email];
+      if (await localSave()) {
+        render();
+        toast("Barangay official permissions reset to role default.", "success");
+      }
+    } else {
+      toast("No overrides to reset.", "success");
+    }
   } else if (action === "discard-permission-draft") {
     rememberOpenPermissionGroups();
     delete permissionDrafts[selectedPermissionRole];
@@ -999,6 +1109,11 @@ async function handleAction(button, clickEvent) {
   } else if (action === "save-permission-draft") {
     rememberOpenPermissionGroups();
     const role = selectedPermissionRole;
+    if (role !== "official") {
+      delete permissionDrafts[role];
+      render();
+      return;
+    }
     const draft = permissionDrafts[role];
     if (!draft) throw new Error("There are no role permission changes to save.");
     for (const permission of ["manageUsers", "manageRoles"]) {
@@ -1123,6 +1238,8 @@ async function handleSubmit(formEvent) {
       render();
     } else if (formId === "report-status-form") {
       await updateReportStatus(fields);
+    } else if (formId === "follow-up-form") {
+      await submitFollowUp(fields);
     } else if (formId === "schedule-form") {
       await updateCollection(fields);
     } else if (formId === "profile-form") {
@@ -1131,10 +1248,22 @@ async function handleSubmit(formEvent) {
       await saveSmtpSettings(form);
     } else if (formId === "password-form") {
       await updatePassword(fields);
+    } else if (formId === "forced-password-form") {
+      await updatePassword(form);
+      modalState = null;
+      render();
     } else if (formId === "user-form") {
       await addOrEditUser(fields);
     } else if (formId === "user-password-form") {
       await resetUserPassword(fields);
+    } else if (formId === "deactivate-form") {
+      await deactivateAccount(String(fields.get("email") || ""), String(fields.get("reason") || ""));
+    } else if (formId === "forgot-password-form") {
+      const email = String(fields.get("email") || "").trim().toLowerCase();
+      if (!email) throw new Error("Enter your email address.");
+      await requestPasswordReset(email);
+      modalState = null;
+      render();
     } else if (formId === "location-form") {
       await saveLocation(fields);
     } else if (formId === "recycling-form") {

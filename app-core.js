@@ -26,6 +26,12 @@ const CATEGORIES = [
   "Other community concern",
 ];
 const AREAS = ["Purok 1", "Purok 2", "Purok 3", "Purok 4", "Purok 5", "Main Road"];
+const EMERGENCY_HOTLINES = [
+  ["Barangay emergency desk", "(042) 123-4567"],
+  ["Police", "911"],
+  ["Fire and rescue", "911"],
+  ["Health center", "0917 000 0000"],
+];
 function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
 }
@@ -77,6 +83,7 @@ let uploadPhotos = [];
 let smtpSettings = { host: "", port: "", user: "", from: "", configured: false };
 let reportDraft = null;
 let modalState = null;
+let forcedPasswordDismissed = false;
 let selectedPermissionRole = "resident";
 let permissionDrafts = {};
 let permissionOpenGroups = {};
@@ -331,6 +338,7 @@ function seedData() {
     notifications,
     activities,
     permissions,
+    accountOverrides: {},
     announcements: [
       { title: "Barangay clean-up drive", detail: "Saturday, October 31 · 7:00 AM · Barangay covered court", date: "2026-10-31" },
       { title: "Free medical consultation", detail: "November 3 · 8:00 AM–12:00 PM · Health center", date: "2026-11-03" },
@@ -347,6 +355,7 @@ function emptyState() {
     notifications: [],
     activities: [],
     permissions: structuredClone(DEFAULT_PERMISSIONS),
+    accountOverrides: {},
     announcements: [],
     locations: [],
     recyclingLocations: [],
@@ -439,6 +448,10 @@ function clearSession() {
 function unreadCount(user = currentUser) {
   if (!user || !data.notifications) return 0;
   return data.notifications.filter((item) => item.targetEmail === user.email && !item.read).length;
+}
+function displayReportId(id) {
+  const match = String(id || "").match(/^R(?:PT-\d{4}-)?(\d+)$/i);
+  return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
 }
 
 function addActivity(action, detail, result = "Success") {

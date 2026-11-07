@@ -385,11 +385,51 @@ a:hover {
   position: absolute;
   top: 5px;
   right: 6px;
-  width: 8px;
-  height: 8px;
+  min-width: 18px;
+  height: 18px;
   border: 2px solid var(--surface-soft);
   border-radius: 50%;
   background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.calendar-list {
+  display: grid;
+  gap: 12px;
+}
+
+.calendar-event {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.calendar-event:last-child {
+  border-bottom: 0;
+}
+
+.calendar-date {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  color: var(--accent-ink);
+}
+
+.calendar-date span,
+.calendar-event p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.calendar-event h3,
+.calendar-event p {
+  margin: 0;
 }
 
 .mobile-menu-button {
@@ -1937,7 +1977,7 @@ a:hover {
 .permission-role-context {
   display: grid;
   gap: 2px;
-  margin: 15px 0 8px;
+  margin: 8px 0 4px;
 }
 
 .permission-role-context strong {
@@ -2000,6 +2040,104 @@ a:hover {
 .permission-copy small {
   color: var(--muted);
   font-size: 12px;
+}
+
+.permission-account {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-top: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.permission-account:first-child {
+  margin-top: 0;
+}
+
+.permission-account > summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-soft, var(--surface));
+}
+
+.permission-account > summary::-webkit-details-marker {
+  display: none;
+}
+
+.permission-account > summary::marker {
+  content: "";
+}
+
+.permission-account > summary:hover {
+  background: var(--surface-hover, var(--surface));
+}
+
+.permission-account[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.permission-account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 1;
+}
+
+.permission-account-toggle {
+  color: var(--muted);
+  font-size: 16px;
+  transition: transform 150ms ease;
+}
+
+.permission-account[open] .permission-account-toggle {
+  transform: rotate(180deg);
+}
+
+.permission-account .permission-list {
+  padding: 4px 6px 8px;
+}
+
+.permission-account-foot {
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.permission-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.permission-account-intro {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 2px solid var(--line);
+}
+
+.permission-account-intro h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.permission-account-intro .field-help {
+  margin: 0 0 12px;
+}
+
+.permission-state {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .permission-actions {

@@ -10,15 +10,20 @@ let reportDetailMapElement = null;
 
 function routeState() {
   const path = currentPath();
-  if (!currentUser) return { type: path[0] === "register" ? "register" : "login" };
+  if (!currentUser) {
+    if (path[0] === "register") return { type: "register" };
+    if (path[0] === "forgot-password") return { type: "forgot-password" };
+    if (path[0] === "reset-password") return { type: "reset-password" };
+    return { type: "login" };
+  }
   const role = currentUser.role;
   if (path[0] !== role) return { type: "app", role, page: "dashboard" };
   const requestedPage = path[1] || "dashboard";
   const pageName = role === "official" && requestedPage === "urgent" ? "concerns" : requestedPage;
   const pages = {
-    resident: ["dashboard", "calendar", "collection", "recycling", "report", "reports", "history", "notifications", "profile"],
-    official: ["dashboard", "concerns", "collection", "history", "announcements", "notifications", "profile"],
-    administrator: ["dashboard", "reports", "analytics", "monitoring", "notifications", "users", "locations", "announcements", "roles", "activity", "audit", "settings", "profile"],
+    resident: ["dashboard", "calendar", "collection", "report", "reports", "history", "notifications", "profile"],
+    official: ["dashboard", "calendar", "concerns", "collection", "history", "announcements", "notifications", "profile"],
+    administrator: ["dashboard", "calendar", "reports", "approvals", "analytics", "monitoring", "notifications", "users", "locations", "announcements", "roles", "activity", "audit", "settings", "email", "profile"],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
   if (!canOpenPage(currentUser, resolvedPage)) {
@@ -52,13 +57,13 @@ function render() {
       if (route.page === "dashboard") markup = dashboardResident();
       else if (route.page === "calendar") markup = calendarPage();
       else if (route.page === "collection") markup = collectionResident();
-      else if (route.page === "recycling") markup = recyclingPage();
       else if (route.page === "report") markup = reportPage();
       else if (route.page === "reports" || route.page === "history") markup = reportsPage("resident", route.page);
       else if (route.page === "notifications") markup = notificationsPage("resident");
       else markup = profilePage("resident");
     } else if (route.role === "official") {
       if (route.page === "dashboard") markup = dashboardOfficial();
+      else if (route.page === "calendar") markup = calendarPage();
       else if (route.page === "collection") markup = collectionOfficial();
       else if (route.page === "concerns" || route.page === "history") markup = reportsPage("official", route.page);
       else if (route.page === "notifications") markup = notificationsPage("official");
@@ -66,7 +71,9 @@ function render() {
       else markup = profilePage("official");
     } else {
       if (route.page === "dashboard") markup = dashboardAdmin();
+      else if (route.page === "calendar") markup = calendarPage();
       else if (route.page === "reports") markup = reportsPage("administrator", "reports");
+      else if (route.page === "approvals") markup = approvalsPage();
       else if (route.page === "analytics") markup = monitoringPage();
       else if (route.page === "notifications") markup = notificationsPage("administrator");
       else if (route.page === "users") markup = usersPage();
@@ -77,10 +84,11 @@ function render() {
       else if (route.page === "monitoring") markup = monitoringPage();
       else if (route.page === "audit") markup = auditPage();
       else if (route.page === "settings") markup = settingsPage();
+      else if (route.page === "email") markup = emailPage();
       else markup = profilePage("administrator");
     }
     app.innerHTML = markup;
-    if (route.role === "administrator" && route.page === "settings") loadSmtpSettings();
+    if (route.role === "administrator" && (route.page === "settings" || route.page === "email")) loadSmtpSettings();
     updatePagination();
     if (route.role === "resident" && route.page === "report" && reportMapExpanded) initializeReportMap();
     if (modalState) {
@@ -89,7 +97,12 @@ function render() {
     }
   } else {
     document.documentElement.dataset.theme = "auth";
-    app.innerHTML = route.type === "register" ? registerMarkup() : loginMarkup();
+    if (route.type === "register") app.innerHTML = registerMarkup();
+    else if (route.type === "forgot-password") app.innerHTML = forgotPasswordMarkup();
+    else if (route.type === "reset-password") {
+      const token = new URLSearchParams(window.location.hash.split("?")[1] || "").get("token") || "";
+      app.innerHTML = resetPasswordMarkup(token);
+    } else app.innerHTML = loginMarkup();
     if (modalState) app.insertAdjacentHTML("beforeend", modalMarkup());
   }
   initializeReportDetailMap();
@@ -115,9 +128,9 @@ function modalMarkup() {
       return "";
     }
     const body = `<form id="user-password-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
-      <div class="modal-form-fields"><p class="field-help">Set a new password for ${esc(user.name)}. Their sessions will close. Share it privately; they can change it in Profile.</p><div class="form-grid">${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div></div>
-      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Set new password</button></div></form>`;
-    return makeModal("Reset account password", body);
+      <div class="modal-form-fields"><p class="field-help">Approve and generate a temporary password for ${esc(user.name)}. It will be emailed to their primary address and they must change it on next sign-in.</p></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Approve &amp; Generate</button></div></form>`;
+    return makeModal(user.resetRequested ? "Approve password reset" : "Reset account password", body);
   }
   if (modalState.kind === "schedule") {
     const schedule = modalState.id ? data.schedules.find((item) => item.id === modalState.id) : null;
@@ -148,6 +161,26 @@ function modalMarkup() {
       <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save changes" : "Publish announcement"}</button></div></form>`;
     return makeModal(item ? "Edit announcement" : "New announcement", body);
   }
+  if (modalState.kind === "calendar-event") {
+    const date = modalState.date || todayISO();
+    const isAdmin = currentUser?.role === "administrator";
+    const body = `<form id="calendar-event-form" class="modal-form"><input type="hidden" name="date" value="${esc(date)}">
+      <div class="modal-form-fields"><p class="field-help"><strong>${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</strong> · ${isAdmin ? "This event is added to the calendar right away." : "Your request is sent to the administrator for approval."}</p><div class="form-grid">${inputField("Event title", "title", "", { required: true, maxLength: 120 })}</div><div class="form-field span-all"><label for="calendar-event-detail">Details *</label><textarea class="textarea" id="calendar-event-detail" name="detail" required maxlength="1000" placeholder="What happens, where, and at what time?"></textarea></div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${isAdmin ? "Add event" : "Submit for approval"}</button></div></form>`;
+    return makeModal(isAdmin ? "Add calendar event" : "Request a calendar event", body);
+  }
+  if (modalState.kind === "calendar-decline") {
+    const body = `<form id="calendar-decline-form" class="modal-form"><input type="hidden" name="id" value="${esc(modalState.id || "")}">
+      <div class="modal-form-fields"><p class="field-help">Tell the barangay official why this event was rejected. The reason is sent to them along with the decision.</p><div class="form-field span-all"><label for="calendar-decline-reason">Reason *</label><textarea class="textarea" id="calendar-decline-reason" name="reason" required maxlength="500"></textarea></div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button danger" type="submit">Reject event</button></div></form>`;
+    return makeModal("Reject event request", body);
+  }
+  if (modalState.kind === "announcement-decline") {
+    const body = `<form id="announcement-decline-form" class="modal-form"><input type="hidden" name="id" value="${esc(modalState.id || "")}">
+      <div class="modal-form-fields"><p class="field-help">Tell the barangay official why this announcement was declined. The reason is shown to them with the decision.</p><div class="form-field span-all"><label for="announcement-decline-reason">Reason *</label><textarea class="textarea" id="announcement-decline-reason" name="reason" required maxlength="500"></textarea></div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button danger" type="submit">Decline announcement</button></div></form>`;
+    return makeModal("Decline announcement", body);
+  }
   if (modalState.kind === "forgot-password") {
     const body = `<form id="forgot-password-form" class="modal-form"><div class="modal-form-fields"><div class="form-field span-all"><label for="forgot-email">Email address</label><p class="field-help">Enter the email address tied to your account. If an account exists, your barangay administrator will be notified to issue a reset.</p><input class="input" id="forgot-email" name="email" type="email" required autocomplete="email"></div></div><div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Send reset request</button></div></form>`;
     return makeModal("Forgot password", body);
@@ -163,7 +196,7 @@ function modalMarkup() {
   const user = modalState.id ? getUser(modalState.id) : null;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
   <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Palsara"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user?.role === "official" ? inputField("Working hours", "workingHours", user.workingHours || "Monday-Friday, 8:00 AM-5:00 PM", { required: true, maxLength: 120 }) : ""}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
-    <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">Reset password</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
+    <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">${user.resetRequested ? "Approve &amp; Generate" : "Reset password"}</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
   return makeModal(user ? "Edit account" : "Add account", body);
 }
 
@@ -218,14 +251,6 @@ function updatePagination(onlyRecords = null) {
     table.dataset.paginationId ||= `table-${Math.random().toString(36).slice(2, 10)}`;
     controls.innerHTML = `<button class="button secondary small" type="button" data-action="change-page" data-pagination-id="${table.dataset.paginationId}" data-direction="-1" ${page === 0 ? "disabled" : ""}>Previous</button><span class="pagination-status" aria-live="polite">Page ${page + 1} of ${pageCount}</span><button class="button secondary small" type="button" data-action="change-page" data-pagination-id="${table.dataset.paginationId}" data-direction="1" ${page >= pageCount - 1 ? "disabled" : ""}>Next</button>`;
   }
-}
-
-function updateReportAreaChoices(barangay) {
-  const field = app.querySelector("#report-area");
-  if (!field) return;
-  const areas = areasInBarangay(barangay);
-  const selected = areas.includes(field.value) ? field.value : areas[0];
-  field.innerHTML = areas.map((area) => `<option value="${esc(area)}" ${area === selected ? "selected" : ""}>${esc(locationAreaLabels()[area] || area)}</option>`).join("");
 }
 
 function safeCsvCell(value) {
@@ -510,6 +535,64 @@ async function saveAnnouncement(form) {
   toast(id ? "Announcement updated." : "Announcement published.", "success");
 }
 
+async function decideAnnouncement(id, status, reason = "") {
+  const response = await fetch("/api/announcements/approval", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, status, reason }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The announcement decision could not be saved.");
+  data = result.data || data;
+  if (result.revision) dataRevision = result.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
+  modalState = null;
+  render();
+  toast(status === "declined" ? "Announcement declined." : "Announcement approved and published.", "success");
+}
+
+async function saveCalendarEvent(form) {
+  const body = {
+    title: String(form.get("title") || "").trim(),
+    detail: String(form.get("detail") || "").trim(),
+    date: String(form.get("date") || ""),
+  };
+  if (!body.title || !body.date) throw new Error("Enter an event title and date.");
+  if (body.date < todayISO()) throw new Error("Events cannot be scheduled before today.");
+  const response = await fetch("/api/calendar/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The calendar event could not be saved.");
+  data = result.data || data;
+  if (result.revision) dataRevision = result.revision;
+  currentUser = result.user || currentUser;
+  lastPersistedSnapshot = JSON.stringify(data);
+  modalState = null;
+  calendarSelectedDate = body.date;
+  render();
+  toast(currentUser.role === "administrator" ? "Event added to the calendar." : "Event request sent for approval.", "success");
+}
+
+async function decideCalendarEvent(id, status, reason = "") {
+  const response = await fetch("/api/calendar/events/approval", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, status, reason }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The event decision could not be saved.");
+  data = result.data || data;
+  if (result.revision) dataRevision = result.revision;
+  currentUser = result.user || currentUser;
+  lastPersistedSnapshot = JSON.stringify(data);
+  modalState = null;
+  render();
+  toast(status === "declined" ? "Event rejected and the reason sent to the official." : "Event approved and added to the calendar.", "success");
+}
+
 function nextScheduleId(date) {
   const year = asDate(date).getFullYear();
   const largest = data.schedules.reduce((value, schedule) => {
@@ -535,7 +618,7 @@ async function updateProfile(form) {
   const response = await fetch("/api/profile", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, area, phone: String(form.get("phone") || "").trim() }),
+    body: JSON.stringify({ name, area, phone: String(form.get("phone") || "").trim(), recoveryEmail: String(form.get("recoveryEmail") || "").trim() }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
@@ -623,11 +706,10 @@ async function createResident(form) {
   const email = String(form.get("email") || "").trim().toLowerCase();
   const password = String(form.get("password") || "");
   const confirm = String(form.get("confirmPassword") || "");
-  const area = String(form.get("area") || "");
+  const area = locationAreas()[0] || "Purok 1";
   if (name.length < 2) throw new Error("Enter your full name.");
   if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The passwords do not match.");
-  if (!locationAreas().includes(area)) throw new Error("Choose a purok or affected area.");
   const response = await fetch("/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -646,6 +728,7 @@ async function createResident(form) {
   dataRevision = state.revision;
   lastPersistedSnapshot = JSON.stringify(data);
   window.location.hash = routeUrl("resident", "dashboard");
+  announceSessionChange();
   toast("Your resident account is ready.", "success");
 }
 
@@ -669,6 +752,7 @@ async function login(emailInput, password, remember = false) {
   reportDraft = null;
   window.location.hash = routeUrl(currentUser.role, "dashboard");
   render();
+  announceSessionChange();
   toast(`Signed in to the ${ROLES[currentUser.role]} workspace.`, "success");
 }
 
@@ -687,8 +771,7 @@ async function resetUserPassword(form) {
   lastPersistedSnapshot = JSON.stringify(data);
   modalState = null;
   render();
-  window.alert(`Temporary password for ${email}: ${result.temporaryPassword}`);
-  toast("Temporary password generated. The account holder must change it after signing in.", "success");
+  toast("Temporary password generated and emailed to the account holder.", "success");
 }
 
 async function requestPasswordReset(email) {
@@ -700,6 +783,39 @@ async function requestPasswordReset(email) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The password reset request could not be sent.");
   toast("If that account exists, a reset request was sent to the administrator.", "success");
+}
+
+async function forgotPassword(form) {
+  const fields = new FormData(form);
+  const recoveryEmail = String(fields.get("recoveryEmail") || "").trim().toLowerCase();
+  if (!recoveryEmail) throw new Error("Enter your recovery email address.");
+  const response = await fetch("/api/auth/forgot-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recoveryEmail }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The reset request could not be sent.");
+  toast(result.message || "If an account uses that recovery email, a reset link has been sent.", "success");
+  window.location.hash = "#/login";
+}
+
+async function resetPassword(form) {
+  const fields = new FormData(form);
+  const token = String(fields.get("token") || "").trim();
+  const newPassword = String(fields.get("newPassword") || "");
+  const confirm = String(fields.get("confirmPassword") || "");
+  if (newPassword.length < 8) throw new Error("Choose a password with at least 8 characters.");
+  if (newPassword !== confirm) throw new Error("The new passwords do not match.");
+  const response = await fetch("/api/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, newPassword }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The password could not be reset.");
+  toast("Password reset. Sign in with your new password.", "success");
+  window.location.hash = "#/login";
 }
 
 async function addOrEditUser(form) {
@@ -810,8 +926,20 @@ function openReport(id) {
 async function markNotification(id) {
   const item = data.notifications.find((notification) => notification.id === id && notification.targetEmail === currentUser.email);
   if (!item) throw new Error("This notification could not be found.");
+  if (item.read) return;
   item.read = true;
-  if (await localSave()) render();
+  try {
+    const response = await fetch("/api/community/mark-notifications-read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [id] }),
+    });
+    if (!response.ok) throw new Error("Could not mark notification as read.");
+  } catch (error) {
+    item.read = false;
+    throw error;
+  }
+  render();
 }
 
 function setReportMapPin(position) {
@@ -911,7 +1039,19 @@ function initializeReportDetailMap() {
 async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
   if (action === "forgot-password") {
-    showModal("forgot-password");
+    window.location.hash = "#/forgot-password";
+  } else if (action === "request-admin-reset") {
+    const email = window.prompt("Enter your CommUnity account email:");
+    if (email?.trim()) {
+      const response = await fetch("/api/auth/request-admin-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "The request could not be sent.");
+      toast(result.message || "If an account exists, an admin has been notified.", "success");
+    }
   } else if (action === "toggle-password") {
     const field = app.querySelector('#login-form input[name="password"]');
     if (field) {
@@ -928,6 +1068,7 @@ async function handleAction(button, clickEvent) {
     selectedPermissionRole = "resident";
     window.location.hash = "#/login";
     render();
+    announceSessionChange();
     toast("You have signed out.", "success");
   } else if (action === "test-smtp") {
     const response = await fetch("/api/settings/smtp/test", { method: "POST" });
@@ -958,10 +1099,23 @@ async function handleAction(button, clickEvent) {
   } else if (action === "mark-read") {
     await markNotification(button.dataset.id);
   } else if (action === "mark-all-read") {
-    data.notifications.filter((item) => item.targetEmail === currentUser.email).forEach((item) => { item.read = true; });
-    if (await localSave()) {
+    const unreadItems = data.notifications.filter((item) => item.targetEmail === currentUser.email && !item.read);
+    const unreadIds = unreadItems.map((item) => item.id);
+    unreadItems.forEach((item) => { item.read = true; });
+    try {
+      if (unreadIds.length) {
+        const response = await fetch("/api/community/mark-notifications-read", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: unreadIds }),
+        });
+        if (!response.ok) throw new Error("Could not mark notifications as read.");
+      }
       render();
       toast("All notifications marked as read.", "success");
+    } catch (error) {
+      unreadItems.forEach((item) => { item.read = false; });
+      throw error;
     }
   } else if (action === "add-schedule") {
     showModal("schedule");
@@ -1024,18 +1178,11 @@ async function handleAction(button, clickEvent) {
     showModal("announcement");
   } else if (action === "edit-announcement") {
     showModal("announcement", button.dataset.id);
-  } else if (action === "approve-announcement" || action === "decline-announcement") {
-    const response = await fetch("/api/announcements/approval", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: button.dataset.id, status: action === "approve-announcement" ? "approved" : "declined" }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "The announcement decision could not be saved.");
-    data = result.data || data;
-    if (result.revision) dataRevision = result.revision;
+  } else if (action === "approve-announcement") {
+    await decideAnnouncement(button.dataset.id, "approved");
+  } else if (action === "decline-announcement") {
+    modalState = { kind: "announcement-decline", id: button.dataset.id };
     render();
-    toast(`Announcement ${action === "approve-announcement" ? "approved" : "declined"}.`, "success");
   } else if (action === "delete-announcement") {
     const item = data.announcements.find((record) => record.id === button.dataset.id);
     if (!item) throw new Error("This announcement could not be found.");
@@ -1161,6 +1308,25 @@ async function handleAction(button, clickEvent) {
     closeModal();
   } else if (action === "close-modal-backdrop" && button === clickEvent.target) {
     closeModal();
+  } else if (action === "calendar-prev") {
+    calendarMonth--;
+    if (calendarMonth < 0) { calendarMonth = 11; calendarYear--; }
+    render();
+  } else if (action === "calendar-next") {
+    calendarMonth++;
+    if (calendarMonth > 11) { calendarMonth = 0; calendarYear++; }
+    render();
+  } else if (action === "calendar-day") {
+    calendarSelectedDate = button.dataset.date || "";
+    render();
+  } else if (action === "add-calendar-event") {
+    modalState = { kind: "calendar-event", id: "", date: button.dataset.date || calendarSelectedDate || todayISO() };
+    render();
+  } else if (action === "approve-calendar-event") {
+    await decideCalendarEvent(button.dataset.id, "approved");
+  } else if (action === "decline-calendar-event") {
+    modalState = { kind: "calendar-decline", id: button.dataset.id };
+    render();
   } else if (action === "toggle-report-map") {
     reportMapExpanded = !reportMapExpanded;
     const region = app.querySelector("#report-map-region");
@@ -1210,7 +1376,7 @@ async function handleSubmit(formEvent) {
       };
       const draft = {
         category: String(fields.get("category") || ""),
-        barangay: String(fields.get("barangay") || ""),
+        barangay: "Palsara",
         area: String(fields.get("area") || ""),
         locationDetail: String(fields.get("locationDetail") || "").trim(),
         latitude: readOptionalCoordinate(fields.get("latitude")),
@@ -1220,8 +1386,8 @@ async function handleSubmit(formEvent) {
         step: "review",
       };
       if (!CATEGORIES.includes(draft.category) ||
-          !data.locations.some((location) => location.area === draft.area && location.barangay === draft.barangay)) {
-        throw new Error("Choose a valid barangay and affected area.");
+          !data.locations.some((location) => location.area === draft.area && location.barangay === "Palsara")) {
+        throw new Error("Choose a valid area within Palsara barangay.");
       }
       if (!draft.locationDetail || draft.locationDetail.length > 250) throw new Error("Enter a street or nearby landmark no longer than 250 characters.");
       if (draft.description.length < 12) throw new Error("Describe the concern in at least 12 characters.");
@@ -1259,17 +1425,21 @@ async function handleSubmit(formEvent) {
     } else if (formId === "deactivate-form") {
       await deactivateAccount(String(fields.get("email") || ""), String(fields.get("reason") || ""));
     } else if (formId === "forgot-password-form") {
-      const email = String(fields.get("email") || "").trim().toLowerCase();
-      if (!email) throw new Error("Enter your email address.");
-      await requestPasswordReset(email);
-      modalState = null;
-      render();
+      await forgotPassword(form);
+    } else if (formId === "reset-password-form") {
+      await resetPassword(form);
     } else if (formId === "location-form") {
       await saveLocation(fields);
     } else if (formId === "recycling-form") {
       await saveRecyclingLocation(fields);
     } else if (formId === "announcement-form") {
       await saveAnnouncement(fields);
+    } else if (formId === "calendar-event-form") {
+      await saveCalendarEvent(fields);
+    } else if (formId === "calendar-decline-form") {
+      await decideCalendarEvent(String(fields.get("id") || ""), "declined", String(fields.get("reason") || "").trim());
+    } else if (formId === "announcement-decline-form") {
+      await decideAnnouncement(String(fields.get("id") || ""), "declined", String(fields.get("reason") || "").trim());
     }
   } catch (error) {
     console.error(`CommUnity could not complete ${formId}.`, error);
@@ -1302,7 +1472,61 @@ function showFatal(error) {
   app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>CommUnity could not start</h1><p>${esc(error.message || "Check that the Node server is running and reload this page.")}</p>`;
 }
 
+let sessionSyncing = false;
+
+async function syncSessionAcrossTabs() {
+  if (sessionSyncing) return;
+  sessionSyncing = true;
+  try {
+    const sessionResponse = await fetch("/api/session");
+    const session = await sessionResponse.json();
+    if (!sessionResponse.ok) return;
+    const nextUser = session.user || null;
+    if ((nextUser?.email || "") === (currentUser?.email || "")) return;
+
+    if (!nextUser) {
+      clearSession();
+      data = emptyState();
+      dataRevision = 0;
+      lastPersistedSnapshot = "";
+      modalState = null;
+      permissionDrafts = {};
+      window.location.hash = "#/login";
+      render();
+      return;
+    }
+
+    const stateResponse = await fetch("/api/state");
+    const state = await stateResponse.json();
+    if (!stateResponse.ok) return;
+    currentUser = state.user;
+    data = state.data;
+    dataRevision = state.revision;
+    lastPersistedSnapshot = JSON.stringify(data);
+    modalState = null;
+    permissionDrafts = {};
+    selectedReportId = null;
+    window.location.hash = routeUrl(currentUser.role, "dashboard");
+    render();
+    toast(`This browser is now signed in as ${currentUser.name}.`, "success");
+  } catch (error) {
+    console.error("CommUnity could not sync the tab session.", error);
+  } finally {
+    sessionSyncing = false;
+  }
+}
+
+function watchSessionAcrossTabs() {
+  window.addEventListener("storage", (event) => {
+    if (event.key === SESSION_SYNC_KEY) syncSessionAcrossTabs();
+  });
+  sessionSyncChannel?.addEventListener("message", (event) => {
+    if (event.data?.type === "session") syncSessionAcrossTabs();
+  });
+}
+
 async function initialize() {
+  watchSessionAcrossTabs();
   await loadLocalData();
   if (!data) return;
   for (const role of Object.keys(ROLES)) {
@@ -1341,7 +1565,6 @@ app.addEventListener("input", (inputEvent) => {
 app.addEventListener("change", (changeEvent) => {
   const target = changeEvent.target;
   if (target.matches("#report-photos")) handlePhotoSelection(target);
-  else if (target.matches("#report-draft-form [name=barangay]")) updateReportAreaChoices(target.value);
   else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
     const query = app.querySelector("[data-search-input]")?.value || "";
     refreshSearch(query);

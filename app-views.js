@@ -7,15 +7,15 @@ function displayReportId(id) {
 
 function navGroups(role) {
   const groups = role === "resident" ? [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["collection", "Garbage collection", "calendar"], ["recycling", "Recycling directory", "leaf"], ["report", "Report a concern", "flag"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["collection", "Garbage collection", "calendar"], ["report", "Report a concern", "flag"]] },
     { title: "Your activity", links: [["reports", "My reports", "clipboard"], ["history", "Report history", "clock"], ["notifications", "Notifications", "bell", unreadCount()]] },
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : role === "official" ? [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["concerns", "Concern queue", "clipboard"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["concerns", "Concern queue", "clipboard"]] },
     { title: "Services", links: [["collection", "Garbage collection", "calendar"], ["history", "Report history", "clock"], ["announcements", "Announcements", "activity"], ["notifications", "Notifications", "bell", unreadCount()]] },
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["reports", "Community reports", "clipboard"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["reports", "Community reports", "clipboard"], ["approvals", "Approval queue", "check"]] },
     { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"], ["audit", "Activity Log", "activity"]] },
   ];
   return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage({ role, email: currentUser?.email }, key)) }));
@@ -81,7 +81,6 @@ function pageTitle(role, page) {
     resident: {
       dashboard: ["Your community today", "Service updates and a clear view of your reports."],
       collection: ["Garbage collection", "Check your area's collection schedule and service updates."],
-      recycling: ["Recycling and junkshops", "Find nearby places that accept reusable and recyclable materials."],
       report: ["Report a concern", "Share what happened and where."],
       reports: ["My reports", "Follow the progress of concerns you have submitted."],
       history: ["Report history", "Review previous concerns and the actions recorded."],
@@ -91,6 +90,7 @@ function pageTitle(role, page) {
     },
     official: {
       dashboard: ["Barangay overview", "The latest concerns and collection activity across the community."],
+      calendar: ["Calendar", "Announcements and collection schedules in one place."],
       concerns: ["Concern queue", "Review resident reports and record the next step."],
       collection: ["Collection management", "Maintain schedules and post service-status changes."],
       history: ["Report history", "Review concern updates recorded by the barangay."],
@@ -100,7 +100,9 @@ function pageTitle(role, page) {
     },
     administrator: {
       dashboard: ["System overview", "A concise view of accounts and recent activity."],
+      calendar: ["Calendar", "Announcements and collection schedules in one place."],
       reports: ["Community reports", "Monitor concerns submitted by residents across the barangay."],
+      approvals: ["Approval queue", "Review and decide on event and announcement requests from barangay officials."],
       analytics: ["Analytics", "Review report activity, user activity, and service trends."],
       users: ["User management", "Review accounts and adjust access."],
       locations: ["Locations and recycling", "Manage resident areas and nearby recycling or junkshop listings."],
@@ -110,6 +112,7 @@ function pageTitle(role, page) {
       audit: ["Activity Log", "A record of account and service activity."],
       profile: ["Your profile", "Keep your administrator account details up to date."],
       settings: ["Settings", "Manage administrator workspace areas from one place."],
+      email: ["Email", "Configure SMTP email for report and collection notifications."],
       notifications: ["Notifications", "Report and service updates for this account."],
     },
   };
@@ -265,7 +268,7 @@ function reportDetail(report, role) {
       ? `<div id="report-detail-map" class="report-map-canvas report-detail-map" data-latitude="${report.latitude}" data-longitude="${report.longitude}" role="region" aria-label="Map centered on this concern's reported location"></div><p class="map-status" id="report-detail-map-status" role="status" aria-live="polite">Map pin at ${report.latitude.toFixed(6)}, ${report.longitude.toFixed(6)}.</p><a class="text-button map-directions-link" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open directions in Google Maps</a>`
       : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`)
     : "";
-  const followUpForm = isResident && report.status === "Submitted" ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" maxlength="1000" required></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : "";
+  const followUpForm = isResident ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" required maxlength="1000"></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : "";
   const body = `
     <div class="content-stack">
       <div class="profile-layout">
@@ -339,15 +342,137 @@ function dashboardResident() {
   return page("resident", "dashboard", body, actions);
 }
 
+function canManageCalendarEvents() {
+  const permission = "manageSchedules";
+  const override = data.accountOverrides?.[currentUser?.email];
+  const allowed = override && Object.hasOwn(override, permission)
+    ? Boolean(override[permission])
+    : Boolean(data.permissions?.[currentUser?.role]?.[permission]);
+  return Boolean(allowed) && ["official", "administrator"].includes(currentUser?.role);
+}
+
+function calendarStatusLabel(status) {
+  if (status === "pending") return "Pending approval";
+  if (status === "declined") return "Declined";
+  return "Approved";
+}
+
 function calendarPage() {
-  const schedules = sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area);
+  const isResident = currentUser?.role === "resident";
+  const canManage = canManageCalendarEvents();
+  const isAdmin = currentUser?.role === "administrator";
+  const schedules = isResident
+    ? sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area)
+    : sortedSchedules(data.schedules);
+  const calendarEvents = (data.calendarEvents || []).map((item) => ({
+    id: String(item.id),
+    date: item.date,
+    title: item.title,
+    detail: item.detail || "",
+    kind: "Event",
+    status: item.approvalStatus || "approved",
+    declineReason: item.declineReason || "",
+    createdBy: item.createdBy || "",
+    createdByName: item.createdByName || "",
+  }));
+  const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
   const events = [
     ...data.announcements.map((item) => ({ date: item.date, title: item.title, detail: item.detail, kind: "Announcement" })),
-    ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}-${item.end} · ${item.area}`, kind: "Collection" })),
-  ].sort((a, b) => asDate(a.date) - asDate(b.date));
-  const body = `<div class="content-stack">${panel("Community calendar", `<div class="calendar-list">${events.map((event) => `<article class="calendar-event"><div class="calendar-date"><strong>${esc(dateLabel(event.date, { day: "numeric", month: "short" }))}</strong><span>${esc(event.kind)}</span></div><div><h3>${esc(event.title)}</h3><p>${esc(event.detail)}</p></div></article>`).join("") || `<div class="empty-state"><strong>No upcoming events</strong>Announcements and collection schedules will appear here.</div>`}</div>`, { subtitle: "Announcements and collection schedules for your area" })}</div>`;
-  return page("resident", "calendar", body);
+    ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
+    ...activeEvents,
+  ];
+  const byDate = new Map();
+  for (const event of events) {
+    if (!event.date) continue;
+    if (!byDate.has(event.date)) byDate.set(event.date, []);
+    byDate.get(event.date).push(event);
+  }
+
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const firstDay = new Date(calendarYear, calendarMonth, 1);
+  const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+  const startWeekday = firstDay.getDay();
+
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    cells.push({ day, date: dateStr, events: byDate.get(dateStr) || [] });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const today = todayISO();
+  const grid = cells.map((cell) => {
+    if (!cell) return `<div class="calendar-cell calendar-cell--blank" aria-hidden="true"></div>`;
+    const hasEvents = cell.events.length > 0;
+    const pending = cell.events.some((event) => event.status === "pending");
+    const classes = [
+      "calendar-cell",
+      hasEvents ? "calendar-cell--has-events" : "",
+      pending ? "calendar-cell--pending" : "",
+      cell.date === today ? "calendar-cell--today" : "",
+      cell.date === calendarSelectedDate ? "calendar-cell--selected" : "",
+    ].filter(Boolean).join(" ");
+    const cellEvents = cell.events.slice(0, 2).map((event) => `<span class="calendar-cell-event${event.status === "pending" ? " calendar-cell-event--pending" : ""}">${esc(event.title)}</span>`).join("");
+    const more = cell.events.length > 2 ? `<span class="calendar-cell-more">+${cell.events.length - 2} more</span>` : "";
+    const viewButton = `<span class="calendar-cell-view" aria-hidden="true">${icon("arrow", "calendar-cell-view-icon")}</span>`;
+    return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}${hasEvents ? `, ${cell.events.length} event${cell.events.length === 1 ? "" : "s"}` : ""}"><span class="calendar-day-number">${cell.day}</span>${hasEvents ? `<span class="calendar-cell-events">${cellEvents}${more}</span>` : ""}${hasEvents ? viewButton : ""}</button>`;
+  }).join("");
+
+  const eventMeta = (event) => event.kind === "Event"
+    ? `<div class="calendar-event-meta">${statusPill(calendarStatusLabel(event.status))}${event.createdByName ? `<span>Requested by ${esc(event.createdByName)}</span>` : ""}</div>`
+    : "";
+
+  const selectedEvents = calendarSelectedDate ? (byDate.get(calendarSelectedDate) || []) : [];
+  const canAddHere = canManage && calendarSelectedDate && calendarSelectedDate >= today;
+  const addHere = canAddHere
+    ? `<button class="button small" type="button" data-action="add-calendar-event" data-date="${esc(calendarSelectedDate)}">${icon("plus")} Add event</button>`
+    : "";
+  const details = calendarSelectedDate
+    ? `<div class="calendar-details"><div class="calendar-details-head"><h3>${esc(dateLabel(calendarSelectedDate, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</h3>${addHere}</div>${selectedEvents.length ? selectedEvents.map((event) => `<div class="calendar-event"><div class="calendar-date"><strong>${esc(event.kind)}</strong></div><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p>${eventMeta(event)}</div></div>`).join("") : `<div class="empty-state"><strong>No events</strong>Nothing is scheduled on this date.${canManage && calendarSelectedDate >= today ? " Use Add event to request one." : ""}</div>`}</div>`
+    : `<div class="calendar-details"><p class="muted small">Select a date to see event details.${canManage ? " Use Add event there to request an event." : ""}</p></div>`;
+
+  const upcoming = activeEvents.concat(
+    data.announcements.map((item) => ({ date: item.date, title: item.title, detail: item.detail, kind: "Announcement", status: "approved" })),
+    schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area}`, kind: "Collection", status: "approved" })),
+  ).filter((event) => event.date && event.date >= today).sort((a, b) => asDate(a.date) - asDate(b.date)).slice(0, 10);
+  const upcomingList = upcoming.length
+    ? upcoming.map((event) => `<article class="calendar-event"><div class="calendar-date"><strong>${esc(dateLabel(event.date, { day: "numeric", month: "short" }))}</strong><span>${esc(event.kind)}</span></div><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p>${eventMeta(event)}</div></article>`).join("")
+    : `<div class="empty-state"><strong>No upcoming events</strong>Announcements and collection schedules will appear here.</div>`;
+
+  const myRequests = calendarEvents.filter((event) => event.status !== "approved" && event.createdBy === currentUser?.id);
+  const requestRow = (event) => `<article class="calendar-request"><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p><span class="record-secondary">${esc(dateLabel(event.date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}${event.createdByName ? ` · Requested by ${esc(event.createdByName)}` : ""}</span>${event.status === "declined" && event.declineReason ? `<span class="calendar-event-reason">Reason: ${esc(event.declineReason)}</span>` : ""}</div>${statusPill(calendarStatusLabel(event.status))}</article>`;
+  const requestsPanel = currentUser?.role === "official"
+    ? panel("Your event requests", myRequests.length
+      ? `<div class="calendar-requests">${myRequests.map(requestRow).join("")}</div>`
+      : `<div class="empty-state"><strong>No requests yet</strong>Events you request appear here until the administrator reviews them.</div>`,
+      { subtitle: "Events you requested that are waiting for approval or were declined." })
+    : "";
+
+  const body = `
+    <div class="content-stack">
+      <div class="calendar-toolbar">
+        <button type="button" class="button secondary small" data-action="calendar-prev" aria-label="Previous month">‹</button>
+        <h2 class="calendar-month-title">${esc(monthNames[calendarMonth])} ${calendarYear}</h2>
+        <button type="button" class="button secondary small" data-action="calendar-next" aria-label="Next month">›</button>
+      </div>
+      <div class="calendar-grid" role="grid" aria-label="Calendar">
+        <div class="calendar-weekdays">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<div class="calendar-weekday">${day}</div>`).join("")}</div>
+        <div class="calendar-days">${grid}</div>
+      </div>
+      ${details}
+      ${requestsPanel}
+      <section class="calendar-upcoming">
+        <h3>Upcoming events</h3>
+        <div class="calendar-list">${upcomingList}</div>
+      </section>
+    </div>`;
+  const headingAction = isAdmin
+    ? `<a class="button secondary small" href="${routeUrl("administrator", "approvals")}">${icon("check")} Approval queue</a>`
+    : "";
+  return page(currentUser?.role || "resident", "calendar", body, headingAction);
 }
+
 
 function dashboardOfficial() {
   const open = data.reports.filter((report) => report.status !== "Resolved");
@@ -405,10 +530,20 @@ function settingsPage() {
     ["Analytics", "Workspace report and account trends", "activity", "analytics"],
     ["Activity Log", "Recorded account and service activity", "activity", "activity"],
     ["Role management", "Workspace permissions", "shield", "roles"],
+    ["Email", "SMTP email setup", "mail", "email"],
   ];
   const rows = (items) => items.map(([title, description, iconName, pageName]) => `<a class="settings-row" href="${routeUrl("administrator", pageName)}"><span class="settings-row-icon">${icon(iconName)}</span><span class="settings-row-copy"><strong>${esc(title)}</strong><small>${esc(description)}</small></span><span class="settings-row-arrow">${icon("arrow")}</span></a>`).join("");
-  const body = `<div class="settings-layout"><section class="settings-section"><h2>Account</h2><div class="settings-list">${rows(accountItems)}</div></section><section class="settings-section"><h2>Workspace</h2><div class="settings-list">${rows(workspaceItems)}</div></section><section class="settings-section"><h2>Email delivery</h2><form id="smtp-settings-form" class="settings-email"><div class="settings-email-head"><span class="settings-row-icon">${icon("mail")}</span><div><strong>SMTP email</strong><small>Report and collection notifications</small></div></div><div class="smtp-guide"><strong>Start with your email provider</strong><span>Choose a provider to fill the server details. Use an app password or service API key when your provider offers one; do not use your normal email password.</span><div class="smtp-provider-list"><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="gmail">Gmail</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="outlook">Outlook</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="sendgrid">SendGrid</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="custom">Other provider</button></div><p class="field-help" id="smtp-provider-help">Select a provider to see where its SMTP password or API key comes from.</p></div><div class="form-grid mt-16">${inputField("SMTP host", "host", smtpSettings.host, { required: true })}${inputField("SMTP port", "port", smtpSettings.port || "587", { type: "number", required: true, min: 1, max: 65535 })}${inputField("SMTP username", "user", smtpSettings.user, { required: true })}${inputField("Sender address", "from", smtpSettings.from, { required: true })}${inputField("SMTP password", "pass", "", { type: "password", autocomplete: "new-password", placeholder: smtpSettings.configured ? "Leave blank to keep current password" : "" })}</div><div class="form-actions"><button class="button" type="submit">Save SMTP settings</button><button class="button secondary" type="button" data-action="test-smtp">Send test email</button></div><p class="field-help">The password is encrypted on the server and never returned to this browser.</p></form></section></div>`;
+  const body = `<div class="settings-layout"><section class="settings-section"><h2>Account</h2><div class="settings-list">${rows(accountItems)}</div></section><section class="settings-section"><h2>Workspace</h2><div class="settings-list">${rows(workspaceItems)}</div></section></div>`;
   return page("administrator", "settings", body);
+}
+
+function emailPage() {
+  const body = `<div class="content-stack">${emailDeliverySection()}</div>`;
+  return page("administrator", "email", body);
+}
+
+function emailDeliverySection() {
+  return `<section class="settings-section"><h2>Email</h2><form id="smtp-settings-form" class="settings-email"><div class="settings-email-head"><span class="settings-row-icon">${icon("mail")}</span><div><strong>SMTP email</strong><small>Report and collection notifications</small></div><span class="settings-row-arrow">${icon("arrow")}</span></div><div class="smtp-guide"><strong>Start with your email provider</strong><span>Choose a provider to fill the server details. Use an app password or service API key when your provider offers one; do not use your normal email password.</span><div class="smtp-provider-list"><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="gmail">Gmail</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="outlook">Outlook</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="sendgrid">SendGrid</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="custom">Other provider</button></div><p class="field-help" id="smtp-provider-help">Select a provider to see where its SMTP password or API key comes from.</p></div><div class="form-grid mt-16">${inputField("SMTP host", "host", smtpSettings.host, { required: true })}${inputField("SMTP port", "port", smtpSettings.port || "587", { type: "number", required: true, min: 1, max: 65535 })}${inputField("SMTP username", "user", smtpSettings.user, { required: true })}${inputField("Sender address", "from", smtpSettings.from, { required: true })}${inputField("SMTP password", "pass", "", { type: "password", autocomplete: "new-password", placeholder: smtpSettings.configured ? "Leave blank to keep current password" : "" })}</div><div class="form-actions"><button class="button" type="submit">Save SMTP settings</button><button class="button secondary" type="button" data-action="test-smtp">Send test email</button></div><p class="field-help">The password is encrypted on the server and never returned to this browser.</p></form></section>`;
 }
 
 function collectionResident() {
@@ -423,24 +558,6 @@ function collectionResident() {
       ${panel("Missed collection?", `<div class="form-actions">${linkButton(`${icon("flag")} Report a missed pickup`, routeUrl("resident", "report"), "")}</div>`)}
     </div>`;
   return page("resident", "collection", body);
-}
-
-function recyclingPage() {
-  const listings = data.recyclingLocations.filter((item) => item.active);
-  const body = `
-    <div class="content-stack">
-      ${listings.length ? `<section class="panel"><div class="records" data-page-size="10" role="table" aria-label="Recycling and junkshop directory">
-        <div class="record-row record-head" role="row"><span role="columnheader">Business or site</span><span role="columnheader">Location</span><span role="columnheader">Accepted materials</span><span role="columnheader">Contact</span><span role="columnheader">Hours</span></div>
-        ${listings.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.name} ${item.barangay} ${item.street} ${item.purok} ${item.landmark} ${item.materials}`.toLowerCase())}">
-          <div role="cell"><strong class="record-primary">${esc(item.name)}</strong><span class="record-secondary">${esc(item.landmark || item.purok || item.barangay)}</span></div>
-          <div class="record-meta" role="cell" data-label="Location">${esc([item.street, item.purok, item.barangay].filter(Boolean).join(", "))}</div>
-          <div class="record-meta" role="cell" data-label="Accepted materials">${esc(item.materials)}</div>
-          <div class="record-meta" role="cell" data-label="Contact">${esc(item.phone || "Not listed")}</div>
-          <div class="record-meta" role="cell" data-label="Hours">${esc(item.hours || "Not listed")}</div>
-        </div>`).join("")}
-      </div></section>` : `<div class="empty-state"><strong>No recycling locations listed yet</strong>Check back after the barangay verifies nearby recycling and junkshop details.</div>`}
-    </div>`;
-  return page("resident", "recycling", body);
 }
 
 function locationsPage() {
@@ -471,10 +588,11 @@ function locationsPage() {
 function announcementsPage(role) {
   const isManager = role === "official" || role === "administrator";
   const announcements = [...data.announcements].sort((a, b) => asDate(b.date) - asDate(a.date));
+  const statusLabel = (item) => item.approvalStatus === "pending" ? "Pending approval" : item.approvalStatus === "declined" ? "Declined" : "Published";
   const rows = announcements.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.title} ${item.detail}`.toLowerCase())}">
     <div role="cell"><strong class="record-primary">${esc(item.title)}</strong><span class="record-secondary">${esc(item.detail)}</span></div>
     <div class="record-date" role="cell" data-label="Publish date">${esc(dateLabel(item.date))}</div>
-    ${isManager ? `<div class="record-actions" role="cell" data-label=""><span class="record-secondary">${esc(item.approvalStatus || "approved")}</span><button class="button secondary small" type="button" data-action="edit-announcement" data-id="${esc(item.id)}">Edit</button>${role === "administrator" && item.approvalStatus === "pending" ? `<button class="button small" type="button" data-action="approve-announcement" data-id="${esc(item.id)}">Approve</button><button class="button danger small" type="button" data-action="decline-announcement" data-id="${esc(item.id)}">Decline</button>` : ""}</div>` : ""}
+    ${isManager ? `<div class="record-actions" role="cell" data-label=""><span class="record-secondary">${statusLabel(item)}${item.approvalStatus === "declined" && item.declineReason ? ` · ${esc(item.declineReason)}` : ""}</span><button class="button secondary small" type="button" data-action="edit-announcement" data-id="${esc(item.id)}">Edit</button>${role === "administrator" && item.approvalStatus === "pending" ? `<a class="text-button" href="${routeUrl("administrator", "approvals")}">Review in approval queue</a>` : ""}</div>` : ""}
   </div>`).join("");
   const body = `<div class="content-stack">
     ${panel("Community announcements", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search announcements</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>
@@ -522,9 +640,7 @@ function collectionOfficial() {
 function reportFormMarkup() {
   const draft = reportDraft || {};
   const defaultArea = draft.area || currentUser.area || locationAreas()[0];
-  const reportBarangay = draft.barangay || data.locations.find((location) => location.area === defaultArea)?.barangay || locationBarangays()[0];
-  const reportAreas = areasInBarangay(reportBarangay);
-  const selectedReportArea = reportAreas.includes(draft.area || defaultArea) ? draft.area || defaultArea : reportAreas[0];
+  const selectedReportArea = defaultArea;
   return `
     <div class="grid-main-side">
       <section class="panel"><div class="panel-body">
@@ -535,8 +651,7 @@ function reportFormMarkup() {
         ${reportDraft?.step === "review" ? `
           <div class="content-stack">
             <div class="notice-bar"><span>Concern</span><strong>${esc(draft.category)}</strong></div>
-            <div class="notice-bar"><span>Barangay</span><strong>${esc(draft.barangay)}</strong></div>
-            <div class="notice-bar"><span>Purok or area</span><strong>${esc(draft.area)}</strong></div>
+            <div class="notice-bar"><span>Purok or area</span><strong>${esc(draft.area || defaultArea)}</strong></div>
             <div class="notice-bar"><span>Street or landmark</span><strong>${esc(draft.locationDetail)}</strong></div>
             <div class="notice-bar"><span>Map pin</span><strong>${draft.latitude == null ? "Not selected" : `${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`}</strong></div>
             <div class="notice-bar"><span>Urgency</span><strong>${draft.urgent ? "Flagged for prompt attention" : "Standard report"}</strong></div>
@@ -548,8 +663,7 @@ function reportFormMarkup() {
           <form id="report-draft-form" class="form-stack">
             <div class="form-grid">
               ${selectField("Concern category", "category", CATEGORIES, draft.category || "", { required: true, placeholder: "Choose a concern type" })}
-              ${selectField("Barangay", "barangay", locationBarangays(), reportBarangay, { required: true })}
-              ${selectField("Purok or area", "area", reportAreas, selectedReportArea, { required: true, labels: locationAreaLabels() })}
+              ${inputField("Purok or area", "area", draft.area || selectedReportArea, { required: true, placeholder: "e.g. Purok 3" })}
               ${inputField("Street or nearby landmark", "locationDetail", draft.locationDetail || "", { required: true, maxLength: 250 })}
               <div class="form-field span-all report-map-picker">
                 <input type="hidden" id="report-latitude" name="latitude" value="${esc(reportMapSelection?.latitude ?? "")}">
@@ -642,9 +756,55 @@ function notificationsPage(role) {
     <div class="content-stack">
       <section class="notification-summary"><div><span class="eyebrow">Updates</span><h2>Stay in the loop</h2><p>Important changes to your reports and community services.</p></div><div class="notification-summary-count"><strong>${unread}</strong><span>unread</span></div></section>
       ${panel("Notification inbox", `<div class="notification-toolbar"><div class="filter-row" role="group" aria-label="Filter notifications"><button type="button" class="filter-button ${notificationFilter === "all" ? "selected" : ""}" data-action="filter-notifications" data-value="all" aria-pressed="${notificationFilter === "all"}">All <span class="filter-count">${notifications.length}</span></button><button type="button" class="filter-button ${notificationFilter === "unread" ? "selected" : ""}" data-action="filter-notifications" data-value="unread" aria-pressed="${notificationFilter === "unread"}">Unread <span class="filter-count">${unread}</span></button></div>${notifications.some((item) => !item.read) ? actionButton("Mark all read", "mark-all-read", "tertiary", "small") : ""}</div><div class="notification-breakdown"><span>${reportUpdates} report updates</span><span>${serviceUpdates} service updates</span></div>
-        <div class="notification-list">${visible.length ? visible.map((item) => `<article class="notification-item ${item.read ? "" : "notification-unread"}"><span class="notification-icon">${icon(item.reportId ? "clipboard" : "bell")}</span><div class="notification-content"><div class="notification-title"><strong>${esc(item.title)}</strong>${item.read ? "" : `<span class="notification-unread-label">New</span>`}</div><p>${esc(item.body)}</p><div class="notification-meta"><span>${esc(dateTimeLabel(item.createdAt))}</span>${item.reportId ? `<button type="button" class="text-button" data-action="view-notification-report" data-id="${esc(item.reportId)}">View report</button>` : ""}</div></div>${item.read ? `<span class="notification-state">Read</span>` : `<button class="button secondary small notification-read-button" type="button" data-action="mark-read" data-id="${esc(item.id)}">Mark read</button>`}</article>`).join("") : `<div class="empty-state"><strong>All caught up</strong>There are no ${notificationFilter === "unread" ? "unread " : ""}updates for this account.</div>`}</div>`, { subtitle: "Your latest account and community updates" })}
+        <div class="notification-list">${visible.length ? visible.map((item) => `<article class="notification-item ${item.read ? "" : "notification-unread"}"><span class="notification-icon">${icon(item.reportId ? "clipboard" : "bell")}</span><div class="notification-content"><div class="notification-title"><strong>${esc(item.title)}</strong>${item.read ? "" : `<span class="notification-unread-label">New</span>`}</div><p>${esc(item.body)}</p><div class="notification-meta"><span>${esc(dateTimeLabel(item.createdAt))}</span>${item.reportId ? `<button type="button" class="text-button" data-action="view-notification-report" data-id="${esc(item.reportId)}">View report</button>` : ""}${role === "administrator" && /needs approval/i.test(item.title) ? `<a class="text-button" href="${routeUrl("administrator", "approvals")}">Open approval queue</a>` : ""}</div></div>${item.read ? `<span class="notification-state">Read</span>` : `<button class="button secondary small notification-read-button" type="button" data-action="mark-read" data-id="${esc(item.id)}">Mark read</button>`}</article>`).join("") : `<div class="empty-state"><strong>All caught up</strong>There are no ${notificationFilter === "unread" ? "unread " : ""}updates for this account.</div>`}</div>`, { subtitle: "Your latest account and community updates" })}
     </div>`;
-  return page(role, "notifications", body);
+  const reviewAction = role === "administrator"
+    ? `<a class="button secondary small" href="${routeUrl("administrator", "approvals")}">${icon("check")} Approval queue</a>`
+    : "";
+  return page(role, "notifications", body, reviewAction);
+}
+
+function approvalsPage() {
+  const pendingEvents = (data.calendarEvents || []).filter((event) => event.approvalStatus === "pending");
+  const pendingAnnouncements = data.announcements.filter((item) => item.approvalStatus === "pending");
+  const total = pendingEvents.length + pendingAnnouncements.length;
+
+  const eventRows = pendingEvents.map((event) => `<article class="approval-row">
+    <div class="approval-copy">
+      <span class="approval-tag">Event</span>
+      <h4>${esc(event.title)}</h4>
+      <p>${esc(event.detail || "No details provided.")}</p>
+      <span class="record-secondary">${esc(dateLabel(event.date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}${event.createdByName ? ` · Requested by ${esc(event.createdByName)}` : ""}</span>
+    </div>
+    <div class="approval-actions">
+      <button class="button small" type="button" data-action="approve-calendar-event" data-id="${esc(event.id)}">Approve</button>
+      <button class="button danger small" type="button" data-action="decline-calendar-event" data-id="${esc(event.id)}">Reject</button>
+    </div>
+  </article>`).join("");
+
+  const announcementRows = pendingAnnouncements.map((item) => `<article class="approval-row">
+    <div class="approval-copy">
+      <span class="approval-tag">Announcement</span>
+      <h4>${esc(item.title)}</h4>
+      <p>${esc(item.detail)}</p>
+      <span class="record-secondary">${esc(dateLabel(item.date))}</span>
+    </div>
+    <div class="approval-actions">
+      <button class="button small" type="button" data-action="approve-announcement" data-id="${esc(item.id)}">Approve</button>
+      <button class="button danger small" type="button" data-action="decline-announcement" data-id="${esc(item.id)}">Reject</button>
+    </div>
+  </article>`).join("");
+
+  const body = `<div class="content-stack">
+    ${statsStrip([
+      stat("Pending requests", total, "Waiting for your decision"),
+      stat("Event requests", pendingEvents.length, "Calendar events"),
+      stat("Announcements", pendingAnnouncements.length, "Community notices"),
+    ])}
+    ${panel("Calendar event requests", eventRows ? `<div class="approval-list">${eventRows}</div>` : `<div class="empty-state"><strong>No event requests</strong>Events requested by barangay officials will appear here for approval.</div>`, { subtitle: "Approve to place the event on the community calendar, or reject with a reason." })}
+    ${panel("Announcement requests", announcementRows ? `<div class="approval-list">${announcementRows}</div>` : `<div class="empty-state"><strong>No announcement requests</strong>Announcements submitted by barangay officials will appear here for approval.</div>`, { subtitle: "Approve to publish the notice, or reject with a reason." })}
+  </div>`;
+  return page("administrator", "approvals", body);
 }
 
 function profilePage(role) {
@@ -660,7 +820,8 @@ function profilePage(role) {
                 ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
                 ${inputField("Email address", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
                 ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
-                ${role === "resident" ? selectField("Purok or area", "area", locationAreas(), currentUser.area, { required: true, labels: locationAreaLabels() }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
+                ${role === "resident" ? inputField("Purok or area", "area", currentUser.area || "Palsara", { readonly: true }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
+                ${role === "resident" ? inputField("Recovery email", "recoveryEmail", currentUser.recoveryEmail || "", { type: "email", placeholder: "Optional", autocomplete: "email", help: "Used to receive password reset links." }) : ""}
               </div>
               <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
             </form>
@@ -688,7 +849,7 @@ function profilePage(role) {
 function userRowsMarkup(users) {
   if (!users.length) return `<div class="empty-state"><strong>No accounts match</strong>Try another name, email, role, or status.</div>`;
   return `<div class="records" data-page-size="10" role="table" aria-label="User accounts"><div class="record-row record-head user-record-head" role="row"><span role="columnheader">Account</span><span role="columnheader">Role</span><span role="columnheader">Area</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>${users.map((user) => `<div class="record-row user-record filter-item" role="row" data-search="${esc(`${user.name} ${user.email} ${ROLES[user.role]} ${user.area} ${user.status}`.toLowerCase())}">
-    <div class="identity" role="cell">${userAvatar(user)}<span><strong class="record-primary">${esc(user.name)}</strong><span class="record-secondary">${esc(user.email)}</span></span></div>
+    <div class="identity" role="cell">${userAvatar(user)}<span><strong class="record-primary">${esc(user.name)}</strong><span class="record-secondary">${esc(user.email)}</span>${user.resetRequested ? `<span class="record-secondary" style="color:var(--warning,#b45309)">Reset requested</span>` : ""}</span></div>
     <div class="record-meta" role="cell" data-label="Role">${esc(ROLES[user.role] || user.role)}</div>
     <div class="record-meta" role="cell" data-label="Area">${esc(user.area || "—")}</div>
     <div role="cell" data-label="Status">${statusPill(user.status || "Active")}</div>
@@ -823,6 +984,49 @@ function loginMarkup() {
     </main>`;
 }
 
+function forgotPasswordMarkup() {
+  return `
+    <main class="login-page" id="main-content">
+      <section class="login-story" aria-label="About CommUnity">
+        <div class="auth-brand">
+          ${brandMark()}
+          <div class="auth-brand-copy"><strong>CommUnity</strong><span>Palsara community desk</span></div>
+        </div>
+      </section>
+      <section class="login-pane" aria-labelledby="forgot-title"><div class="login-box">
+        <h1 id="forgot-title">Forgot password</h1>
+        <p class="field-help">Enter the recovery email saved on your account. If it matches, a reset link will be sent there.</p>
+        <form class="login-form" id="forgot-password-form">
+          ${inputField("Recovery email", "recoveryEmail", "", { required: true, type: "email", autocomplete: "email" })}
+          <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Send reset link</button></div>
+        </form>
+        <p class="login-register" style="margin-top:12px"><a href="#" data-action="request-admin-reset">Can't access your email? Request admin help</a></p>
+      </div></section>
+    </main>`;
+}
+
+function resetPasswordMarkup(token) {
+  return `
+    <main class="login-page" id="main-content">
+      <section class="login-story" aria-label="About CommUnity">
+        <div class="auth-brand">
+          ${brandMark()}
+          <div class="auth-brand-copy"><strong>CommUnity</strong><span>Palsara community desk</span></div>
+        </div>
+      </section>
+      <section class="login-pane" aria-labelledby="reset-title"><div class="login-box">
+        <h1 id="reset-title">Reset password</h1>
+        <p class="field-help">Enter your new password. The reset link expires in 15 minutes.</p>
+        <form class="login-form" id="reset-password-form">
+          <input type="hidden" name="token" value="${esc(token)}">
+          ${inputField("New password", "newPassword", "", { required: true, type: "password", minLength: 8, autocomplete: "new-password" })}
+          ${inputField("Confirm new password", "confirmPassword", "", { required: true, type: "password", minLength: 8, autocomplete: "new-password" })}
+          <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Reset password</button></div>
+        </form>
+      </div></section>
+    </main>`;
+}
+
 function registerMarkup() {
   return `
     <main class="login-page" id="main-content">
@@ -835,7 +1039,7 @@ function registerMarkup() {
       <section class="login-pane" aria-labelledby="register-title"><div class="register-box">
         <h1 id="register-title">Create a resident account</h1>
         <form class="form-stack" id="register-form">
-          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${selectField("Purok or area", "area", locationAreas(), locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
+          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Create account</button></div>
         </form>
       </div></section>

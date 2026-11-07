@@ -228,8 +228,8 @@ function jsonEqual(left, right) {
 
 function publicUser(user) {
   if (!user) return null;
-  const { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange } = user;
-  return { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange: Boolean(requiresPasswordChange) };
+  const { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange, recoveryEmail, resetRequested } = user;
+  return { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange: Boolean(requiresPasswordChange), recoveryEmail: recoveryEmail || "", resetRequested: Boolean(resetRequested) };
 }
 
 function validateAccount({ email, name, area, phone = "" }) {
@@ -313,7 +313,8 @@ function validateState(data) {
       !data.permissions || typeof data.permissions !== "object" || Array.isArray(data.permissions) ||
       data.users.length > 10000 || data.reports.length > 50000 || data.schedules.length > 10000 ||
       data.notifications.length > 100000 || data.activities.length > 100000 || data.announcements.length > 1000 ||
-      data.locations.length > 1000 || data.recyclingLocations.length > 1000) {
+      data.locations.length > 1000 || data.recyclingLocations.length > 1000 ||
+      (Array.isArray(data.calendarEvents) && data.calendarEvents.length > 1000)) {
     throw new HttpError(400, "CommUnity data is invalid or exceeds supported limits.");
   }
   if (data.reports.some((report) => !report || !validId(report.id)) ||
@@ -336,6 +337,7 @@ function makeDefaultState() {
     activities: [],
     permissions: structuredClone(PERMISSIONS),
     announcements: [],
+    calendarEvents: [],
     locations: [],
     recyclingLocations: [],
   };
@@ -374,6 +376,8 @@ async function migrate(db) {
       working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM',
       requires_password_change boolean NOT NULL DEFAULT false,
       deactivation_reason text NOT NULL DEFAULT '',
+      recovery_email text NOT NULL DEFAULT '',
+      reset_requested boolean NOT NULL DEFAULT false,
       joined_at date NOT NULL DEFAULT CURRENT_DATE
     );
     CREATE TABLE IF NOT EXISTS user_credentials (
@@ -423,13 +427,25 @@ async function migrate(db) {
     CREATE TABLE IF NOT EXISTS announcements (
       id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL, date date NOT NULL,
       approval_status text NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('pending', 'approved', 'declined')),
+      decline_reason text NOT NULL DEFAULT '',
       created_by text REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL DEFAULT '', date date NOT NULL,
+      approval_status text NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'declined')),
+      decline_reason text NOT NULL DEFAULT '',
+      created_by text REFERENCES users(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS password_reset_requests (
       id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       requested_at timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'completed', 'declined')), handled_by text REFERENCES users(id) ON DELETE SET NULL,
       handled_at timestamptz
+    );
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash text NOT NULL UNIQUE, expires_at timestamptz NOT NULL
     );
     CREATE TABLE IF NOT EXISTS report_follow_ups (
       id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
@@ -471,7 +487,10 @@ async function migrate(db) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_password_change boolean NOT NULL DEFAULT false;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason text NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email text NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_requested boolean NOT NULL DEFAULT false;
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS approval_status text NOT NULL DEFAULT 'approved';
+    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS decline_reason text NOT NULL DEFAULT '';
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by text REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
@@ -550,8 +569,8 @@ async function readFullState(db, user = null) {
   const state = makeDefaultState();
   if (!user || user.role === "administrator") {
     const users = user
-      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
-      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
+      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
+      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
     state.users = users.rows;
   } else if (user.role === "resident") {
     const users = await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
@@ -625,12 +644,23 @@ async function readFullState(db, user = null) {
     state.permissions[role][permission] = enabled;
   }
   const announcements = await db.query(`
-    SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date, approval_status AS "approvalStatus"
+    SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date, approval_status AS "approvalStatus", decline_reason AS "declineReason"
     FROM announcements
     ${user && user.role === "resident" ? "WHERE approval_status='approved'" : ""}
     ORDER BY date DESC, id DESC
   `);
   state.announcements = announcements.rows.map((item) => ({ ...item, id: String(item.id) }));
+  const calendarEvents = await db.query(`
+    SELECT e.id, e.title, e.detail, to_char(e.date, 'YYYY-MM-DD') AS date,
+      e.approval_status AS "approvalStatus", e.decline_reason AS "declineReason",
+      e.created_by AS "createdBy", u.name AS "createdByName", e.created_at AS "createdAt"
+    FROM calendar_events e LEFT JOIN users u ON u.id = e.created_by
+    ${user && user.role === "administrator" ? "" : user ? "WHERE e.approval_status='approved' OR e.created_by=$1" : "WHERE e.approval_status='approved'"}
+    ORDER BY e.date, e.id
+  `, user && user.role !== "administrator" ? [user.id] : []);
+  state.calendarEvents = calendarEvents.rows.map((item) => ({
+    ...item, id: String(item.id), createdAt: timestamp(item.createdAt),
+  }));
   const locations = await db.query("SELECT id, area, barangay, street, purok, landmark FROM community_locations ORDER BY barangay, purok, street, id");
   state.locations = locations.rows;
   const recyclingLocations = await db.query(`
@@ -723,8 +753,9 @@ function validateSameOrigin(request, server, appOrigin) {
   } catch {
     return false;
   }
-  return ["127.0.0.1", "localhost", "[::1]", "::1"].includes(parsed.hostname) &&
-    Number(parsed.port) === address?.port &&
+  // Same-origin validation guards against cross-site requests. The host may be a
+  // LAN address, machine name or proxy host, so it is not limited to loopback.
+  return Number(parsed.port) === address?.port &&
     (safeMethod ? (!request.headers.origin || request.headers.origin === requestOrigin) : request.headers.origin === requestOrigin);
 }
 
@@ -970,6 +1001,7 @@ async function syncActivities(db, oldItems, newItems, user, administrator) {
 
 async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {}) {
   if (!body || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new HttpError(400, "A valid database revision is required.");
+  if (body.data && typeof body.data === "object" && !Array.isArray(body.data.calendarEvents)) body.data.calendarEvents = [];
   validateState(body.data);
   await withTransaction(db, async (transaction) => {
     const db = transaction;
@@ -1004,6 +1036,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       if (!jsonEqual(visibleBefore.schedules, after.schedules) ||
           !jsonEqual(visibleBefore.permissions, after.permissions) ||
           !jsonEqual(visibleBefore.announcements, after.announcements) ||
+          !jsonEqual(visibleBefore.calendarEvents, after.calendarEvents) ||
           !jsonEqual(visibleBefore.locations, after.locations) ||
           !jsonEqual(visibleBefore.recyclingLocations, after.recyclingLocations)) throw new HttpError(403, "You cannot change shared workspace data.");
       validateNotificationsReadOnly(visibleBefore.notifications, after.notifications, user);
@@ -1034,6 +1067,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
     } else if (user.role === "official") {
       if (after.users.length || !jsonEqual(visibleBefore.permissions, after.permissions) ||
           !jsonEqual(visibleBefore.announcements, after.announcements) ||
+          !jsonEqual(visibleBefore.calendarEvents, after.calendarEvents) ||
           !jsonEqual(visibleBefore.locations, after.locations) ||
           !jsonEqual(visibleBefore.recyclingLocations, after.recyclingLocations)) throw new HttpError(403, "Officials cannot change accounts, locations, or announcements.");
       requireRole(user, ["official"]);
@@ -1134,6 +1168,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       await syncLocations(db, before.locations, after.locations);
       await syncRecyclingLocations(db, before.recyclingLocations, after.recyclingLocations);
       if (!jsonEqual(before.announcements, after.announcements)) throw new HttpError(403, "Announcements cannot be changed through this workspace.");
+      if (!jsonEqual(before.calendarEvents, after.calendarEvents)) throw new HttpError(403, "Calendar events cannot be changed through this workspace.");
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
       for (const role of ROLES) {
         if (!after.permissions[role] || typeof after.permissions[role] !== "object") throw new HttpError(400, "Role permissions are invalid.");
@@ -1226,6 +1261,7 @@ const apiHandlers = new Map([
   ["settings", handleSettings],
   ["locations", handleLocations],
   ["announcements", handleAnnouncements],
+  ["calendar", handleCalendar],
   ["profile", handleProfile],
   ["session", handleSession],
   ["state", handleState],
@@ -1347,6 +1383,60 @@ async function handleAuth(request, response, db, options, user) {
     sendJson(response, 202, { ok: true });
     return;
   }
+  if (url.pathname === "/api/auth/forgot-password" && request.method === "POST") {
+    requireJsonBody(request);
+    const recoveryEmail = typeof request.body.recoveryEmail === "string" ? request.body.recoveryEmail.trim().toLowerCase() : "";
+    const generic = { ok: true, message: "If an account uses that recovery email, a reset link has been sent." };
+    if (!recoveryEmail) { sendJson(response, 200, generic); return; }
+    const account = await db.query("SELECT id, email FROM users WHERE recovery_email=$1 AND status='Active'", [recoveryEmail]);
+    if (account.rows[0]) {
+      const rawToken = randomBytes(32).toString("base64url");
+      const tokenHash = hash(rawToken);
+      await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [account.rows[0].id]);
+      await db.query("INSERT INTO password_reset_tokens(user_id, token_hash, expires_at) VALUES($1,$2, now() + interval '15 minutes')", [account.rows[0].id, tokenHash]);
+      const { mailer, smtpFrom, appOrigin } = options;
+      const resetLink = `${appOrigin || ""}/#/reset-password?token=${rawToken}`;
+      queueEmail(mailer, { from: smtpFrom, to: recoveryEmail, subject: "CommUnity password reset", text: `Reset your CommUnity password using this link (valid for 15 minutes): ${resetLink}` });
+    }
+    sendJson(response, 200, generic);
+    return;
+  }
+  if (url.pathname === "/api/auth/request-admin-reset" && request.method === "POST") {
+    requireJsonBody(request);
+    const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
+    const generic = { ok: true, message: "If an account exists, an admin has been notified." };
+    if (email) {
+      const account = await db.query("SELECT id FROM users WHERE email=$1 AND status='Active'", [email]);
+      if (account.rows[0]) {
+        await db.query("UPDATE users SET reset_requested=true WHERE id=$1", [account.rows[0].id]);
+        const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+        for (const admin of admins.rows) await insertNotification(db, admin.email, "Password reset requested", `${email} requested admin help to reset their password.`);
+      }
+    }
+    sendJson(response, 200, generic);
+    return;
+  }
+  if (url.pathname === "/api/auth/reset-password" && request.method === "POST") {
+    requireJsonBody(request);
+    const token = typeof request.body.token === "string" ? request.body.token : "";
+    const newPassword = typeof request.body.newPassword === "string" ? request.body.newPassword : "";
+    validatePassword(newPassword);
+    if (!token) throw new HttpError(400, "A valid reset token is required.");
+    const tokenHash = hash(token);
+    const result = await db.query("SELECT user_id FROM password_reset_tokens WHERE token_hash=$1 AND expires_at > now()", [tokenHash]);
+    if (!result.rows.length) throw new HttpError(400, "This reset link is invalid or expired.");
+    const userId = result.rows[0].user_id;
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(newPassword), userId]);
+      await db.query("UPDATE users SET requires_password_change=false WHERE id=$1", [userId]);
+      await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [userId]);
+      await db.query("DELETE FROM web_sessions WHERE user_id=$1", [userId]);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { ok: true });
+    return;
+  }
   sendJson(response, 404, { error: "API endpoint not found." });
 }
 
@@ -1382,7 +1472,6 @@ async function handleCommunity(request, response, db, options, user) {
     if (!message || message.length > 1000) throw new HttpError(400, "Enter a follow-up message.");
     const report = await db.query("SELECT id,status FROM reports WHERE id=$1 AND user_email=$2", [reportId, user.email]);
     if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
-    if (report.rows[0].status !== "Submitted") throw new HttpError(400, "Follow-ups are only available while a report is pending.");
     await withTransaction(db, async (transaction) => {
       const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
       await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,'resident')",
@@ -1393,6 +1482,17 @@ async function handleCommunity(request, response, db, options, user) {
       await insertActivity(transaction, user, "Added report follow-up", `${reportId} · ${message}`);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (url.pathname === "/api/community/mark-notifications-read" && request.method === "POST") {
+    requireRole(user, ROLES);
+    requireJsonBody(request);
+    const ids = Array.isArray(request.body.ids) ? request.body.ids.filter((id) => typeof id === "string" && id.length > 0) : [];
+    if (ids.length) {
+      await db.query("UPDATE notifications SET read=true WHERE target_email=$1 AND id=ANY($2::text[])", [user.email, ids]);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    }
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -1407,10 +1507,13 @@ async function handleProfile(request, response, db, options, user) {
     const body = request.body;
     validateAccount({ ...body, email: user.email });
     if (user.role === "resident") await assertKnownArea(db, body.area);
+    const recoveryEmail = typeof body.recoveryEmail === "string" ? body.recoveryEmail.trim().toLowerCase()
+      : (typeof body.recovery_email === "string" ? body.recovery_email.trim().toLowerCase() : "");
+    if (recoveryEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryEmail)) throw new HttpError(400, "Enter a valid recovery email address.");
     await withTransaction(db, async (transaction) => {
       const db = transaction;
-      await db.query("UPDATE users SET name=$1,area=$2,phone=$3 WHERE id=$4",
-        [body.name.trim(), body.area.trim(), String(body.phone || "").trim(), user.id]);
+      await db.query("UPDATE users SET name=$1,area=$2,phone=$3,recovery_email=$4 WHERE id=$5",
+        [body.name.trim(), body.area.trim(), String(body.phone || "").trim(), recoveryEmail, user.id]);
       await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
@@ -1460,18 +1563,20 @@ async function handleUsers(request, response, db, options, user) {
     requireRole(user, ["administrator"]);
     requireJsonBody(request);
     const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
-    const target = await db.query("SELECT id, name FROM users WHERE email=$1 AND email<>$2", [email, user.email]);
+    const target = await db.query("SELECT id, name, email FROM users WHERE email=$1 AND email<>$2", [email, user.email]);
     if (!target.rows.length) throw new HttpError(404, "The account could not be found.");
     const temporaryPassword = `CommUnity-${randomBytes(5).toString("base64url")}`;
     await withTransaction(db, async (transaction) => {
       await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(temporaryPassword), target.rows[0].id]);
-      await transaction.query("UPDATE users SET requires_password_change=true WHERE id=$1", [target.rows[0].id]);
+      await transaction.query("UPDATE users SET requires_password_change=true, reset_requested=false WHERE id=$1", [target.rows[0].id]);
       await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
       await transaction.query("UPDATE password_reset_requests SET status='completed',handled_by=$1,handled_at=now() WHERE user_id=$2 AND status='pending'", [user.id, target.rows[0].id]);
       await insertActivity(transaction, user, "Generated temporary password", target.rows[0].name);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    sendJson(response, 200, { temporaryPassword });
+    const { mailer, smtpFrom } = options;
+    queueEmail(mailer, { from: smtpFrom, to: target.rows[0].email, subject: "CommUnity temporary password", text: `Your temporary CommUnity password is: ${temporaryPassword}\n\nSign in and change it immediately. The password expires on first use.` });
+    sendJson(response, 200, { ok: true });
     return;
   }
   if (url.pathname === "/api/users/deactivate" && request.method === "POST") {
@@ -1532,7 +1637,51 @@ async function handleUsers(request, response, db, options, user) {
 }
 
 async function handleAnnouncements(request, response, db, options, user) {
+  const { mailerState, appOrigin } = options;
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/announcements/approval" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    const status = String(request.body.status || "");
+    const reason = status === "declined" ? String(request.body.reason || "").trim() : "";
+    if (!["approved", "declined"].includes(status) || !/^\d+$/.test(String(request.body.id || ""))) {
+      throw new HttpError(400, "Choose a valid announcement decision.");
+    }
+    if (status === "declined" && (!reason || reason.length > 500)) throw new HttpError(400, "A rejection reason is required.");
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      const found = await db.query(`
+        SELECT a.id, a.title, to_char(a.date, 'YYYY-MM-DD') AS date, a.created_by AS "createdBy",
+          u.email AS "creatorEmail"
+        FROM announcements a LEFT JOIN users u ON u.id = a.created_by
+        WHERE a.id=$1
+      `, [Number(request.body.id)]);
+      if (!found.rows.length) throw new HttpError(404, "This announcement could not be found.");
+      const item = found.rows[0];
+      await db.query("UPDATE announcements SET approval_status=$1, decline_reason=$2 WHERE id=$3", [status, reason, item.id]);
+      await insertActivity(db, user, `${status === "approved" ? "Approved" : "Declined"} an announcement`, `${item.title}${status === "declined" ? ` · ${reason}` : ""}`);
+      if (item.creatorEmail && item.createdBy !== user.id) {
+        const title = status === "declined" ? "Announcement declined" : "Announcement approved";
+        const text = status === "declined"
+          ? `Your announcement "${item.title}" was declined. Reason: ${reason}`
+          : `Your announcement "${item.title}" was approved and published.`;
+        await insertNotification(db, item.creatorEmail, title, text);
+        queueEmail(mailerState?.mailer, {
+          from: mailerState?.settings?.from,
+          to: item.creatorEmail,
+          subject: title,
+          text: `${text}\n\nView it in CommUnity: ${appOrigin || ""}/#/official/announcements`,
+        });
+      }
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const [state, revision] = await Promise.all([
+      readFullState(db, user),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    return;
+  }
   if (url.pathname === "/api/announcements" && ["POST", "PUT", "DELETE"].includes(request.method)) {
     requireRole(user, ["official", "administrator"]);
     if (request.method === "POST") requireRole(user, ["official"]);
@@ -1557,6 +1706,19 @@ async function handleAnnouncements(request, response, db, options, user) {
           await db.query("INSERT INTO announcements (title,detail,date,approval_status,created_by) VALUES ($1,$2,$3,$4,$5)",
             [body.title.trim(), body.detail.trim(), body.date, approvalStatus, user.id]);
           await insertActivity(db, user, approvalStatus === "pending" ? "Submitted an announcement" : "Published an announcement", body.title.trim());
+          if (approvalStatus === "pending") {
+            const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+            for (const account of admins.rows) {
+              await insertNotification(db, account.email, "Announcement needs approval",
+                `${user.name} submitted “${body.title.trim()}” for ${body.date}.`);
+              queueEmail(mailerState?.mailer, {
+                from: mailerState?.settings?.from,
+                to: account.email,
+                subject: "Announcement needs approval",
+                text: `${user.name} submitted "${body.title.trim()}" for ${body.date}.\n\nReview it in CommUnity: ${appOrigin || ""}/#/administrator/approvals`,
+              });
+            }
+          }
         } else {
           if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
           const updated = await db.query("UPDATE announcements SET title=$1,detail=$2,date=$3 WHERE id=$4",
@@ -1564,21 +1726,117 @@ async function handleAnnouncements(request, response, db, options, user) {
           if (!updated.rowCount) throw new HttpError(404, "This announcement could not be found.");
           await insertActivity(db, user, "Updated an announcement", body.title.trim());
         }
-        if (url.pathname === "/api/announcements/approval" && request.method === "POST") {
-          requireRole(user, ["administrator"]);
-          requireJsonBody(request);
-          const status = String(request.body.status || "");
-          if (!["approved", "declined"].includes(status) || !/^\d+$/.test(String(request.body.id || ""))) {
-            throw new HttpError(400, "Choose a valid announcement decision.");
-          }
-          const result = await db.query("UPDATE announcements SET approval_status=$1 WHERE id=$2", [status, Number(request.body.id)]);
-          if (!result.rowCount) throw new HttpError(404, "This announcement could not be found.");
-          await insertActivity(db, user, `${status === "approved" ? "Approved" : "Declined"} an announcement`, `Announcement ${request.body.id}`);
-          await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-          const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-          sendJson(response, 200, { ok: true, data: stateForRole(state, user), revision: Number(revision.rows[0].revision) });
-          return;
+      }
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const [state, revision] = await Promise.all([
+      readFullState(db, user),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+function localToday() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function validateCalendarEvent(body) {
+  const date = typeof body.date === "string" ? new Date(`${body.date}T00:00:00Z`) : new Date(Number.NaN);
+  if (typeof body.title !== "string" || !body.title.trim() || body.title.length > 120 ||
+      typeof body.detail !== "string" || body.detail.length > 1000 ||
+      typeof body.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(body.date) ||
+      !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== body.date) {
+    throw new HttpError(400, "Enter a title, details, and a valid event date.");
+  }
+  if (body.date < localToday()) throw new HttpError(400, "Events cannot be scheduled before today.");
+}
+
+async function handleCalendar(request, response, db, options, user) {
+  const { mailerState, appOrigin } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/calendar/events" && request.method === "POST") {
+    requireRole(user, ["official", "administrator"]);
+    const permission = await db.query(
+      "SELECT enabled FROM role_permissions WHERE role=$1 AND permission='manageSchedules'",
+      [user.role],
+    );
+    if (!permission.rows[0]?.enabled) throw new HttpError(403, "Calendar event management is not enabled for this role.");
+    requireJsonBody(request);
+    validateCalendarEvent(request.body);
+    const approvalStatus = user.role === "official" ? "pending" : "approved";
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      const title = request.body.title.trim();
+      const detail = String(request.body.detail || "").trim();
+      await db.query(
+        "INSERT INTO calendar_events (title,detail,date,approval_status,created_by) VALUES ($1,$2,$3,$4,$5)",
+        [title, detail, request.body.date, approvalStatus, user.id],
+      );
+      await insertActivity(db, user,
+        approvalStatus === "pending" ? "Requested a calendar event" : "Created a calendar event",
+        `${title} · ${request.body.date}`);
+      if (approvalStatus === "pending") {
+        const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+        for (const account of admins.rows) {
+          await insertNotification(db, account.email, "Calendar event needs approval",
+            `${user.name} requested “${title}” on ${request.body.date}.`);
+          queueEmail(mailerState?.mailer, {
+            from: mailerState?.settings?.from,
+            to: account.email,
+            subject: "Calendar event needs approval",
+            text: `${user.name} requested "${title}" on ${request.body.date}.\n\nReview it in CommUnity: ${appOrigin || ""}/#/administrator/calendar`,
+          });
         }
+      }
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    const [state, revision] = await Promise.all([
+      readFullState(db, user),
+      db.query("SELECT revision FROM app_meta WHERE id=1"),
+    ]);
+    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    return;
+  }
+  if (url.pathname === "/api/calendar/events/approval" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    const id = Number(request.body.id);
+    const status = String(request.body.status || "");
+    const reason = status === "declined" ? String(request.body.reason || "").trim() : "";
+    if (!Number.isInteger(id) || id < 1 || !["approved", "declined"].includes(status)) {
+      throw new HttpError(400, "Choose a valid event decision.");
+    }
+    if (status === "declined" && (!reason || reason.length > 500)) throw new HttpError(400, "A rejection reason is required.");
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      const found = await db.query(`
+        SELECT e.id, e.title, to_char(e.date, 'YYYY-MM-DD') AS date, e.created_by AS "createdBy",
+          u.email AS "creatorEmail", u.name AS "creatorName"
+        FROM calendar_events e LEFT JOIN users u ON u.id = e.created_by
+        WHERE e.id=$1
+      `, [id]);
+      if (!found.rows.length) throw new HttpError(404, "This event request could not be found.");
+      const item = found.rows[0];
+      await db.query("UPDATE calendar_events SET approval_status=$1, decline_reason=$2 WHERE id=$3", [status, reason, id]);
+      await insertActivity(db, user,
+        `${status === "approved" ? "Approved" : "Declined"} a calendar event`,
+        `${item.title} · ${item.date}${status === "declined" ? ` · ${reason}` : ""}`);
+      if (item.creatorEmail && item.createdBy !== user.id) {
+        const title = status === "declined" ? "Calendar event declined" : "Calendar event approved";
+        const body = status === "declined"
+          ? `Your event “${item.title}” on ${item.date} was declined. Reason: ${reason}`
+          : `Your event “${item.title}” on ${item.date} was approved.`;
+        await insertNotification(db, item.creatorEmail, title, body);
+        queueEmail(mailerState?.mailer, {
+          from: mailerState?.settings?.from,
+          to: item.creatorEmail,
+          subject: title,
+          text: `${body}\n\nView the calendar in CommUnity: ${appOrigin || ""}/#/official/calendar`,
+        });
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });

@@ -84,6 +84,9 @@ let smtpSettings = { host: "", port: "", user: "", from: "", configured: false }
 let reportDraft = null;
 let modalState = null;
 let forcedPasswordDismissed = false;
+let calendarMonth = new Date().getMonth();
+let calendarYear = new Date().getFullYear();
+let calendarSelectedDate = "";
 let selectedPermissionRole = "resident";
 let permissionDrafts = {};
 let permissionOpenGroups = {};
@@ -343,6 +346,7 @@ function seedData() {
       { title: "Barangay clean-up drive", detail: "Saturday, October 31 · 7:00 AM · Barangay covered court", date: "2026-10-31" },
       { title: "Free medical consultation", detail: "November 3 · 8:00 AM–12:00 PM · Health center", date: "2026-11-03" },
     ],
+    calendarEvents: [],
   };
 }
 
@@ -357,6 +361,7 @@ function emptyState() {
     permissions: structuredClone(DEFAULT_PERMISSIONS),
     accountOverrides: {},
     announcements: [],
+    calendarEvents: [],
     locations: [],
     recyclingLocations: [],
   };
@@ -443,6 +448,23 @@ function clearSession() {
   reportDraft = null;
   uploadPhotos = [];
   document.documentElement.dataset.theme = "auth";
+}
+
+const SESSION_SYNC_KEY = "community.session-sync";
+const sessionSyncChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("community-session") : null;
+
+function announceSessionChange() {
+  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    localStorage.setItem(SESSION_SYNC_KEY, stamp);
+  } catch {
+    // Storage can be unavailable; the broadcast channel still covers modern browsers.
+  }
+  try {
+    sessionSyncChannel?.postMessage({ type: "session", stamp });
+  } catch {
+    // Ignore channel failures.
+  }
 }
 
 function unreadCount(user = currentUser) {

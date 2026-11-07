@@ -74,15 +74,13 @@ function render() {
       else if (route.page === "calendar") markup = calendarPage();
       else if (route.page === "reports") markup = reportsPage("administrator", "reports");
       else if (route.page === "approvals") markup = approvalsPage();
-      else if (route.page === "analytics") markup = monitoringPage();
+      else if (route.page === "analytics") markup = analyticsPage();
       else if (route.page === "notifications") markup = notificationsPage("administrator");
       else if (route.page === "users") markup = usersPage();
       else if (route.page === "locations") markup = locationsPage();
       else if (route.page === "announcements") markup = announcementsPage("administrator");
-      else if (route.page === "activity") markup = auditPage();
+      else if (route.page === "activity") markup = activityLogPage();
       else if (route.page === "roles") markup = rolesPage();
-      else if (route.page === "monitoring") markup = monitoringPage();
-      else if (route.page === "audit") markup = auditPage();
       else if (route.page === "settings") markup = settingsPage();
       else if (route.page === "email") markup = emailPage();
       else markup = profilePage("administrator");
@@ -1286,8 +1284,8 @@ async function handleAction(button, clickEvent) {
       app.querySelector('[data-action="select-permission-role"][aria-pressed="true"]')?.focus();
       toast(`${ROLES[role]} permissions saved.`, "success");
     }
-  } else if (action === "export-audit") {
-    exportCsv("community-audit.csv", ["Date and time", "Actor", "Role", "Action", "Details", "Result"], data.activities.map((item) => [item.at, item.actor, ROLES[item.role] || item.role, item.action, item.detail, item.result]));
+  } else if (action === "export-activity-log") {
+    exportCsv("community-activity-log.csv", ["Date and time", "Actor", "Role", "Action", "Details", "Result"], data.activities.map((item) => [item.at, item.actor, ROLES[item.role] || item.role, item.action, item.detail, item.result]));
   } else if (action === "export-reports") {
     exportReports();
   } else if (action === "export-report-history") {

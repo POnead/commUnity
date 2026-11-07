@@ -16,7 +16,7 @@ function navGroups(role) {
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : [
     { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["reports", "Community reports", "clipboard"], ["approvals", "Approval queue", "check"]] },
-    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"], ["audit", "Activity Log", "activity"]] },
+    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"], ["activity", "Activity Log", "activity"]] },
   ];
   return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage({ role, email: currentUser?.email }, key)) }));
 }
@@ -24,19 +24,17 @@ function requiredPermission(role, pageName) {
   const map = {
     resident: { collection: "viewSchedules", report: "submitReports", reports: "submitReports", history: "submitReports" },
     official: { concerns: "manageReports", history: "manageReports", collection: "manageSchedules", announcements: "manageAnnouncements" },
-    administrator: { reports: "manageReports", analytics: "manageReports", monitoring: "manageReports", users: "manageUsers", locations: "manageUsers", announcements: "manageAnnouncements", roles: "manageRoles", activity: "viewAudit", audit: "viewAudit" },
+    administrator: { reports: "manageReports", analytics: "manageReports", users: "manageUsers", locations: "manageUsers", announcements: "manageAnnouncements", roles: "manageRoles", activity: "viewAudit" },
   };
   return map[role]?.[pageName] || "";
 }
 
 function officialReportFilters(reports, activeFilter) {
-  const options = [["all", "All open"], ["Submitted", "Submitted"], ["Under Review", "Under review"], ["In Progress", "In progress"], ["urgent", "Urgent"]];
+  const options = [["all", "All open"], ["Submitted", "Submitted"], ["Under Review", "Under review"], ["In Progress", "In progress"]];
   return `<div class="filter-row" role="group" aria-label="Filter concerns">${options.map(([value, label]) => {
     const count = value === "all"
       ? reports.filter((report) => report.status !== "Resolved").length
-      : value === "urgent"
-        ? reports.filter((report) => report.urgent && report.status !== "Resolved").length
-        : reports.filter((report) => report.status === value).length;
+      : reports.filter((report) => report.status === value).length;
     return `<button type="button" class="filter-button ${activeFilter === value ? "selected" : ""}" data-action="filter-reports" data-value="${esc(value)}" aria-pressed="${activeFilter === value}">${esc(label)} <span class="filter-count">${count}</span></button>`;
   }).join("")}</div>`;
 }
@@ -109,7 +107,6 @@ function pageTitle(role, page) {
       announcements: ["Announcements", "Publish service notices for residents and staff."],
       activity: ["Activity Log", "A record of account and service activity."],
       roles: ["Role management", "Review the permissions shown in each workspace."],
-      audit: ["Activity Log", "A record of account and service activity."],
       profile: ["Your profile", "Keep your administrator account details up to date."],
       settings: ["Settings", "Manage administrator workspace areas from one place."],
       email: ["Email", "Configure SMTP email for report and collection notifications."],
@@ -194,7 +191,7 @@ function reportRows(reports, role) {
     ? ["Concern", "Affected area", "Date submitted", "Status", "Action"]
     : ["Concern", "Resident", "Affected area", "Status", "Action"];
   const cells = reports.map((report) => {
-    const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(displayReportId(report.id))}${report.urgent ? " · Urgent" : ""}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
+    const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(displayReportId(report.id))}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
     const second = role === "resident"
       ? `<div class="record-meta" role="cell" data-label="Affected area">${esc(report.area)}</div>`
       : `<div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>`;
@@ -202,7 +199,7 @@ function reportRows(reports, role) {
       ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
       : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
     return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status}`.toLowerCase())}">
-      ${first}${second}${third}<div role="cell" data-label="Status">${statusPill(report.status)}${report.urgent ? `<span class="visually-hidden"> Urgent concern.</span>` : ""}</div>
+      ${first}${second}${third}<div role="cell" data-label="Status">${statusPill(report.status)}</div>
       <div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>
     </div>`;
   }).join("");
@@ -224,7 +221,7 @@ function reportHistoryRows(reports) {
     .sort((a, b) => asDate(b.item.at) - asDate(a.item.at));
   if (!updates.length) return `<div class="empty-state"><strong>No report updates yet</strong>Status changes will appear here.</div>`;
   const rows = updates.map(({ report, item }) => `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.name} ${report.category} ${item.status} ${item.note}`.toLowerCase())}">
-    <div role="cell"><strong class="record-primary">${esc(report.title)}</strong><span class="record-secondary">${esc(displayReportId(report.id))}${report.urgent ? " · Urgent" : ""}</span></div>
+    <div role="cell"><strong class="record-primary">${esc(report.title)}</strong><span class="record-secondary">${esc(displayReportId(report.id))}</span></div>
     <div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>
     <div role="cell" data-label="Update">${statusPill(item.status)}<span class="record-secondary">${esc(item.note)}</span>${item.actorName ? `<span class="record-secondary">By ${esc(item.actorName)}</span>` : ""}</div>
     <div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div>
@@ -324,7 +321,10 @@ function dashboardResident() {
   const reports = userReports();
   const next = upcomingSchedule(currentUser.area);
   const latest = sortedReports(reports)
-    .sort((a, b) => Number(b.urgent && b.status !== "Resolved") - Number(a.urgent && a.status !== "Resolved"))
+    .sort((a, b) =>
+      Number(["Submitted", "Under Review"].includes(b.status)) - Number(["Submitted", "Under Review"].includes(a.status)) ||
+      asDate(b.updatedAt) - asDate(a.updatedAt)
+    )
     .slice(0, 4);
   const actions = linkButton(`${icon("plus")} Report a concern`, routeUrl("resident", "report"), "");
   const body = `
@@ -333,7 +333,7 @@ function dashboardResident() {
         ${panel("Next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div><div class="form-actions">${linkButton("View collection schedule", routeUrl("resident", "collection"), "secondary", "small")}</div>` : `<div class="empty-state"><strong>No upcoming pickup posted</strong>Check back for a schedule update from your barangay.</div>`)}
         ${panel("Emergency hotlines", `<ul class="plain-list">${EMERGENCY_HOTLINES.map(([label, number]) => `<li><span>${esc(label)}</span><strong>${esc(number)}</strong></li>`).join("")}</ul>`, { subtitle: "For immediate danger, call emergency services directly." })}
         ${panel("Official working hours", `<ul class="plain-list">${(data.users || []).filter((user) => user.role === "official" && user.status === "Active").map((official) => `<li><span>${esc(official.name)}</span><strong>${esc(official.workingHours || "Monday-Friday, 8:00 AM-5:00 PM")}</strong></li>`).join("") || "<li><span>No hours posted</span></li>"}`, { subtitle: "Barangay service desk hours" })}
-        ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon(report.urgent && report.status !== "Resolved" ? "alert" : "clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div>${report.urgent && report.status !== "Resolved" ? statusPill("urgent", "Urgent") : statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
+        ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon("clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div>${statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
       </div>
       <div class="content-stack">
         ${panel("Announcements", `<ul class="plain-list">${data.announcements.map((item) => `<li><div><strong class="announcement-title">${esc(item.title)}</strong><div class="muted small">${esc(item.detail)}</div></div><span class="muted small">${esc(dateLabel(item.date, { month: "short", day: "numeric" }))}</span></li>`).join("")}</ul>`)}
@@ -476,10 +476,8 @@ function calendarPage() {
 
 function dashboardOfficial() {
   const open = data.reports.filter((report) => report.status !== "Resolved");
-  const urgent = open.filter((report) => report.urgent);
   const pending = open.filter((report) => report.status === "Submitted" || report.status === "Under Review");
   const latest = [...open].sort((a, b) =>
-    Number(b.urgent) - Number(a.urgent) ||
     Number(["Submitted", "Under Review"].includes(b.status)) - Number(["Submitted", "Under Review"].includes(a.status)) ||
     asDate(b.updatedAt) - asDate(a.updatedAt),
   ).slice(0, 5);
@@ -487,7 +485,7 @@ function dashboardOfficial() {
   const body = `
     <div class="grid-main-side">
       <div class="content-stack">
-        ${panel("Concerns needing attention", `<p class="queue-context">${urgent.length} urgent · ${pending.length} awaiting review</p><div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon(report.urgent ? "alert" : "clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(report.name)} · ${esc(report.area)}</span></div>${statusPill(report.status)}${report.urgent ? statusPill("urgent", "Urgent") : ""}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="Review ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No open concerns</strong>New reports will appear here.</div>`}</div><div class="form-actions">${linkButton("View concern queue", routeUrl("official", "concerns"), "secondary", "small")}</div>`)}
+        ${panel("Concerns needing attention", `<p class="queue-context">${pending.length} awaiting review</p><div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon("clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(report.name)} · ${esc(report.area)}</span></div>${statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="Review ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No open concerns</strong>New reports will appear here.</div>`}</div><div class="form-actions">${linkButton("View concern queue", routeUrl("official", "concerns"), "secondary", "small")}</div>`)}
         ${panel("Collection service", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(next.area)} · ${esc(next.wasteType)}</strong><span>${esc(dateLabel(next.date, { weekday: "long", month: "short", day: "numeric" }))} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.zone)} · ${esc(next.team)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}</div><div class="form-actions">${linkButton("Manage schedules", routeUrl("official", "collection"), "secondary", "small")}</div>` : `<div class="empty-state">No future collections are scheduled.</div>`)}
       </div>
       <div class="content-stack">
@@ -602,7 +600,7 @@ function announcementsPage(role) {
   return page(role, "announcements", body);
 }
 
-function monitoringPage() {
+function analyticsPage() {
   const reports = data.reports;
   const schedules = sortedSchedules(data.schedules);
   const open = reports.filter((report) => report.status !== "Resolved");
@@ -611,7 +609,6 @@ function monitoringPage() {
     ${statsStrip([
       stat("Database", "Available", "Latest server data loaded", "success"),
       stat("Open reports", open.length, `${reports.length} total reports`),
-      stat("Urgent reports", open.filter((report) => report.urgent).length, "Need prompt review"),
       stat("Upcoming collections", due.length, "Scheduled or in progress"),
     ])}
     <div class="grid-main-side">
@@ -654,8 +651,6 @@ function reportFormMarkup() {
             <div class="notice-bar"><span>Purok or area</span><strong>${esc(draft.area || defaultArea)}</strong></div>
             <div class="notice-bar"><span>Street or landmark</span><strong>${esc(draft.locationDetail)}</strong></div>
             <div class="notice-bar"><span>Map pin</span><strong>${draft.latitude == null ? "Not selected" : `${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`}</strong></div>
-            <div class="notice-bar"><span>Urgency</span><strong>${draft.urgent ? "Flagged for prompt attention" : "Standard report"}</strong></div>
-            <div class="notice-bar"><span>Immediate danger?</span><strong>${draft.urgent ? "Flagged for prompt attention. " : ""}If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service. CommUnity does not dispatch emergency services.</strong></div>
             <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
             <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
             <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
@@ -679,7 +674,6 @@ function reportFormMarkup() {
               </div>
               <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
               <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
-              <label class="checkbox-field span-all"><input name="urgent" type="checkbox" ${draft.urgent ? "checked" : ""}><span><strong>This concern needs urgent attention</strong><small class="field-help">This flag does not contact emergency services. If anyone is in immediate danger, contact local emergency services directly and do not wait for a response through this service.</small></span></label>
             </div>
             <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
           </form>`}
@@ -699,15 +693,12 @@ function reportsPage(role, view) {
   if (selection && (role !== "resident" || selection.userEmail === currentUser.email)) return reportDetail(selection, role);
   const officialQueue = role === "official" && view === "concerns";
   const canFilter = (role === "resident" || role === "administrator") && view === "reports";
-  const allowedFilters = officialQueue ? ["all", "urgent", ...STATUSES.slice(0, -1)] : canFilter ? ["all", ...STATUSES] : [];
+  const allowedFilters = officialQueue ? [...STATUSES.slice(0, -1)] : canFilter ? ["all", ...STATUSES] : [];
   const activeFilter = allowedFilters.includes(reportFilter) ? reportFilter : "all";
-  const urgentOnly = officialQueue && activeFilter === "urgent";
   const filtered = sortedReports(officialQueue || canFilter
     ? userRows.filter((report) => activeFilter === "all"
       ? true
-      : activeFilter === "urgent"
-        ? report.urgent && report.status !== "Resolved"
-        : report.status === activeFilter)
+      : report.status === activeFilter)
     : userRows);
   const title = view === "history" ? "Report history" : role === "resident" ? "My reports" : role === "administrator" ? "Community reports" : "Concern queue";
   const subtitle = view === "history"
@@ -715,7 +706,7 @@ function reportsPage(role, view) {
     : pageTitle(role, view)[1];
   const showResolvedSeparately = !canFilter || activeFilter === "all";
   const activeRows = view === "history" || !showResolvedSeparately ? filtered : filtered.filter((report) => report.status !== "Resolved");
-  const resolvedRows = view === "history" || urgentOnly || !showResolvedSeparately ? [] : filtered.filter((report) => report.status === "Resolved");
+  const resolvedRows = view === "history" || !showResolvedSeparately ? [] : filtered.filter((report) => report.status === "Resolved");
   const primaryAction = role === "resident"
     ? linkButton(`${icon("plus")} Report a concern`, routeUrl("resident", "report"), "")
     : "";
@@ -739,7 +730,6 @@ function reportsPage(role, view) {
         stat("All concerns", data.reports.length, "Recorded concerns"),
         stat("Pending review", data.reports.filter((report) => ["Submitted", "Under Review"].includes(report.status)).length, "Submitted or under review"),
         stat("In progress", data.reports.filter((report) => report.status === "In Progress").length, "Being addressed"),
-        stat("Urgent", data.reports.filter((report) => report.urgent && report.status !== "Resolved").length, "Active hazards", "danger"),
       ]) : ""}
       ${panel(role === "official" && view === "history" ? "Report activity" : view === "history" ? "Past and current concerns" : role === "official" ? "Concern queue" : "Reports", `${role === "official" && view === "history" ? "" : view === "reports" ? reportFilters(userRows, activeFilter) : officialQueue ? officialReportFilters(userRows, activeFilter) : ""}${searchToolbar(role === "official" && view === "history" ? "Search report activity" : undefined)}<div class="mt-16" data-report-table>${role === "official" && view === "history" ? reportHistoryRows(userRows) : reportRows(view === "history" ? filtered : activeRows, role)}</div>${resolvedRows.length && view !== "history" ? `<div class="section-heading mt-20"><div><h2>Resolved concerns</h2><p>${resolvedRows.length} marked as addressed</p></div></div><div data-report-table>${reportRows(resolvedRows, role)}</div>` : ""}`, { subtitle: role === "resident" && view === "reports" ? "" : subtitle, action: exportActions })}
     </div>`;
@@ -942,7 +932,7 @@ function confirmLeaveWithUnsavedPermissions() {
   );
 }
 
-function auditPage() {
+function activityLogPage() {
   const rows = [...data.activities].sort((a, b) => asDate(b.at) - asDate(a.at));
   const body = `
     <div class="content-stack">
@@ -952,12 +942,12 @@ function auditPage() {
         stat("Report activity", rows.filter((item) => /report|concern/i.test(`${item.action} ${item.detail}`)).length, "Concern workflows"),
         stat("Service activity", rows.filter((item) => /collection|schedule/i.test(`${item.action} ${item.detail}`)).length, "Collection workflows"),
       ])}
-      ${panel("Activity history", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search activity</span><input class="input" type="search" data-search-input autocomplete="off"></label><button class="button secondary small" type="button" data-action="export-audit">${icon("download")} Export CSV</button></div>
-      <div class="records mt-16" data-page-size="10" role="table" aria-label="Audit activity"><div class="record-row record-head audit-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Date and time</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>
-        ${rows.map((item) => `<div class="record-row audit-record filter-item" role="row" data-search="${esc(`${item.actor} ${item.action} ${item.detail} ${item.role} ${item.result}`.toLowerCase())}"><div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span></div><div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div><div class="record-meta" role="cell" data-label="Workspace">${esc(ROLES[item.role] || item.role)}</div><div role="cell" data-label="Result">${statusPill("active", item.result)}</div><div role="cell" data-label=""></div></div>`).join("") || `<div class="empty-state"><strong>No activity recorded</strong>Actions recorded in this workspace will appear here.</div>`}
+      ${panel("Activity Log", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search activity</span><input class="input" type="search" data-search-input autocomplete="off"></label><button class="button secondary small" type="button" data-action="export-activity-log">${icon("download")} Export CSV</button></div>
+      <div class="records mt-16" data-page-size="10" role="table" aria-label="Activity log"><div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Date and time</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>
+        ${rows.map((item) => `<div class="record-row activity-record filter-item" role="row" data-search="${esc(`${item.actor} ${item.action} ${item.detail} ${item.role} ${item.result}`.toLowerCase())}"><div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span></div><div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div><div class="record-meta" role="cell" data-label="Workspace">${esc(ROLES[item.role] || item.role)}</div><div role="cell" data-label="Result">${statusPill("active", item.result)}</div><div role="cell" data-label=""></div></div>`).join("") || `<div class="empty-state"><strong>No activity recorded</strong>Actions recorded in this workspace will appear here.</div>`}
       </div>`, { subtitle: "Actions recorded in this workspace" })}
     </div>`;
-  return page("administrator", "audit", body);
+  return page("administrator", "activity", body);
 }
 
 function loginMarkup() {

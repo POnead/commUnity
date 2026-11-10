@@ -3862,7 +3862,10 @@ a:hover {
   .icon-button,
   .nav-link,
   .filter-button,
-  .text-button {
+  .text-button,
+  .input,
+  .select,
+  .textarea {
     min-height: 44px;
   }
 

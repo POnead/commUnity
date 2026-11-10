@@ -32,7 +32,7 @@ function addSecurityHeaders(response, secure) {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  response.setHeader("Permissions-Policy", "camera=(), microphone=()");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
@@ -106,18 +106,24 @@ export function createExpressApp({
       next(error);
     }
   });
+  const STATUS_TEXT = {
+    200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
+    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+    405: "Method Not Allowed", 409: "Conflict", 413: "Too Large",
+    429: "Too Many Requests", 500: "Server Error", 503: "Unavailable",
+  };
   app.use((request, response, next) => {
     const startedAt = process.hrtime.bigint();
     response.on("finish", () => {
-      console.log(JSON.stringify({
-        level: "info",
-        message: "CommUnity request",
-        requestId: request.requestId,
-        method: request.method,
-        path: request.url?.split("?")[0] || "/",
-        status: response.statusCode,
-        durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6,
-      }));
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      const duration = durationMs < 1 ? "<1ms" : `${Math.round(durationMs)}ms`;
+      const time = new Date().toTimeString().slice(0, 8);
+      const method = request.method.padEnd(6, " ");
+      const path = request.url?.split("?")[0] || "/";
+      const status = response.statusCode;
+      const label = STATUS_TEXT[status] || "Request";
+      const mark = status >= 400 ? "✗" : "✓";
+      console.log(`[${time}] ${mark} ${method} ${path} → ${status} ${label} (${duration})`);
     });
     next();
   });

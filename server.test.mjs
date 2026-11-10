@@ -96,6 +96,8 @@ test("renders saved concern pins inline for residents and officials with a direc
   const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
   const context = {
     STATUSES: ["Submitted", "Under Review", "In Progress", "Resolved"],
+    REPORT_PRIORITIES: ["High", "Medium", "Low"],
+    FOLLOW_UP_LIMITS: { High: null, Medium: 5, Low: 3 },
     currentUser: { id: "official-one" },
     esc: (value) => String(value ?? ""),
     panel: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
@@ -154,6 +156,81 @@ test("renders saved concern pins inline for residents and officials with a direc
   assert.doesNotMatch(residentWithoutPin, /id="report-detail-map"/);
   assert.match(residentWithoutPin, /You did not add a map pin/);
   assert.match(residentWithoutPin, /Beside the community hall/);
+});
+
+test("renders community-wide official hours on the resident dashboard", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {
+    currentUser: { role: "resident", area: "Purok 1" },
+    communityOfficialHours: [{ name: "Official One", workingHours: "Monday, Saturday, 8:00 AM-5:00 PM" }],
+    data: { announcements: [], reports: [], schedules: [], users: [] },
+    EMERGENCY_HOTLINES: [],
+    esc: (value) => String(value ?? ""),
+    userReports: () => [],
+    sortedReports: () => [],
+    sortedSchedules: () => [],
+    icon: () => "",
+    panel: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
+    linkButton: () => "",
+    routeUrl: () => "",
+    page: (_role, _pageName, body) => body,
+  };
+  runInNewContext(views, context);
+  context.page = (_role, _pageName, body) => body;
+
+  const dashboard = context.dashboardResident();
+  assert.match(dashboard, /Official working hours/);
+  assert.match(dashboard, /Official One/);
+  assert.match(dashboard, /Monday, Saturday, 8:00 AM-5:00 PM/);
+  assert.doesNotMatch(dashboard, /No hours posted/);
+});
+
+test("renders an event location action only for event announcements", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {
+    currentUser: { role: "official", email: "official@example.test" },
+    data: {
+      announcements: [
+        {
+          id: "1",
+          title: "Community clean-up",
+          detail: "Meet at the covered court.",
+          date: "2026-11-10",
+          approvalStatus: "approved",
+          isEvent: true,
+          latitude: 14.01799,
+          longitude: 121.09465,
+        },
+        {
+          id: "2",
+          title: "Service notice",
+          detail: "No collection on Sunday.",
+          date: "2026-11-09",
+          approvalStatus: "approved",
+          isEvent: false,
+          latitude: null,
+          longitude: null,
+        },
+      ],
+    },
+    esc: (value) => String(value ?? ""),
+    asDate: (value) => new Date(value),
+    dateLabel: (value) => String(value),
+    icon: () => "",
+    panel: (_title, body) => `<section>${body}</section>`,
+    actionButton: () => "",
+    routeUrl: () => "",
+    page: (_role, _pageName, body) => body,
+  };
+  runInNewContext(views, context);
+  context.page = (_role, _pageName, body) => body;
+
+  const announcements = context.announcementsPage("official");
+  assert.match(announcements, /data-action="view-announcement-location" data-id="1"/);
+  assert.match(announcements, /Community clean-up/);
+  assert.match(announcements, /Event/);
+  assert.match(announcements, /Service notice/);
+  assert.doesNotMatch(announcements, /data-action="view-announcement-location" data-id="2"/);
 });
 
 test("serves hardened static files and protects database routes behind sessions", async () => {
@@ -498,6 +575,112 @@ test("registers residents, scopes their data, and rejects privilege escalation",
   }
 });
 
+test("allows unrelated account updates when a resident has a legacy unmanaged area", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-legacy-area-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Legacy Area Resident",
+        email: "legacy-area@example.test",
+        area: "Purok 4",
+        phone: "",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    await app.db.query("UPDATE users SET area='Palsara' WHERE email=$1", ["legacy-area@example.test"]);
+
+    const official = await api(app, "/api/users", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        name: "Account Official",
+        email: "account-official@example.test",
+        area: "Palsara",
+        role: "official",
+        status: "Active",
+        password: "A-unique-official-password!",
+      },
+    });
+    assert.equal(official.status, 201);
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const officialAccount = state.data.users.find((account) => account.email === "account-official@example.test");
+    officialAccount.name = "Updated Official";
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(saved.status, 200);
+
+    const refreshed = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const residentAccount = refreshed.data.users.find((account) => account.email === "legacy-area@example.test");
+    residentAccount.area = "Not a managed area";
+    const rejectedAreaChange = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: refreshed.revision, data: refreshed.data },
+    });
+    assert.equal(rejectedAreaChange.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("legacy report photo metadata does not block unrelated account updates", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-legacy-photo-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Photo Resident",
+        email: "photo-resident@example.test",
+        area: "Purok 1",
+        phone: "",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+
+    await app.db.query(`
+      INSERT INTO reports (id,user_email,name,category,title,area,description,status,submitted_at,updated_at)
+      VALUES ('R-legacy-photo','photo-resident@example.test','Photo Resident','Other','Legacy photo report',
+        'Purok 1','A report that has legacy photo metadata.','Submitted',now(),now())
+    `);
+    await app.db.query(`
+      INSERT INTO report_history (report_id,position,status,at,note,actor_name,actor_role)
+      VALUES ('R-legacy-photo',0,'Submitted',now(),'Report received.','Photo Resident','resident')
+    `);
+    await app.db.query(`
+      INSERT INTO report_photos (report_id,position,name,photo_url)
+      VALUES ('R-legacy-photo',0,'legacy.png','')
+    `);
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const report = state.data.reports.find((item) => item.id === "R-legacy-photo");
+    assert.deepEqual(report.photos, []);
+    state.data.users.find((account) => account.email === "photo-resident@example.test").name = "Updated Resident";
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(saved.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("enforces official report and schedule permissions and sends resident notifications", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-official-"));
   const app = await startServer(dataDir);
@@ -513,10 +696,66 @@ test("enforces official report and schedule permissions and sends resident notif
         phone: "",
         role: "official",
         status: "Active",
+        availableDays: ["Tuesday", "Thursday", "Sunday"],
         password: "A-unique-official-password!",
       },
     });
     assert.equal(officialCreated.status, 201);
+
+    const officialStateResponse = await api(app, "/api/state", { cookie: admin.cookie });
+    const initialOfficialState = await officialStateResponse.json();
+    const officialAccount = initialOfficialState.data.users.find((account) => account.email === "official@example.test");
+    assert.deepEqual(officialAccount.availableDays, ["Tuesday", "Thursday", "Sunday"]);
+
+    const workingHoursResponse = await api(app, "/api/community/working-hours", { cookie: admin.cookie });
+    const workingHoursData = await workingHoursResponse.json();
+    assert.deepEqual(workingHoursData.officials.find((account) => account.id === officialAccount.id).availableDays, ["Tuesday", "Thursday", "Sunday"]);
+
+    officialAccount.availableDays = ["Monday", "Saturday"];
+    officialAccount.workingHours = "Monday, Saturday, 8:00 AM-5:00 PM";
+    const savedOfficialState = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: initialOfficialState.revision, data: initialOfficialState.data },
+    });
+    assert.equal(savedOfficialState.status, 200);
+    const persistedOfficialState = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const persistedOfficial = persistedOfficialState.data.users.find((account) => account.email === "official@example.test");
+    assert.deepEqual(persistedOfficial.availableDays, ["Monday", "Saturday"]);
+    assert.equal(persistedOfficial.workingHours, "Monday, Saturday, 8:00 AM-5:00 PM");
+
+    const residentRegistration = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Resident Hours Viewer",
+        email: "resident-hours@example.test",
+        area: "Purok 1",
+        phone: "",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(residentRegistration.status, 201);
+    const resident = await signIn(app, "resident-hours@example.test", "A-unique-resident-password!");
+    const residentHoursResponse = await api(app, "/api/community/working-hours", { cookie: resident.cookie });
+    assert.equal(residentHoursResponse.status, 200);
+    const residentHours = await residentHoursResponse.json();
+    assert.deepEqual(residentHours.officials.find((account) => account.id === persistedOfficial.id), {
+      id: persistedOfficial.id,
+      name: "Official One",
+      workingHours: "Monday, Saturday, 8:00 AM-5:00 PM",
+      availableDays: ["Monday", "Saturday"],
+    });
+
+    const latestBeforeInvalid = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const invalidOfficialState = structuredClone(latestBeforeInvalid.data);
+    invalidOfficialState.users.find((account) => account.email === "official@example.test").availableDays = [];
+    const rejectedOfficialState = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: latestBeforeInvalid.revision, data: invalidOfficialState },
+    });
+    assert.equal(rejectedOfficialState.status, 400);
 
     const registered = await api(app, "/api/auth/register", {
       method: "POST",
@@ -800,6 +1039,85 @@ test("manages locations and announcements and sends idempotent collection remind
     let announcementState = await createAnnouncement.json();
     const announcement = announcementState.data.announcements[0];
     assert.ok(announcement.id);
+    assert.equal(announcement.isEvent, false);
+    assert.equal(announcement.latitude, null);
+    assert.equal(announcement.longitude, null);
+
+    const createEventAnnouncement = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: official.cookie,
+      body: {
+        title: "Community clean-up",
+        detail: "Meet at the covered court before the clean-up starts.",
+        date: new Date().toISOString().slice(0, 10),
+        isEvent: true,
+        latitude: 14.01799,
+        longitude: 121.09465,
+      },
+    });
+    assert.equal(createEventAnnouncement.status, 200);
+    const eventAnnouncementState = await createEventAnnouncement.json();
+    const eventAnnouncement = eventAnnouncementState.data.announcements[0];
+    assert.equal(eventAnnouncement.isEvent, true);
+    assert.equal(eventAnnouncement.latitude, 14.01799);
+    assert.equal(eventAnnouncement.longitude, 121.09465);
+
+    const missingEventPin = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: official.cookie,
+      body: {
+        title: "Event without a pin",
+        detail: "This event should be rejected.",
+        date: new Date().toISOString().slice(0, 10),
+        isEvent: true,
+      },
+    });
+    assert.equal(missingEventPin.status, 400);
+
+    const invalidEventPin = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: official.cookie,
+      body: {
+        title: "Event with an invalid pin",
+        detail: "This event should be rejected.",
+        date: new Date().toISOString().slice(0, 10),
+        isEvent: true,
+        latitude: 140,
+        longitude: 121.09465,
+      },
+    });
+    assert.equal(invalidEventPin.status, 400);
+
+    const approveEventAnnouncement = await api(app, "/api/announcements/approval", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { id: eventAnnouncement.id, status: "approved" },
+    });
+    assert.equal(approveEventAnnouncement.status, 200);
+    const residentEventState = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    const residentEvent = residentEventState.data.announcements.find((item) => item.id === eventAnnouncement.id);
+    assert.equal(residentEvent.isEvent, true);
+    assert.equal(residentEvent.latitude, 14.01799);
+    assert.equal(residentEvent.longitude, 121.09465);
+
+    const toggleEventOff = await api(app, "/api/announcements", {
+      method: "PUT",
+      cookie: official.cookie,
+      body: { ...eventAnnouncement, isEvent: false },
+    });
+    assert.equal(toggleEventOff.status, 200);
+    const toggledEvent = (await toggleEventOff.json()).data.announcements.find((item) => item.id === eventAnnouncement.id);
+    assert.equal(toggledEvent.isEvent, false);
+    assert.equal(toggledEvent.latitude, null);
+    assert.equal(toggledEvent.longitude, null);
+
+    const deleteEventAnnouncement = await api(app, "/api/announcements", {
+      method: "DELETE",
+      cookie: official.cookie,
+      body: { id: eventAnnouncement.id },
+    });
+    assert.equal(deleteEventAnnouncement.status, 200);
+
     const editAnnouncement = await api(app, "/api/announcements", {
       method: "PUT",
       cookie: official.cookie,
@@ -882,4 +1200,643 @@ test("keeps database sessions valid across server restarts and rejects public bi
     createCommunityServer({ dataDir: ":memory:", poolMax: 0 }),
     /PG_POOL_MAX/,
   );
+});
+
+async function registerResident(app, email, name) {
+  const registered = await api(app, "/api/auth/register", {
+    method: "POST",
+    body: {
+      name,
+      email,
+      area: "Purok 2",
+      phone: "",
+      password: "A-unique-resident-password!",
+      confirmPassword: "A-unique-resident-password!",
+    },
+  });
+  assert.equal(registered.status, 201);
+  return { cookie: registered.headers.get("set-cookie").split(";")[0], email, name };
+}
+
+async function seedReport(app, { cookie, email, name }, overrides = {}) {
+  const state = await api(app, "/api/state", { cookie }).then((r) => r.json());
+  const now = new Date().toISOString();
+  const report = {
+    id: `RPT-limit-${overrides.idSuffix || "x"}`,
+    userEmail: email,
+    name: overrides.name || name,
+    category: "Flooding",
+    title: "Limit test drainage",
+    area: "Purok 2",
+    barangay: "Palsara",
+    locationDetail: "Near the school",
+    latitude: 14.01799,
+    longitude: 121.09465,
+    description: "Water pools near the school entrance after rain.",
+    urgent: overrides.priority === "High",
+    priority: overrides.priority || "Medium",
+    status: overrides.status || "Submitted",
+    submittedAt: now,
+    updatedAt: now,
+    photos: [],
+    history: [{ status: overrides.status || "Submitted", at: now, note: "Report received." }],
+  };
+  const data = structuredClone(state.data);
+  data.reports.push(report);
+  data.activities.push({
+    id: `A-limit-${overrides.idSuffix || "x"}`,
+    actor: report.name,
+    role: "resident",
+    action: "Submitted a concern",
+    detail: `${report.id} · ${report.title}`,
+    at: now,
+    result: "Success",
+  });
+  const created = await api(app, "/api/state", {
+    method: "PUT",
+    cookie,
+    body: { revision: state.revision, data },
+  });
+  assert.equal(created.status, 200, `seedReport failed: ${await created.text()}`);
+  return report.id;
+}
+
+async function postFollowUp(app, cookie, reportId, message = "Checking in on this concern.") {
+  const response = await api(app, "/api/community/follow-up", {
+    method: "POST",
+    cookie,
+    body: { reportId, message },
+  });
+  return { status: response.status, json: await response.json() };
+}
+
+test("enforces per-report follow-up limits by priority: Low 3, Medium 5, High unlimited", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-followup-limits-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "resident.limit@example.test", "Resident Limit");
+
+    const lowId = await seedReport(app, { cookie, email, name }, { idSuffix: "low", priority: "Low" });
+    const mediumId = await seedReport(app, { cookie, email, name }, { idSuffix: "medium", priority: "Medium" });
+    const highId = await seedReport(app, { cookie, email, name }, { idSuffix: "high", priority: "High" });
+
+    // Low: 3 allowed, 4th rejected with 429
+    for (let i = 0; i < 3; i++) {
+      const result = await postFollowUp(app, cookie, lowId, `Low follow-up ${i + 1}`);
+      assert.equal(result.status, 200, `low follow-up ${i + 1} accepted`);
+      assert.equal(result.json.count, i + 1);
+      assert.equal(result.json.limit, 3);
+      assert.equal(result.json.remaining, 3 - (i + 1));
+    }
+    const lowRejected = await postFollowUp(app, cookie, lowId, "Fourth low follow-up.");
+    assert.equal(lowRejected.status, 429);
+    assert.match(lowRejected.json.error, /follow-up limit/);
+
+    // Medium: 5 allowed, 6th rejected with 429
+    for (let i = 0; i < 5; i++) {
+      const result = await postFollowUp(app, cookie, mediumId, `Medium follow-up ${i + 1}`);
+      assert.equal(result.status, 200, `medium follow-up ${i + 1} accepted`);
+      assert.equal(result.json.count, i + 1);
+      assert.equal(result.json.limit, 5);
+      assert.equal(result.json.remaining, 5 - (i + 1));
+    }
+    const mediumRejected = await postFollowUp(app, cookie, mediumId, "Sixth medium follow-up.");
+    assert.equal(mediumRejected.status, 429);
+
+    // High: more than 5 allowed (unlimited)
+    for (let i = 0; i < 7; i++) {
+      const result = await postFollowUp(app, cookie, highId, `High follow-up ${i + 1}`);
+      assert.equal(result.status, 200, `high follow-up ${i + 1} accepted`);
+      assert.equal(result.json.count, i + 1);
+      assert.equal(result.json.limit, null);
+      assert.equal(result.json.remaining, null);
+    }
+
+    // Limits do not leak between reports: medium still blocked, low still blocked
+    const mediumStill = await postFollowUp(app, cookie, mediumId, "Extra medium after limit.");
+    assert.equal(mediumStill.status, 429);
+    const lowStill = await postFollowUp(app, cookie, lowId, "Extra low after limit.");
+    assert.equal(lowStill.status, 429);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("rejects follow-ups on resolved concerns with 409", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-followup-resolved-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "resident.resolved@example.test", "Resident Resolved");
+    const reportId = await seedReport(app, { cookie, email, name }, { idSuffix: "resolved", priority: "High" });
+
+    // Resolve the report directly in the database
+    const now = new Date().toISOString();
+    await app.db.query("UPDATE reports SET status='Resolved', updated_at=$1 WHERE id=$2", [now, reportId]);
+    await app.db.query(
+      "INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES ($1,$2,$3,$4,$5,$6,'administrator')",
+      [reportId, 1, "Resolved", now, "Concern resolved.", "Portal administrator"],
+    );
+
+    const result = await postFollowUp(app, cookie, reportId, "Follow-up after resolution.");
+    assert.equal(result.status, 409);
+    assert.match(result.json.error, /resolved/);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("resident cannot follow up another resident's report", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-followup-isolation-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie: ownerCookie, email: ownerEmail, name: ownerName } = await registerResident(app, "resident.owner@example.test", "Report Owner");
+    const reportId = await seedReport(app, { cookie: ownerCookie, email: ownerEmail, name: ownerName }, { idSuffix: "isolated", priority: "High" });
+
+    const { cookie: otherCookie } = await registerResident(app, "resident.other@example.test", "Other Resident");
+    const result = await postFollowUp(app, otherCookie, reportId, "Someone else's follow-up.");
+    assert.equal(result.status, 404);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("existing follow-ups count retroactively toward the priority limit", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-followup-retro-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "resident.retro@example.test", "Resident Retro");
+    const now = new Date().toISOString();
+
+    // Seed report with 2 pre-existing follow-ups directly in the database
+    const reportId = await seedReport(app, { cookie, email, name }, { idSuffix: "retro", priority: "Low" });
+    await app.db.query(
+      "INSERT INTO report_follow_ups(report_id, user_email, message) VALUES ($1, $2, $3), ($1, $2, $4)",
+      [reportId, email, "Pre-existing follow-up one.", "Pre-existing follow-up two."],
+    );
+
+    // Low limit is 3, with 2 already counted -> 1 allowed, then blocked
+    const first = await postFollowUp(app, cookie, reportId, "Third follow-up.");
+    assert.equal(first.status, 200);
+    assert.equal(first.json.count, 3);
+    assert.equal(first.json.limit, 3);
+    assert.equal(first.json.remaining, 0);
+
+    const blocked = await postFollowUp(app, cookie, reportId, "Fourth follow-up after retroactive count.");
+    assert.equal(blocked.status, 429);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("staff can adjust concern priority with history, notification, and activity", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-priority-staff-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie: residentCookie, email: residentEmail, name: residentName } = await registerResident(app, "resident.priority@example.test", "Resident Priority");
+    const reportId = await seedReport(app, { cookie: residentCookie, email: residentEmail, name: residentName }, { idSuffix: "staff", priority: "Medium" });
+
+    const admin = await signIn(app);
+    assert.equal(admin.response.status, 200);
+    const officialCreated = await api(app, "/api/users", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        name: "Official One",
+        email: "official@example.test",
+        area: "Palsara",
+        phone: "",
+        role: "official",
+        status: "Active",
+        availableDays: ["Monday"],
+        password: "A-unique-official-password!",
+      },
+    });
+    assert.equal(officialCreated.status, 201);
+    const signedIn = await signIn(app, "official@example.test", "A-unique-official-password!");
+    assert.equal(signedIn.response.status, 200);
+    const officialCookie = signedIn.cookie;
+
+    const changed = await api(app, "/api/community/report-priority", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { reportId, priority: "High" },
+    });
+    assert.equal(changed.status, 200);
+    const changedJson = await changed.json();
+    assert.equal(changedJson.priority, "High");
+
+    const state = await api(app, "/api/state", { cookie: residentCookie }).then((r) => r.json());
+    const report = state.data.reports.find((item) => item.id === reportId);
+    assert.equal(report.priority, "High");
+    assert.equal(report.urgent, true);
+    const priorityHistory = report.history.find((item) => item.note === "Priority changed to High.");
+    assert.ok(priorityHistory, "priority change recorded in history");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+async function createOfficial(app, adminCookie, email = "official@example.test", name = "Official One", extra = {}) {
+  const created = await api(app, "/api/users", {
+    method: "POST",
+    cookie: adminCookie,
+    body: {
+      name,
+      email,
+      area: "Palsara",
+      phone: "",
+      role: "official",
+      status: "Active",
+      availableDays: ["Monday"],
+      password: "A-unique-official-password!",
+      ...extra,
+    },
+  });
+  assert.equal(created.status, 201, `createOfficial failed: ${await created.text()}`);
+  const signedIn = await signIn(app, email, "A-unique-official-password!");
+  assert.equal(signedIn.response.status, 200);
+  return signedIn.cookie;
+}
+
+test("report-priority rejects invalid, missing, unauthorized, resolved and over-quota changes", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-priority-denials-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie: residentCookie, email: residentEmail, name: residentName } = await registerResident(app, "resident.denials@example.test", "Resident Denials");
+    const highId = await seedReport(app, { cookie: residentCookie, email: residentEmail, name: residentName }, { idSuffix: "denials-high", priority: "High" });
+    const resolvedId = await seedReport(app, { cookie: residentCookie, email: residentEmail, name: residentName }, { idSuffix: "denials-resolved", priority: "Medium" });
+    await app.db.query("UPDATE reports SET status='Resolved' WHERE id=$1", [resolvedId]);
+
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+
+    // resident cannot change priority at all
+    const residentAttempt = await api(app, "/api/community/report-priority", { method: "POST", cookie: residentCookie, body: { reportId: highId, priority: "Low" } });
+    assert.equal(residentAttempt.status, 403);
+
+    // invalid priority value
+    const invalid = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId: highId, priority: "Urgent" } });
+    assert.equal(invalid.status, 400);
+
+    // missing report
+    const missing = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId: "RPT-does-not-exist", priority: "Low" } });
+    assert.equal(missing.status, 404);
+
+    // resolved report cannot be re-prioritized
+    const resolvedAttempt = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId: resolvedId, priority: "High" } });
+    assert.equal(resolvedAttempt.status, 409);
+
+    // same-priority is a no-op success
+    const noop = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId: highId, priority: "High" } });
+    assert.equal(noop.status, 200);
+
+    // downgrade below existing follow-up count is rejected
+    for (let i = 0; i < 4; i++) {
+      const followUp = await postFollowUp(app, residentCookie, highId, `Follow-up ${i + 1} before downgrade.`);
+      assert.equal(followUp.status, 200);
+    }
+    const downgrade = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId: highId, priority: "Low" } });
+    assert.equal(downgrade.status, 400);
+
+    // official with manageReports disabled via account override is denied server-side
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    state.data.accountOverrides = { "official@example.test": { manageReports: false } };
+    const saved = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: state.data } });
+    assert.equal(saved.status, 200, `override save failed: ${await saved.text()}`);
+
+    // override must persist across a fresh read
+    const reloaded = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    assert.deepEqual(reloaded.data.accountOverrides["official@example.test"], { manageReports: false });
+
+    const overrideDenied = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId: highId, priority: "Medium" } });
+    assert.equal(overrideDenied.status, 403);
+
+    // non-admin cannot set overrides
+    const state2 = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    state2.data.accountOverrides = { "official@example.test": {} };
+    const officialAttempt = await api(app, "/api/state", { method: "PUT", cookie: officialCookie, body: { revision: state2.revision, data: state2.data } });
+    assert.equal(officialAttempt.status, 403);
+
+    // override for a non-official account is rejected
+    const state3 = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    state3.data.accountOverrides = { [residentEmail]: { manageReports: true } };
+    const badOverride = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state3.revision, data: state3.data } });
+    assert.equal(badOverride.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("official working-hours and available-days validation rejects invalid input at creation", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-hours-validation-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const base = { name: "Bad Official", area: "Palsara", phone: "", role: "official", status: "Active", password: "A-unique-official-password!" };
+
+    const reversed = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "reversed@example.test", workingHours: "Monday, 5:00 PM-8:00 AM", availableDays: ["Monday"] } });
+    assert.equal(reversed.status, 400);
+
+    const duplicate = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "duplicate@example.test", availableDays: ["Monday", "Monday"] } });
+    assert.equal(duplicate.status, 400);
+
+    const unknownDay = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "unknownday@example.test", availableDays: ["Funday"] } });
+    assert.equal(unknownDay.status, 400);
+
+    const malformedTime = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "malformed@example.test", workingHours: "Monday, breakfast-lunch", availableDays: ["Monday"] } });
+    assert.equal(malformedTime.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("event announcement rejects out-of-range and non-numeric coordinates on create and update", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-event-coords-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const base = { title: "Coord test event", detail: "Event detail for coordinate validation.", date: new Date().toISOString().slice(0, 10), isEvent: true };
+
+    const badLongitude = await api(app, "/api/announcements", { method: "POST", cookie: officialCookie, body: { ...base, latitude: 14.01799, longitude: 200 } });
+    assert.equal(badLongitude.status, 400);
+
+    const stringLatitude = await api(app, "/api/announcements", { method: "POST", cookie: officialCookie, body: { ...base, latitude: "14.01799", longitude: 121.09465 } });
+    assert.equal(stringLatitude.status, 400);
+
+    const created = await api(app, "/api/announcements", { method: "POST", cookie: officialCookie, body: { ...base, latitude: 14.01799, longitude: 121.09465 } });
+    assert.equal(created.status, 200);
+    const createdJson = await created.json();
+    const announcementId = String(createdJson.data.announcements[0].id);
+
+    const badUpdate = await api(app, "/api/announcements", { method: "PUT", cookie: officialCookie, body: { id: announcementId, ...base, title: "Coord test event updated", latitude: -200, longitude: 121.09465 } });
+    assert.equal(badUpdate.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("set-priority cells: Medium and Low apply urgent mapping and their follow-up limits", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-priority-cells-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie: residentCookie, email: residentEmail, name: residentName } = await registerResident(app, "resident.cells@example.test", "Resident Cells");
+    const reportId = await seedReport(app, { cookie: residentCookie, email: residentEmail, name: residentName }, { idSuffix: "cells", priority: "High" });
+
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+
+    const toMedium = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId, priority: "Medium" } });
+    assert.equal(toMedium.status, 200);
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((r) => r.json());
+    let report = state.data.reports.find((item) => item.id === reportId);
+    assert.equal(report.priority, "Medium");
+    assert.equal(report.urgent, false);
+    assert.ok(report.history.some((item) => item.note === "Priority changed to Medium."));
+
+    const toLow = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId, priority: "Low" } });
+    assert.equal(toLow.status, 200);
+    state = await api(app, "/api/state", { cookie: residentCookie }).then((r) => r.json());
+    report = state.data.reports.find((item) => item.id === reportId);
+    assert.equal(report.priority, "Low");
+    assert.equal(report.urgent, false);
+    assert.ok(report.history.some((item) => item.note === "Priority changed to Low."));
+
+    // Low limit (3) now applies
+    for (let i = 0; i < 3; i++) assert.equal((await postFollowUp(app, residentCookie, reportId, `Low cell follow-up ${i + 1}.`)).status, 200);
+    assert.equal((await postFollowUp(app, residentCookie, reportId, "Fourth Low follow-up.")).status, 429);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("follow-up cells: Under Review and In Progress record the current status in history", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-followup-cells-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "resident.followcells@example.test", "Resident Follow Cells");
+    for (const status of ["Under Review", "In Progress"]) {
+      const suffix = status === "Under Review" ? "under-review" : "in-progress";
+      const reportId = await seedReport(app, { cookie, email, name }, { idSuffix: suffix, priority: "High" });
+      await app.db.query("UPDATE reports SET status=$1 WHERE id=$2", [status, reportId]);
+      const result = await postFollowUp(app, cookie, reportId, `Follow-up while ${status}.`);
+      assert.equal(result.status, 200, `${status} follow-up accepted`);
+      const state = await api(app, "/api/state", { cookie }).then((r) => r.json());
+      const report = state.data.reports.find((item) => item.id === reportId);
+      const latest = report.history.at(-1);
+      assert.equal(latest.status, status, `history records ${status}, not Submitted`);
+      assert.match(latest.note, /Follow-up:/);
+    }
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("pending announcement decline stores reason, notifies creator and hides from residents", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-decline-cell-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const created = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { title: "Decline cell notice", detail: "This notice should be declined with a reason.", date: new Date().toISOString().slice(0, 10) },
+    });
+    assert.equal(created.status, 200);
+    const createdJson = await created.json();
+    const announcementId = String(createdJson.data.announcements[0].id);
+    assert.equal(createdJson.data.announcements[0].approvalStatus, "pending");
+
+    const declined = await api(app, "/api/announcements/approval", { method: "POST", cookie: admin.cookie, body: { id: announcementId, status: "declined", reason: "Not barangay business." } });
+    assert.equal(declined.status, 200);
+
+    const adminState = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const declinedItem = adminState.data.announcements.find((item) => String(item.id) === announcementId);
+    assert.equal(declinedItem.approvalStatus, "declined");
+    assert.equal(declinedItem.declineReason, "Not barangay business.");
+
+    const resident = await registerResident(app, "resident.decline@example.test", "Resident Decline");
+    const residentState = await api(app, "/api/state", { cookie: resident.cookie }).then((r) => r.json());
+    assert.equal(residentState.data.announcements.some((item) => String(item.id) === announcementId), false, "declined announcement hidden from residents");
+
+    // a decided announcement cannot be re-decided
+    const redecide = await api(app, "/api/announcements/approval", { method: "POST", cookie: admin.cookie, body: { id: announcementId, status: "approved" } });
+    assert.equal(redecide.status, 409);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("admin state update cannot bypass priority/status guards or set an unmanaged resident area", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-guards-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie: residentCookie, email: residentEmail, name: residentName } = await registerResident(app, "resident.guards@example.test", "Resident Guards");
+    const reportId = await seedReport(app, { cookie: residentCookie, email: residentEmail, name: residentName }, { idSuffix: "guards", priority: "High" });
+
+    const admin = await signIn(app);
+
+    // admin cannot change priority/status via generic state update
+    let state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const tamperedPriority = structuredClone(state.data);
+    tamperedPriority.reports.find((item) => item.id === reportId).priority = "Low";
+    const priorityAttempt = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: tamperedPriority } });
+    assert.equal(priorityAttempt.status, 403);
+
+    state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const tamperedStatus = structuredClone(state.data);
+    tamperedStatus.reports.find((item) => item.id === reportId).status = "Resolved";
+    const statusAttempt = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: tamperedStatus } });
+    assert.equal(statusAttempt.status, 403);
+
+    // resident cannot move to an unmanaged area via state sync
+    const residentState = await api(app, "/api/state", { cookie: residentCookie }).then((r) => r.json());
+    const movedResident = structuredClone(residentState.data);
+    movedResident.users[0].area = "Not a managed area";
+    const areaAttempt = await api(app, "/api/state", { method: "PUT", cookie: residentCookie, body: { revision: residentState.revision, data: movedResident } });
+    assert.equal(areaAttempt.status, 400);
+
+    // resident can still save an unrelated profile change with legacy area intact
+    const residentState2 = await api(app, "/api/state", { cookie: residentCookie }).then((r) => r.json());
+    const renamed = structuredClone(residentState2.data);
+    renamed.users[0].name = "Renamed Resident";
+    const renameAttempt = await api(app, "/api/state", { method: "PUT", cookie: residentCookie, body: { revision: residentState2.revision, data: renamed } });
+    assert.equal(renameAttempt.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("account overrides deny schedules and announcements and malformed overrides are rejected", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-override-extended-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+
+    const setOverrides = async (overrides) => {
+      const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+      state.data.accountOverrides = overrides;
+      return api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: state.data } });
+    };
+
+    assert.equal((await setOverrides({ "official@example.test": { manageSchedules: false } })).status, 200);
+    const calendarAttempt = await api(app, "/api/calendar/events", { method: "POST", cookie: officialCookie, body: { title: "Blocked event", detail: "Should be denied.", date: new Date().toISOString().slice(0, 10) } });
+    assert.equal(calendarAttempt.status, 403);
+
+    assert.equal((await setOverrides({ "official@example.test": { manageAnnouncements: false } })).status, 200);
+    const announcementAttempt = await api(app, "/api/announcements", { method: "POST", cookie: officialCookie, body: { title: "Blocked notice", detail: "Should be denied.", date: new Date().toISOString().slice(0, 10) } });
+    assert.equal(announcementAttempt.status, 403);
+
+    assert.equal((await setOverrides({ "official@example.test": { manageReports: "yes" } })).status, 400);
+    assert.equal((await setOverrides({ "official@example.test": { fly: true } })).status, 400);
+
+    // clearing overrides restores access
+    assert.equal((await setOverrides({})).status, 200);
+    const allowedAgain = await api(app, "/api/announcements", { method: "POST", cookie: officialCookie, body: { title: "Allowed notice", detail: "Access restored.", date: new Date().toISOString().slice(0, 10) } });
+    assert.equal(allowedAgain.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("working-hours boundary values are validated", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-hours-boundaries-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const base = { name: "Boundary Official", area: "Palsara", phone: "", role: "official", status: "Active", availableDays: ["Monday"], password: "A-unique-official-password!" };
+
+    const hour13 = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "hour13@example.test", workingHours: "Monday, 13:00 PM-5:00 PM" } });
+    assert.equal(hour13.status, 400);
+
+    const minute60 = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "minute60@example.test", workingHours: "Monday, 8:60 AM-5:00 PM" } });
+    assert.equal(minute60.status, 400);
+
+    const equal = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "equal@example.test", workingHours: "Monday, 8:00 AM-8:00 AM" } });
+    assert.equal(equal.status, 400);
+
+    const midnightNoon = await api(app, "/api/users", { method: "POST", cookie: admin.cookie, body: { ...base, email: "midnightnoon@example.test", workingHours: "Monday, 12:00 AM-12:00 PM" } });
+    assert.equal(midnightNoon.status, 201);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("official announcement edit re-pends approval and clears decline reason", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-repend-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const created = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { title: "Re-pend notice", detail: "Original detail for re-pend test.", date: new Date().toISOString().slice(0, 10) },
+    });
+    assert.equal(created.status, 200);
+    const announcementId = String((await created.json()).data.announcements[0].id);
+
+    const declined = await api(app, "/api/announcements/approval", { method: "POST", cookie: admin.cookie, body: { id: announcementId, status: "declined", reason: "Needs detail." } });
+    assert.equal(declined.status, 200);
+
+    const edited = await api(app, "/api/announcements", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { id: announcementId, title: "Re-pend notice", detail: "Updated detail after decline.", date: new Date().toISOString().slice(0, 10) },
+    });
+    assert.equal(edited.status, 200);
+    const editedItem = (await edited.json()).data.announcements.find((item) => String(item.id) === announcementId);
+    assert.equal(editedItem.approvalStatus, "pending");
+    assert.equal(editedItem.declineReason, "");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("priority downgrade at exactly the new limit succeeds, then the next follow-up is blocked", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-downgrade-boundary-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie: residentCookie, email: residentEmail, name: residentName } = await registerResident(app, "resident.boundary@example.test", "Resident Boundary");
+    const reportId = await seedReport(app, { cookie: residentCookie, email: residentEmail, name: residentName }, { idSuffix: "boundary", priority: "High" });
+
+    for (let i = 0; i < 5; i++) {
+      assert.equal((await postFollowUp(app, residentCookie, reportId, `Boundary follow-up ${i + 1}.`)).status, 200);
+    }
+
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+
+    // 5 existing follow-ups == Medium limit (5): downgrade allowed, next follow-up blocked
+    const downgrade = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId, priority: "Medium" } });
+    assert.equal(downgrade.status, 200);
+
+    const blocked = await postFollowUp(app, residentCookie, reportId, "One too many.");
+    assert.equal(blocked.status, 429);
+
+    // upgrading back to High (unlimited) unblocks
+    const upgrade = await api(app, "/api/community/report-priority", { method: "POST", cookie: officialCookie, body: { reportId, priority: "High" } });
+    assert.equal(upgrade.status, 200);
+    assert.equal((await postFollowUp(app, residentCookie, reportId, "Unblocked again.")).status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });

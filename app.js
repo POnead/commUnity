@@ -5,8 +5,18 @@ let reportMapSelection = null;
 let reportMap = null;
 let reportMapElement = null;
 let reportMapMarker = null;
+let reportMapGeoLocating = false;
+let areaMapListenerAttached = false;
 let reportDetailMap = null;
 let reportDetailMapElement = null;
+let announcementMapExpanded = false;
+let announcementMapSelection = null;
+let announcementMap = null;
+let announcementMapElement = null;
+let announcementMapMarker = null;
+let announcementDetailMap = null;
+let announcementDetailMapElement = null;
+let lastCalendarClick = { date: "", at: 0 };
 
 function routeState() {
   const path = currentPath();
@@ -45,6 +55,19 @@ function render() {
     reportMap = null;
     reportMapElement = null;
     reportMapMarker = null;
+  }
+  if (modalState?.kind !== "announcement") {
+    announcementMapExpanded = false;
+    announcementMapSelection = null;
+    announcementMap?.remove();
+    announcementMap = null;
+    announcementMapElement = null;
+    announcementMapMarker = null;
+  }
+  if (modalState?.kind !== "announcement-location" && modalState?.kind !== "calendar-event-detail") {
+    announcementDetailMap?.remove();
+    announcementDetailMap = null;
+    announcementDetailMapElement = null;
   }
   if (currentUser && route.type === "app") {
     if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) modalState = { kind: "forced-password" };
@@ -89,6 +112,7 @@ function render() {
     if (route.role === "administrator" && (route.page === "settings" || route.page === "email")) loadSmtpSettings();
     updatePagination();
     if (route.role === "resident" && route.page === "report" && reportMapExpanded) initializeReportMap();
+    if (modalState?.kind === "announcement" && announcementMapExpanded) initializeAnnouncementMap();
     if (modalState) {
       const input = app.querySelector(".modal input:not([type=hidden]), .modal select");
       if (input) requestAnimationFrame(() => input.focus());
@@ -104,14 +128,42 @@ function render() {
     if (modalState) app.insertAdjacentHTML("beforeend", modalMarkup());
   }
   initializeReportDetailMap();
+  initializeAnnouncementDetailMap();
   lastKnownHash = window.location.hash;
 }
 
-function makeModal(title, body) {
-  return `<div class="modal-backdrop" data-action="close-modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+function makeModal(title, body, className = "") {
+  return `<div class="modal-backdrop" data-action="close-modal-backdrop"><section class="modal${className ? ` ${className}` : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <header class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></header>
     <div class="modal-content">${body}</div>
   </section></div>`;
+}
+
+function workingTimeOptions(selected) {
+  const options = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (let minute = 0; minute < 60; minute += 15) {
+      const period = hour < 12 ? "AM" : "PM";
+      const displayHour = hour % 12 || 12;
+      const value = `${displayHour}:${String(minute).padStart(2, "0")} ${period}`;
+      options.push(`<option value="${value}" ${value === selected ? "selected" : ""}>${value}</option>`);
+    }
+  }
+  return options.join("");
+}
+
+function parseWorkingHours(value = "") {
+  const matches = String(value).match(/(\d{1,2}:\d{2}\s*[AP]M)\s*[-–]\s*(\d{1,2}:\d{2}\s*[AP]M)/i);
+  return matches
+    ? { start: matches[1].replace(/\s+/g, " ").toUpperCase(), end: matches[2].replace(/\s+/g, " ").toUpperCase() }
+    : { start: "8:00 AM", end: "5:00 PM" };
+}
+
+const OFFICIAL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const DEFAULT_OFFICIAL_DAYS = OFFICIAL_DAYS.slice(0, 5);
+
+function availableDayOptions(selectedDays = DEFAULT_OFFICIAL_DAYS) {
+  return OFFICIAL_DAYS.map((day) => `<label class="availability-day"><input type="checkbox" name="availableDays" value="${day}" ${selectedDays.includes(day) ? "checked" : ""}><span>${day}</span></label>`).join("");
 }
 
 function modalMarkup() {
@@ -155,9 +207,35 @@ function modalMarkup() {
   if (modalState.kind === "announcement") {
     const item = data.announcements.find((record) => record.id === modalState.id);
     const body = `<form id="announcement-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
-      <div class="modal-form-fields"><div class="form-grid">${inputField("Title", "title", item?.title || "", { required: true, maxLength: 120 })}${inputField("Publish date", "date", item?.date || todayISO(), { type: "date", required: true })}<div class="form-field span-all"><label for="announcement-detail">Message *</label><textarea class="textarea" id="announcement-detail" name="detail" required maxlength="1000">${esc(item?.detail || "")}</textarea></div></div></div>
+      <div class="modal-form-fields"><div class="form-grid">${inputField("Title", "title", item?.title || "", { required: true, maxLength: 120 })}${inputField("Publish date", "date", item?.date || todayISO(), { type: "date", required: true })}<div class="form-field span-all"><label for="announcement-detail">Message *</label><textarea class="textarea" id="announcement-detail" name="detail" required maxlength="1000">${esc(item?.detail || "")}</textarea></div>
+        <div class="form-field span-all announcement-map-picker">
+          <label class="checkbox-field"><input type="checkbox" id="announcement-is-event" name="isEvent" ${announcementMapExpanded ? "checked" : ""}><span><strong>This announcement is for an event</strong><span class="muted small">Add a map pin so residents know where it will be held.</span></span></label>
+          <input type="hidden" id="announcement-latitude" name="latitude" value="${esc(announcementMapSelection?.latitude ?? "")}">
+          <input type="hidden" id="announcement-longitude" name="longitude" value="${esc(announcementMapSelection?.longitude ?? "")}">
+          <div class="report-map-region" id="announcement-map-region" ${announcementMapExpanded ? "" : "hidden"}>
+            <div class="button-row"><button class="button secondary" type="button" data-action="clear-announcement-map-pin" ${announcementMapSelection ? "" : "hidden"}>Clear pin</button></div>
+            <p class="visually-hidden" id="announcement-map-status" role="status" aria-live="polite"></p>
+            <div class="report-map-canvas" id="announcement-map" role="application" aria-label="OpenStreetMap. Click to place the event location pin, or drag the pin to adjust it."></div>
+            <p class="field-help">Click the map to place the pin, or drag it to adjust.</p>
+          </div>
+        </div>
+      </div></div>
       <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save changes" : "Publish announcement"}</button></div></form>`;
     return makeModal(item ? "Edit announcement" : "New announcement", body);
+  }
+  if (modalState.kind === "announcement-location") {
+    const item = data.announcements.find((record) => record.id === modalState.id);
+    if (!item || !item.isEvent || !Number.isFinite(item.latitude) || !Number.isFinite(item.longitude)) {
+      modalState = null;
+      return "";
+    }
+    const body = `<div class="content-stack">
+      <div class="notice-bar"><span>Event</span><strong>${esc(item.title)}</strong></div>
+      <div id="announcement-detail-map" class="report-map-canvas report-detail-map" data-latitude="${item.latitude}" data-longitude="${item.longitude}" role="region" aria-label="Map centered on this event's location"></div>
+      <p class="map-status" id="announcement-detail-map-status" role="status" aria-live="polite">Map pin at ${item.latitude.toFixed(6)}, ${item.longitude.toFixed(6)}.</p>
+      <div class="form-actions"><a class="button secondary" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${item.latitude},${item.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a><button class="button secondary" type="button" data-action="close-modal">Close</button></div>
+    </div>`;
+    return makeModal("Event location", body);
   }
   if (modalState.kind === "calendar-event") {
     const date = modalState.date || todayISO();
@@ -166,6 +244,51 @@ function modalMarkup() {
       <div class="modal-form-fields"><p class="field-help"><strong>${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</strong> · ${isAdmin ? "This event is added to the calendar right away." : "Your request is sent to the administrator for approval."}</p><div class="form-grid">${inputField("Event title", "title", "", { required: true, maxLength: 120 })}</div><div class="form-field span-all"><label for="calendar-event-detail">Details *</label><textarea class="textarea" id="calendar-event-detail" name="detail" required maxlength="1000" placeholder="What happens, where, and at what time?"></textarea></div></div>
       <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${isAdmin ? "Add event" : "Submit for approval"}</button></div></form>`;
     return makeModal(isAdmin ? "Add calendar event" : "Request a calendar event", body);
+  }
+  if (modalState.kind === "calendar-event-detail") {
+    const date = modalState.date || todayISO();
+    const events = calendarEventsForDate(date);
+    const eventList = events.length
+      ? events.map((event) => {
+        const hasMap = event.kind === "Announcement" && event.isEvent &&
+          Number.isFinite(event.latitude) && Number.isFinite(event.longitude);
+        let badgeLabel = "";
+        let badgeVariant = "approved";
+        let leftBorder = "var(--accent)";
+        if (event.kind === "Event") {
+          badgeLabel = calendarStatusLabel(event.status);
+          badgeVariant = event.status === "pending" ? "pending" : event.status === "declined" ? "declined" : "approved";
+          leftBorder = event.status === "pending" ? "var(--warning)" : event.status === "declined" ? "var(--danger)" : "var(--accent)";
+        } else if (event.kind === "Announcement" && event.isEvent) {
+          badgeLabel = "Approved";
+          badgeVariant = "approved";
+          leftBorder = "var(--success)";
+        } else {
+          badgeLabel = "Approved";
+          badgeVariant = "approved";
+          leftBorder = "var(--accent)";
+        }
+        const detailText = String(event.detail || "");
+        const detailParts = detailText.split(" · ").map((p) => p.trim()).filter(Boolean);
+        const timePart = detailParts.find((p) => /AM|PM/.test(p));
+        const locationPart = detailParts.filter((p) => !/AM|PM/.test(p)).join(" · ");
+        return `<div class="event-detail-card" style="--card-accent: ${leftBorder};">
+          <div class="event-card-top">
+            <span class="event-card-category">${esc(event.kind)}</span>
+            <span class="event-card-status event-card-status--${badgeVariant}">${esc(badgeLabel)}</span>
+          </div>
+          <h4 class="event-card-title">${esc(event.title)}</h4>
+          <div class="event-card-meta">
+            ${timePart ? `<span class="event-card-time">${icon("clock", "event-card-icon")}${esc(timePart)}</span>` : ""}
+            ${locationPart ? `<span class="event-card-location">${icon("pin", "event-card-icon")}${esc(locationPart)}</span>` : ""}
+          </div>
+          ${!timePart && !locationPart && detailText ? `<p class="event-card-body">${esc(detailText)}</p>` : ""}
+          ${hasMap ? `<div class="event-card-map-panel"><div id="announcement-detail-map" class="report-map-canvas report-detail-map" data-latitude="${event.latitude}" data-longitude="${event.longitude}" role="region" aria-label="Map centered on this event's location"></div><p class="map-status" id="announcement-detail-map-status" role="status" aria-live="polite">Map pin at ${event.latitude.toFixed(6)}, ${event.longitude.toFixed(6)}.</p><a class="button secondary small" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${event.latitude},${event.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
+        </div>`;
+      }).join("")
+      : `<div class="event-detail-empty"><strong>No events</strong><p>Nothing is scheduled on ${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}.</p></div>`;
+    const body = `<div class="event-detail-modal"><div class="event-detail-head"><h3 class="event-detail-date-title">${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</h3></div><div class="event-detail-list">${eventList}</div></div>`;
+    return makeModal("Event details", body, "modal--event-details");
   }
   if (modalState.kind === "calendar-decline") {
     const body = `<form id="calendar-decline-form" class="modal-form"><input type="hidden" name="id" value="${esc(modalState.id || "")}">
@@ -192,13 +315,25 @@ function modalMarkup() {
     return makeModal("Deactivate account", body);
   }
   const user = modalState.id ? getUser(modalState.id) : null;
+  const accountRole = user?.role || "resident";
+  const accountAreas = locationAreas();
+  const selectedArea = accountAreas.includes(user?.area) ? user.area : user ? "" : accountAreas[0];
+  const workingHours = parseWorkingHours(user?.workingHours);
+  const availableDays = Array.isArray(user?.availableDays) ? user.availableDays : DEFAULT_OFFICIAL_DAYS;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
-  <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", [...locationAreas(), "Palsara"], user?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${selectField("Role", "role", Object.keys(ROLES), user?.role || "resident", { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}${user?.role === "official" ? inputField("Working hours", "workingHours", user.workingHours || "Monday-Friday, 8:00 AM-5:00 PM", { required: true, maxLength: 120 }) : ""}${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
+  <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", accountAreas, selectedArea, { required: true, labels: locationAreaLabels(), placeholder: selectedArea ? "" : "Choose a managed location" })}${selectField("Role", "role", Object.keys(ROLES), accountRole, { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}<div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-start">Working hours start</label><select class="select" id="working-hours-start" name="workingHoursStart" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.start)}</select></div><div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-end">Working hours end</label><select class="select" id="working-hours-end" name="workingHoursEnd" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.end)}</select></div><fieldset class="availability-field span-all" ${accountRole !== "official" ? "hidden" : ""}><legend>Available days</legend><p class="availability-help">Choose the days this official is available.</p><div class="availability-days">${availableDayOptions(availableDays)}</div></fieldset>${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
     <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">${user.resetRequested ? "Approve &amp; Generate" : "Reset password"}</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
   return makeModal(user ? "Edit account" : "Add account", body);
 }
 
 function showModal(kind, id = "") {
+  if (kind === "announcement") {
+    const item = id ? data.announcements.find((record) => record.id === id) : null;
+    announcementMapExpanded = Boolean(item?.isEvent);
+    announcementMapSelection = item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
+      ? { latitude: item.latitude, longitude: item.longitude }
+      : null;
+  }
   modalState = { kind, id };
   render();
 }
@@ -280,10 +415,10 @@ function exportReports(history = false) {
     return;
   }
   exportCsv("community-reports.csv",
-    ["Report ID", "Resident", "Email", "Category", "Concern", "Barangay", "Purok or area", "Street or landmark", "Latitude", "Longitude", "Description", "Urgent", "Status", "Assigned official", "Submitted", "Updated"],
+    ["Report ID", "Resident", "Email", "Category", "Concern", "Barangay", "Purok or area", "Street or landmark", "Latitude", "Longitude", "Description", "Urgent", "Priority", "Status", "Assigned official", "Submitted", "Updated"],
     reports.map((report) => [
       report.id, report.name, report.userEmail, report.category, report.title, report.barangay || "", report.area, report.locationDetail || "",
-      report.latitude ?? "", report.longitude ?? "", report.description, report.urgent ? "Yes" : "No", report.status, report.assignedTo?.name || "", report.submittedAt, report.updatedAt,
+      report.latitude ?? "", report.longitude ?? "", report.description, report.urgent ? "Yes" : "No", report.priority || "Medium", report.status, report.assignedTo?.name || "", report.submittedAt, report.updatedAt,
     ]),
   );
 }
@@ -322,12 +457,19 @@ async function compressPhoto(file) {
 }
 
 function nextReportId() {
-  const numbers = data.reports.map((report) => Number(String(report.id).match(/^R(\d+)$/i)?.[1] || 0));
-  return `R${String(Math.max(0, ...numbers) + 1).padStart(2, "0")}`;
+  // Generate a globally unique identifier so a new report never collides with an
+  // existing report id (ids are unique across all residents, not just the current user's view).
+  return `R${Date.now()}`;
 }
 
 async function submitReportDraft() {
   if (!reportDraft) return;
+  const confirmed = await confirmAction({
+    title: "Submit concern?",
+    message: `Submit this ${reportDraft.urgent ? "urgent " : ""}concern report to barangay staff?`,
+    confirmLabel: "Submit concern",
+  });
+  if (!confirmed) return;
   const now = new Date().toISOString();
   const reportId = nextReportId();
   let photos = [];
@@ -351,7 +493,8 @@ async function submitReportDraft() {
     latitude: reportDraft.latitude,
     longitude: reportDraft.longitude,
     description: reportDraft.description,
-    urgent: Boolean(reportDraft.urgent),
+    urgent: reportDraft.priority === "High",
+    priority: reportDraft.priority || "Medium",
     assignedTo: null,
     status: "Submitted",
     submittedAt: now,
@@ -384,6 +527,12 @@ async function updateReportStatus(form) {
     toast("Choose a new status or add an update for the resident.", "error");
     return;
   }
+  const confirmed = await confirmAction({
+    title: "Update report?",
+    message: `Update ${report.id} to “${status}” and notify the resident?`,
+    confirmLabel: "Update report",
+  });
+  if (!confirmed) return;
   const now = new Date().toISOString();
   report.status = status;
   report.updatedAt = now;
@@ -398,36 +547,103 @@ async function updateReportStatus(form) {
 async function updateReportAssignment(id, claim) {
   const report = getReport(id);
   if (!report || currentUser.role !== "official") throw new Error("This concern cannot be assigned from this workspace.");
-  if (claim) {
-    if (report.assignedTo) throw new Error("This concern is already assigned. Refresh the queue before trying again.");
-    report.assignedTo = { id: currentUser.id, name: currentUser.name };
-  } else {
-    if (report.assignedTo?.id !== currentUser.id) throw new Error("You can only release a concern assigned to you.");
-    report.assignedTo = null;
-  }
-
-  async function submitFollowUp(form) {
-    const response = await fetch("/api/community/follow-up", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reportId: String(form.get("reportId") || ""), message: String(form.get("message") || "").trim() }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "The follow-up could not be sent.");
-    const stateResponse = await fetch("/api/state");
-    const state = await stateResponse.json();
-    if (!stateResponse.ok) throw new Error(state.error || "The follow-up was sent, but the report could not be refreshed.");
-    data = state.data;
-    dataRevision = state.revision;
-    lastPersistedSnapshot = JSON.stringify(data);
-    selectedReportId = null;
-    render();
-    toast("Your follow-up was sent to barangay staff.", "success");
-  }
+  if (claim && report.assignedTo) throw new Error("This concern is already assigned. Refresh the queue before trying again.");
+  if (!claim && report.assignedTo?.id !== currentUser.id) throw new Error("You can only release a concern assigned to you.");
+  const confirmed = await confirmAction({
+    title: claim ? "Claim concern?" : "Release concern?",
+    message: claim ? `Assign ${report.id} to yourself?` : `Release ${report.id} back to the queue?`,
+    confirmLabel: claim ? "Claim concern" : "Release concern",
+    tone: claim ? "primary" : "danger",
+  });
+  if (!confirmed) return;
+  report.assignedTo = claim ? { id: currentUser.id, name: currentUser.name } : null;
   addActivity(claim ? "Claimed a concern" : "Released a concern", `${report.id} · ${report.title}`);
   if (!await localSave()) return;
   render();
   toast(claim ? `${report.id} assigned to you.` : `${report.id} released to the queue.`, "success");
+}
+
+function followUpLimitFor(priority) {
+  return FOLLOW_UP_LIMITS[priority] ?? FOLLOW_UP_LIMITS.Medium;
+}
+
+async function submitFollowUp(form) {
+  const reportId = String(form.get("reportId") || "");
+  const message = String(form.get("message") || "").trim();
+  if (!message) throw new Error("Enter a follow-up message.");
+  const report = data.reports.find((item) => item.id === reportId);
+  if (!report) throw new Error("This report could not be found.");
+  if (report.status === "Resolved") throw new Error("This concern is resolved and no longer accepts follow-ups.");
+  const limit = followUpLimitFor(report.priority || "Medium");
+  const count = Number(report.followUpCount || 0);
+  const remaining = limit === null ? null : Math.max(0, limit - count);
+  if (limit !== null && remaining <= 0) {
+    throw new Error(`This ${report.priority || "Medium"} priority concern has reached its ${limit} follow-up limit.`);
+  }
+  const limitLine = limit === null
+    ? "Unlimited follow-ups remain for this High priority concern."
+    : `${remaining} of ${limit} follow-ups remaining for this ${report.priority} priority concern.`;
+  const confirmed = await confirmAction({
+    title: "Send follow-up?",
+    message: `Send this follow-up to barangay staff for ${reportId || "this report"}?\n\n${limitLine}`,
+    confirmLabel: "Send follow-up",
+  });
+  if (!confirmed) return;
+  const response = await fetch("/api/community/follow-up", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reportId, message }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The follow-up could not be sent.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (stateResponse.ok) {
+    data = state.data;
+    dataRevision = state.revision;
+    lastPersistedSnapshot = JSON.stringify(data);
+  } else {
+    console.error("CommUnity could not refresh state after follow-up.", state.error);
+    const localReport = data.reports.find((item) => item.id === reportId);
+    if (localReport && typeof result.count === "number") localReport.followUpCount = result.count;
+  }
+  selectedReportId = null;
+  render();
+  const nextLine = result.remaining == null ? "Unlimited follow-ups remain." : `${result.remaining} follow-up(s) remain.`;
+  toast(`Your follow-up was sent to barangay staff. ${nextLine}`, "success");
+}
+
+async function updateReportPriority(form) {
+  const reportId = String(form.get("reportId") || "");
+  const priority = String(form.get("priority") || "").trim();
+  if (!REPORT_PRIORITIES.includes(priority)) throw new Error("Choose a valid concern priority.");
+  const report = data.reports.find((item) => item.id === reportId);
+  if (!report) throw new Error("This report could not be found.");
+  if (report.priority === priority) {
+    toast(`${report.id} is already ${priority} priority.`, "info");
+    return;
+  }
+  const confirmed = await confirmAction({
+    title: "Update concern priority?",
+    message: `Change ${report.id} priority from ${report.priority || "Medium"} to ${priority}?`,
+    confirmLabel: "Update priority",
+  });
+  if (!confirmed) return;
+  const response = await fetch("/api/community/report-priority", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reportId, priority }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The priority could not be updated.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "The priority was updated, but the report list could not be refreshed.");
+  data = state.data;
+  dataRevision = state.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
+  render();
+  toast(`${report.id} priority updated to ${priority}.`, "success");
 }
 
 async function updateCollection(form) {
@@ -453,6 +669,14 @@ async function updateCollection(form) {
   const startMinutes = timeToMinutes(record.start);
   if (endMinutes < 0 || startMinutes < 0 || endMinutes <= startMinutes) throw new Error("Use a valid time such as 6:00 AM, and make sure the end time is later.");
   if (!record.wasteType || !record.start || !record.end) throw new Error("Complete the service, collection time, and waste type.");
+  const confirmed = await confirmAction({
+    title: existing ? "Save schedule?" : "Add schedule?",
+    message: existing
+      ? `Save changes to this ${record.wasteType} collection schedule for ${record.area}? Residents will be notified.`
+      : `Add this ${record.wasteType} collection schedule for ${record.area}? Residents will be notified.`,
+    confirmLabel: existing ? "Save schedule" : "Add schedule",
+  });
+  if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.schedules.push(record);
   addActivity(existing ? "Updated a collection schedule" : "Added a collection schedule", `${record.id} · ${record.area} · ${status}`);
@@ -477,6 +701,14 @@ async function saveLocation(form) {
     throw new Error("Another location already uses this area label.");
   }
   const existing = data.locations.find((item) => item.id === id);
+  const confirmed = await confirmAction({
+    title: existing ? "Save location?" : "Add location?",
+    message: existing
+      ? `Save changes to ${record.area}?`
+      : `Add ${record.area} as a community location?`,
+    confirmLabel: existing ? "Save location" : "Add location",
+  });
+  if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.locations.push(record);
   addActivity(existing ? "Updated a community location" : "Added a community location", `${record.area} · ${record.barangay}`);
@@ -504,6 +736,14 @@ async function saveRecyclingLocation(form) {
     throw new Error("Enter the business name, barangay, street address, and accepted materials.");
   }
   const existing = data.recyclingLocations.find((item) => item.id === id);
+  const confirmed = await confirmAction({
+    title: existing ? "Save listing?" : "Add listing?",
+    message: existing
+      ? `Save changes to ${record.name}?`
+      : `Add ${record.name} to the recycling directory?`,
+    confirmLabel: existing ? "Save listing" : "Add listing",
+  });
+  if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.recyclingLocations.push(record);
   addActivity(existing ? "Updated a recycling directory listing" : "Added a recycling directory listing", record.name);
@@ -515,12 +755,40 @@ async function saveRecyclingLocation(form) {
 
 async function saveAnnouncement(form) {
   const id = String(form.get("id") || "");
+  const readOptionalCoordinate = (value) => {
+    const text = String(value || "").trim();
+    return text ? Number(text) : null;
+  };
+  const isEvent = Boolean(form.get("isEvent"));
+  let latitude = readOptionalCoordinate(form.get("latitude"));
+  let longitude = readOptionalCoordinate(form.get("longitude"));
+  if (isEvent) {
+    if (latitude === null || longitude === null ||
+        !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      throw new Error("Place a pin on the map for this event announcement, or turn off the event option.");
+    }
+  } else {
+    latitude = null;
+    longitude = null;
+  }
   const body = {
     title: String(form.get("title") || "").trim(),
     date: String(form.get("date") || ""),
     detail: String(form.get("detail") || "").trim(),
+    isEvent,
+    latitude,
+    longitude,
   };
   if (!body.title || !body.date || !body.detail) throw new Error("Enter an announcement title, date, and message.");
+  const confirmed = await confirmAction({
+    title: id ? "Save announcement?" : "Publish announcement?",
+    message: id
+      ? "Save changes to this announcement?"
+      : "Publish this announcement? It will be visible to residents.",
+    confirmLabel: id ? "Save changes" : "Publish announcement",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/announcements", {
     method: id ? "PUT" : "POST",
     headers: { "Content-Type": "application/json" },
@@ -528,12 +796,27 @@ async function saveAnnouncement(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The announcement could not be saved.");
+  announcementMapExpanded = false;
+  announcementMapSelection = null;
+  announcementMap?.remove();
+  announcementMap = null;
+  announcementMapElement = null;
+  announcementMapMarker = null;
   modalState = null;
   render();
   toast(id ? "Announcement updated." : "Announcement published.", "success");
 }
 
 async function decideAnnouncement(id, status, reason = "") {
+  const confirmed = await confirmAction({
+    title: status === "declined" ? "Decline announcement?" : "Approve announcement?",
+    message: status === "declined"
+      ? "Decline this announcement and send the reason to the official?"
+      : "Approve and publish this announcement to residents?",
+    confirmLabel: status === "declined" ? "Decline announcement" : "Approve & publish",
+    tone: status === "declined" ? "danger" : "primary",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/announcements/approval", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -557,6 +840,15 @@ async function saveCalendarEvent(form) {
   };
   if (!body.title || !body.date) throw new Error("Enter an event title and date.");
   if (body.date < todayISO()) throw new Error("Events cannot be scheduled before today.");
+  const isAdmin = currentUser.role === "administrator";
+  const confirmed = await confirmAction({
+    title: isAdmin ? "Add calendar event?" : "Submit event request?",
+    message: isAdmin
+      ? `Add “${body.title}” to the community calendar on ${body.date}?`
+      : `Submit “${body.title}” for administrator approval?`,
+    confirmLabel: isAdmin ? "Add event" : "Submit request",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/calendar/events", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -575,6 +867,15 @@ async function saveCalendarEvent(form) {
 }
 
 async function decideCalendarEvent(id, status, reason = "") {
+  const confirmed = await confirmAction({
+    title: status === "declined" ? "Reject event request?" : "Approve event?",
+    message: status === "declined"
+      ? "Reject this event request and send the reason to the official?"
+      : "Approve this event and add it to the calendar?",
+    confirmLabel: status === "declined" ? "Reject event" : "Approve event",
+    tone: status === "declined" ? "danger" : "primary",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/calendar/events/approval", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -589,6 +890,42 @@ async function decideCalendarEvent(id, status, reason = "") {
   modalState = null;
   render();
   toast(status === "declined" ? "Event rejected and the reason sent to the official." : "Event approved and added to the calendar.", "success");
+}
+
+function calendarEventsForDate(dateStr) {
+  if (!dateStr || !data) return [];
+  const isResident = currentUser?.role === "resident";
+  const schedules = isResident
+    ? sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area)
+    : sortedSchedules(data.schedules);
+  const calendarEvents = (data.calendarEvents || []).map((item) => ({
+    id: String(item.id),
+    date: item.date,
+    title: item.title,
+    detail: item.detail || "",
+    kind: "Event",
+    status: item.approvalStatus || "approved",
+    declineReason: item.declineReason || "",
+    createdBy: item.createdBy || "",
+    createdByName: item.createdByName || "",
+  }));
+  const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
+  const events = [
+    ...data.announcements.map((item) => ({
+      id: String(item.id),
+      date: item.date,
+      title: item.title,
+      detail: item.detail,
+      kind: "Announcement",
+      status: "approved",
+      isEvent: Boolean(item.isEvent),
+      latitude: item.latitude ?? null,
+      longitude: item.longitude ?? null,
+    })),
+    ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
+    ...activeEvents,
+  ];
+  return events.filter((event) => event.date === dateStr);
 }
 
 function nextScheduleId(date) {
@@ -613,6 +950,12 @@ async function updateProfile(form) {
   const area = String(form.get("area") || "").trim();
   if (name.length < 2) throw new Error("Enter your full name.");
   if (currentUser.role === "resident" && !locationAreas().includes(area)) throw new Error("Choose an affected area.");
+  const confirmed = await confirmAction({
+    title: "Save profile?",
+    message: "Save your profile changes?",
+    confirmLabel: "Save profile",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/profile", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -645,6 +988,12 @@ async function loadSmtpSettings() {
 
 async function saveSmtpSettings(form) {
   const body = Object.fromEntries(new FormData(form));
+  const confirmed = await confirmAction({
+    title: "Save SMTP settings?",
+    message: "Save these SMTP settings?",
+    confirmLabel: "Save settings",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/settings/smtp", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -681,6 +1030,12 @@ async function updatePassword(form) {
   const confirm = String(fields.get("confirmPassword") || "");
   if (password.length < 8) throw new Error("Choose a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The new passwords do not match.");
+  const confirmed = await confirmAction({
+    title: "Change password?",
+    message: "Change your password? You will stay signed in on this device.",
+    confirmLabel: "Change password",
+  });
+  if (!confirmed) return false;
   const response = await fetch("/api/auth/password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -697,6 +1052,7 @@ async function updatePassword(form) {
   lastPersistedSnapshot = JSON.stringify(data);
   form.reset();
   toast("Password updated.", "success");
+  return true;
 }
 
 async function createResident(form) {
@@ -708,6 +1064,12 @@ async function createResident(form) {
   if (name.length < 2) throw new Error("Enter your full name.");
   if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The passwords do not match.");
+  const confirmed = await confirmAction({
+    title: "Create account?",
+    message: `Create a resident account for ${name}?`,
+    confirmLabel: "Create account",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -724,6 +1086,7 @@ async function createResident(form) {
   currentUser = state.user || result.user;
   data = state.data;
   dataRevision = state.revision;
+  await loadCommunityOfficialHours();
   lastPersistedSnapshot = JSON.stringify(data);
   window.location.hash = routeUrl("resident", "dashboard");
   announceSessionChange();
@@ -745,6 +1108,7 @@ async function login(emailInput, password, remember = false) {
   forcedPasswordDismissed = false;
   data = state.data;
   dataRevision = state.revision;
+  await loadCommunityOfficialHours();
   lastPersistedSnapshot = JSON.stringify(data);
   selectedReportId = null;
   reportDraft = null;
@@ -756,6 +1120,14 @@ async function login(emailInput, password, remember = false) {
 
 async function resetUserPassword(form) {
   const email = String(form.get("email") || "");
+  const user = getUser(email);
+  const confirmed = await confirmAction({
+    title: "Reset password?",
+    message: `Generate a temporary password for ${user?.name || email} and email it to them?`,
+    confirmLabel: "Generate password",
+    tone: "danger",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/users/password-reset", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -772,21 +1144,16 @@ async function resetUserPassword(form) {
   toast("Temporary password generated and emailed to the account holder.", "success");
 }
 
-async function requestPasswordReset(email) {
-  const response = await fetch("/api/auth/password-reset-request", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "The password reset request could not be sent.");
-  toast("If that account exists, a reset request was sent to the administrator.", "success");
-}
-
 async function forgotPassword(form) {
   const fields = new FormData(form);
   const recoveryEmail = String(fields.get("recoveryEmail") || "").trim().toLowerCase();
   if (!recoveryEmail) throw new Error("Enter your recovery email address.");
+  const confirmed = await confirmAction({
+    title: "Send reset request?",
+    message: `Send a password reset request for ${recoveryEmail}?`,
+    confirmLabel: "Send request",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/auth/forgot-password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -805,6 +1172,12 @@ async function resetPassword(form) {
   const confirm = String(fields.get("confirmPassword") || "");
   if (newPassword.length < 8) throw new Error("Choose a password with at least 8 characters.");
   if (newPassword !== confirm) throw new Error("The new passwords do not match.");
+  const confirmed = await confirmAction({
+    title: "Reset password?",
+    message: "Set your new password?",
+    confirmLabel: "Reset password",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/auth/reset-password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -821,21 +1194,52 @@ async function addOrEditUser(form) {
   const name = String(form.get("name") || "").trim();
   const email = String(form.get("email") || "").trim().toLowerCase();
   const role = String(form.get("role") || "");
-  const workingHours = String(form.get("workingHours") || "Monday-Friday, 8:00 AM-5:00 PM").trim();
   const area = String(form.get("area") || "");
   const status = String(form.get("status") || "");
+  const existing = originalEmail ? getUser(originalEmail) : null;
+  if (originalEmail && !existing) throw new Error("This account could not be found. Refresh the user list and try again.");
   if (name.length < 2) throw new Error("Enter the account holder's name.");
   if (!Object.hasOwn(ROLES, role)) throw new Error("Select a valid account role.");
   if (!["Active", "Inactive"].includes(status)) throw new Error("Select a valid account status.");
+  if (role === "resident" && !data.locations.some((location) => location.area === area)) {
+    throw new Error("Choose a resident area from the managed community locations.");
+  }
+  const startTime = String(form.get("workingHoursStart") || "");
+  const endTime = String(form.get("workingHoursEnd") || "");
+  const selectedDays = form.getAll("availableDays").map(String);
+  const clockMinutes = (time) => {
+    const match = time.match(/^(\d{1,2}):(\d{2}) (AM|PM)$/);
+    if (!match) return -1;
+    const hour = Number(match[1]) % 12 + (match[3] === "PM" ? 12 : 0);
+    return hour * 60 + Number(match[2]);
+  };
+  if (role === "official" && (clockMinutes(startTime) < 0 || clockMinutes(endTime) <= clockMinutes(startTime))) {
+    throw new Error("Choose a working-hours end time that is after the start time.");
+  }
+  if (role === "official" && selectedDays.length === 0) throw new Error("Select at least one day the official is available.");
+  const savedAvailableDays = role === "official"
+    ? OFFICIAL_DAYS.filter((day) => selectedDays.includes(day))
+    : existing?.availableDays || DEFAULT_OFFICIAL_DAYS;
+  const savedWorkingHours = role === "official"
+    ? `${savedAvailableDays.join(", ")}, ${startTime}-${endTime}`
+    : existing?.workingHours || "Monday-Friday, 8:00 AM-5:00 PM";
   if (data.users.some((user) => user.email.toLowerCase() === email && user.email !== originalEmail)) throw new Error("An account already uses this email address.");
   if (email !== originalEmail && originalEmail === currentUser.email) throw new Error("You cannot change your own administrator sign-in address here.");
   if (area.length < 2) throw new Error("Enter an area for this account.");
-  const existing = originalEmail ? getUser(originalEmail) : null;
-  if (originalEmail && !existing) throw new Error("This account could not be found. Refresh the user list and try again.");
+  const password = existing ? "" : String(form.get("password") || "");
+  if (!existing && password.length < 8) throw new Error("Use an initial password with at least 8 characters.");
   if (existing?.email === currentUser.email && (role !== "administrator" || status !== "Active")) throw new Error("You cannot remove your own administrator access or deactivate your account.");
+  const confirmed = await confirmAction({
+    title: existing ? "Save account?" : "Create account?",
+    message: existing
+      ? `Save changes to ${existing.name}'s account?`
+      : `Create an account for ${name} as ${ROLES[role]}?`,
+    confirmLabel: existing ? "Save account" : "Create account",
+  });
+  if (!confirmed) return;
   if (existing) {
     const oldEmail = existing.email;
-    Object.assign(existing, { name, email, role, area, status, workingHours, phone: String(form.get("phone") || "").trim() });
+    Object.assign(existing, { name, email, role, area, status, workingHours: savedWorkingHours, availableDays: savedAvailableDays, phone: String(form.get("phone") || "").trim() });
     data.reports.filter((report) => report.userEmail === oldEmail).forEach((report) => { report.name = name; });
     if (oldEmail !== email) {
       data.notifications.forEach((item) => { if (item.targetEmail === oldEmail) item.targetEmail = email; });
@@ -843,12 +1247,10 @@ async function addOrEditUser(form) {
     }
     addActivity("Updated user account", `${name} · ${ROLES[role]}`);
   } else {
-    const password = String(form.get("password") || "");
-    if (password.length < 8) throw new Error("Use an initial password with at least 8 characters.");
     const response = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, name, area, role, status, workingHours, phone: String(form.get("phone") || "").trim(), password }),
+      body: JSON.stringify({ email, name, area, role, status, workingHours: savedWorkingHours, availableDays: savedAvailableDays, phone: String(form.get("phone") || "").trim(), password }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The account could not be added.");
@@ -872,6 +1274,12 @@ async function toggleAccount(email) {
   if (!user) throw new Error("This account could not be found.");
   if (user.email === currentUser.email) throw new Error("You cannot deactivate the administrator account you are using.");
   if (user.status !== "Active") {
+    const confirmed = await confirmAction({
+      title: "Reactivate account?",
+      message: `Reactivate ${user.name}'s account?`,
+      confirmLabel: "Reactivate",
+    });
+    if (!confirmed) return;
     user.status = "Active";
     addActivity("Reactivated user account", `${user.name} · ${ROLES[user.role]}`);
     if (!await localSave()) return;
@@ -888,6 +1296,13 @@ async function deactivateAccount(email, reason) {
   if (!user) throw new Error("This account could not be found.");
   const trimmedReason = String(reason || "").trim();
   if (!trimmedReason) throw new Error("A deactivation reason is required.");
+  const confirmed = await confirmAction({
+    title: "Deactivate account?",
+    message: `Deactivate ${user.name}'s account? They will no longer be able to sign in.`,
+    confirmLabel: "Deactivate account",
+    tone: "danger",
+  });
+  if (!confirmed) return;
   const response = await fetch("/api/users/deactivate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, reason: trimmedReason }) });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The account could not be deactivated.");
@@ -925,6 +1340,12 @@ async function markNotification(id) {
   const item = data.notifications.find((notification) => notification.id === id && notification.targetEmail === currentUser.email);
   if (!item) throw new Error("This notification could not be found.");
   if (item.read) return;
+  const confirmed = await confirmAction({
+    title: "Mark as read?",
+    message: "Mark this notification as read?",
+    confirmLabel: "Mark read",
+  });
+  if (!confirmed) return;
   item.read = true;
   try {
     const response = await fetch("/api/community/mark-notifications-read", {
@@ -963,6 +1384,72 @@ function setReportMapPin(position) {
   reportMap.panTo([latitude, longitude]);
 }
 
+async function useCurrentLocation() {
+  if (!navigator.geolocation) {
+    toast("Your browser does not support location services. Click the map to choose a location instead.", "error");
+    return;
+  }
+  if (reportMapGeoLocating) return;
+  reportMapGeoLocating = true;
+  const toggle = app.querySelector('[data-action="use-current-location"]');
+  const status = app.querySelector("#report-map-status");
+  if (toggle) toggle.disabled = true;
+  if (toggle) toggle.textContent = "Locating…";
+  if (status) status.textContent = "Locating your current position…";
+  try {
+    const position = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      });
+    });
+    const { latitude, longitude } = position.coords;
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      throw new Error("Invalid location received.");
+    }
+    setReportMapPin({ lat: latitude, lng: longitude });
+    if (status) status.textContent = `Your location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}.`;
+    toast("Your location was added to the map.", "success");
+  } catch (error) {
+    let message = "Could not determine your location.";
+    if (error.code === 1) message = "Location access was denied. Click the map to choose a location instead.";
+    else if (error.code === 2) message = "Location information is unavailable.";
+    else if (error.code === 3) message = "Location request timed out. Click the map to choose a location instead.";
+    toast(message, "error");
+    if (status) status.textContent = message;
+  } finally {
+    reportMapGeoLocating = false;
+    if (toggle) toggle.disabled = false;
+    if (toggle) toggle.textContent = "Choose my current location";
+  }
+}
+
+function centerMapOnArea(area) {
+  const coords = AREA_COORDINATES[area];
+  if (!coords || !reportMap) return;
+  reportMap.setView(coords, 15);
+  if (reportMapSelection) {
+    reportMapMarker.setLatLng(coords);
+    reportMapSelection = { latitude: coords[0], longitude: coords[1] };
+    const latitudeField = app.querySelector("#report-latitude");
+    const longitudeField = app.querySelector("#report-longitude");
+    const status = app.querySelector("#report-map-status");
+    if (latitudeField) latitudeField.value = String(coords[0]);
+    if (longitudeField) longitudeField.value = String(coords[1]);
+    const clearButton = clearMapButton();
+    if (clearButton) clearButton.hidden = false;
+    if (status) status.textContent = `Map centered on ${area}. Pin placed at ${coords[0].toFixed(6)}, ${coords[1].toFixed(6)}.`;
+  } else {
+    reportMap.panTo(coords);
+  }
+}
+
+function clearMapButton() {
+  return app.querySelector('[data-action="clear-report-map-pin"]');
+}
+
 function initializeReportMap() {
   const mapElement = app.querySelector("#report-map");
   if (!reportMapExpanded || !mapElement?.isConnected || !window.L) return;
@@ -971,9 +1458,11 @@ function initializeReportMap() {
     reportMapElement = mapElement;
     reportMapMarker = null;
     reportMap = window.L.map(mapElement).setView(
-      reportMapSelection ? [reportMapSelection.latitude, reportMapSelection.longitude] : [14.01799, 121.09465],
+      reportMapSelection ? [reportMapSelection.latitude, reportMapSelection.longitude] : PALSARA_CENTER,
       reportMapSelection ? 17 : 13,
     );
+    reportMap.setMaxBounds(PALSARA_BOUNDS);
+    reportMap.options.maxBoundsViscosity = 1.0;
     const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
@@ -983,10 +1472,27 @@ function initializeReportMap() {
       if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still submit without a pin.";
     });
     reportMap.on("click", (event) => setReportMapPin(event.latlng));
+    const areaSelect = app.querySelector("#area");
+    if (areaSelect && areaMapListenerAttached !== areaSelect) {
+      areaSelect.addEventListener("change", (event) => {
+        if (reportMapExpanded) centerMapOnArea(event.target.value);
+      });
+      areaMapListenerAttached = areaSelect;
+    }
   } else {
     reportMap.invalidateSize();
   }
-  if (reportMapSelection) setReportMapPin(reportMapSelection);
+  if (!reportMapSelection) {
+    const areaSelect = app.querySelector("#area");
+    const selectedArea = areaSelect ? areaSelect.value : null;
+    if (selectedArea && AREA_COORDINATES[selectedArea]) {
+      centerMapOnArea(selectedArea);
+    } else {
+      reportMap.setView(PALSARA_CENTER, 13);
+    }
+  } else {
+    setReportMapPin(reportMapSelection);
+  }
 }
 
 function initializeReportDetailMap() {
@@ -1034,6 +1540,101 @@ function initializeReportDetailMap() {
   });
 }
 
+function setAnnouncementMapPin(position) {
+  const { lat: latitude, lng: longitude } = position;
+  announcementMapSelection = { latitude, longitude };
+  const latitudeField = app.querySelector("#announcement-latitude");
+  const longitudeField = app.querySelector("#announcement-longitude");
+  const status = app.querySelector("#announcement-map-status");
+  const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
+  if (latitudeField) latitudeField.value = String(latitude);
+  if (longitudeField) longitudeField.value = String(longitude);
+  if (clearButton) clearButton.hidden = false;
+  if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
+  if (!announcementMap) return;
+  if (!announcementMapMarker) {
+    announcementMapMarker = window.L.marker([latitude, longitude], {
+      draggable: true,
+      title: "Event location",
+    }).addTo(announcementMap);
+    announcementMapMarker.on("dragend", (event) => setAnnouncementMapPin(event.target.getLatLng()));
+  } else {
+    announcementMapMarker.setLatLng([latitude, longitude]);
+  }
+  announcementMap.panTo([latitude, longitude]);
+}
+
+function initializeAnnouncementMap() {
+  const mapElement = app.querySelector("#announcement-map");
+  if (!announcementMapExpanded || !mapElement?.isConnected || !window.L) return;
+  if (announcementMapElement !== mapElement) {
+    announcementMap?.remove();
+    announcementMapElement = mapElement;
+    announcementMapMarker = null;
+    announcementMap = window.L.map(mapElement).setView(
+      announcementMapSelection ? [announcementMapSelection.latitude, announcementMapSelection.longitude] : [14.01799, 121.09465],
+      announcementMapSelection ? 17 : 13,
+    );
+    const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+    }).addTo(announcementMap);
+    tileLayer.on("tileerror", () => {
+      const status = app.querySelector("#announcement-map-status");
+      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
+    });
+    announcementMap.on("click", (event) => setAnnouncementMapPin(event.latlng));
+  } else {
+    announcementMap.invalidateSize();
+  }
+  if (announcementMapSelection) setAnnouncementMapPin(announcementMapSelection);
+}
+
+function initializeAnnouncementDetailMap() {
+  const mapElement = app.querySelector("#announcement-detail-map");
+  if (!mapElement || !window.L) {
+    announcementDetailMap?.remove();
+    announcementDetailMap = null;
+    announcementDetailMapElement = null;
+    if (mapElement) {
+      const status = app.querySelector("#announcement-detail-map-status");
+      if (status) status.textContent = "The interactive map is unavailable. Use the Google Maps link to open this location.";
+    }
+    return;
+  }
+  if (announcementDetailMapElement === mapElement) {
+    announcementDetailMap.invalidateSize();
+    return;
+  }
+
+  announcementDetailMap?.remove();
+  announcementDetailMap = null;
+  announcementDetailMapElement = mapElement;
+  const latitude = Number(mapElement.dataset.latitude);
+  const longitude = Number(mapElement.dataset.longitude);
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+      !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    const status = app.querySelector("#announcement-detail-map-status");
+    if (status) status.textContent = "This event's saved map coordinates are invalid.";
+    announcementDetailMapElement = null;
+    return;
+  }
+
+  announcementDetailMap = window.L.map(mapElement).setView([latitude, longitude], 17);
+  const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+  }).addTo(announcementDetailMap);
+  const statusElement = app.querySelector("#announcement-detail-map-status");
+  window.L.marker([latitude, longitude], {
+    title: "Event location",
+    alt: "Event location",
+  }).addTo(announcementDetailMap);
+  tileLayer.on("tileerror", () => {
+    if (statusElement) statusElement.textContent = "Map tiles could not be loaded. Check your internet connection; the saved pin and Google Maps link are still available.";
+  });
+}
+
 async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
   if (action === "forgot-password") {
@@ -1041,6 +1642,12 @@ async function handleAction(button, clickEvent) {
   } else if (action === "request-admin-reset") {
     const email = window.prompt("Enter your CommUnity account email:");
     if (email?.trim()) {
+      const confirmed = await confirmAction({
+        title: "Send reset request?",
+        message: `Send a password reset request for ${email.trim().toLowerCase()}?`,
+        confirmLabel: "Send request",
+      });
+      if (!confirmed) return;
       const response = await fetch("/api/auth/request-admin-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1057,7 +1664,16 @@ async function handleAction(button, clickEvent) {
       button.setAttribute("aria-label", field.type === "password" ? "Show password" : "Hide password");
     }
   } else if (action === "logout") {
-    if (!confirmLeaveWithUnsavedPermissions()) return;
+    const hasUnsaved = hasUnsavedPermissionChanges();
+    const confirmed = await confirmAction({
+      title: "Sign out?",
+      message: hasUnsaved
+        ? "You have unsaved role permission changes. Sign out and discard them?"
+        : "You will need to sign in again to continue.",
+      confirmLabel: "Sign out",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     const response = await fetch("/api/auth/logout", { method: "POST" });
     if (!response.ok) throw new Error("CommUnity could not sign you out. Try again.");
     clearSession();
@@ -1069,6 +1685,12 @@ async function handleAction(button, clickEvent) {
     announceSessionChange();
     toast("You have signed out.", "success");
   } else if (action === "test-smtp") {
+    const confirmed = await confirmAction({
+      title: "Send test email?",
+      message: "Send a test email using the current SMTP settings?",
+      confirmLabel: "Send test email",
+    });
+    if (!confirmed) return;
     const response = await fetch("/api/settings/smtp/test", { method: "POST" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The test email could not be sent.");
@@ -1098,6 +1720,16 @@ async function handleAction(button, clickEvent) {
     await markNotification(button.dataset.id);
   } else if (action === "mark-all-read") {
     const unreadItems = data.notifications.filter((item) => item.targetEmail === currentUser.email && !item.read);
+    if (!unreadItems.length) {
+      toast("There are no unread notifications.", "success");
+      return;
+    }
+    const confirmed = await confirmAction({
+      title: "Mark all as read?",
+      message: `Mark all ${unreadItems.length} notifications as read?`,
+      confirmLabel: "Mark all read",
+    });
+    if (!confirmed) return;
     const unreadIds = unreadItems.map((item) => item.id);
     unreadItems.forEach((item) => { item.read = true; });
     try {
@@ -1122,7 +1754,13 @@ async function handleAction(button, clickEvent) {
   } else if (action === "delete-schedule") {
     const schedule = data.schedules.find((item) => item.id === button.dataset.id);
     if (!schedule) throw new Error("This schedule could not be found.");
-    if (window.confirm(`Remove the ${schedule.wasteType} collection schedule for ${schedule.area}? A notice will be posted to residents in the affected area.`)) {
+    const confirmed = await confirmAction({
+      title: "Remove schedule?",
+      message: `Remove the ${schedule.wasteType} collection schedule for ${schedule.area}? A notice will be posted to residents in the affected area.`,
+      confirmLabel: "Remove schedule",
+      tone: "danger",
+    });
+    if (confirmed) {
       data.schedules = data.schedules.filter((item) => item.id !== schedule.id);
       addActivity("Removed a collection schedule", `${schedule.id} · ${schedule.area}`);
       if (await localSave()) {
@@ -1147,7 +1785,13 @@ async function handleAction(button, clickEvent) {
   } else if (action === "delete-location") {
     const location = data.locations.find((item) => item.id === button.dataset.id);
     if (!location) throw new Error("This community location could not be found.");
-    if (window.confirm(`Remove ${location.area}? Locations used by accounts, reports, or schedules cannot be removed.`)) {
+    const confirmed = await confirmAction({
+      title: "Remove location?",
+      message: `Remove ${location.area}? Locations used by accounts, reports, or schedules cannot be removed.`,
+      confirmLabel: "Remove location",
+      tone: "danger",
+    });
+    if (confirmed) {
       data.locations = data.locations.filter((item) => item.id !== location.id);
       addActivity("Removed a community location", location.area);
       if (await localSave()) {
@@ -1163,7 +1807,13 @@ async function handleAction(button, clickEvent) {
   } else if (action === "delete-recycling") {
     const item = data.recyclingLocations.find((record) => record.id === button.dataset.id);
     if (!item) throw new Error("This recycling listing could not be found.");
-    if (window.confirm(`Remove ${item.name} from the recycling directory?`)) {
+    const confirmed = await confirmAction({
+      title: "Remove listing?",
+      message: `Remove ${item.name} from the recycling directory?`,
+      confirmLabel: "Remove listing",
+      tone: "danger",
+    });
+    if (confirmed) {
       data.recyclingLocations = data.recyclingLocations.filter((record) => record.id !== item.id);
       addActivity("Removed a recycling directory listing", item.name);
       if (await localSave()) {
@@ -1184,7 +1834,13 @@ async function handleAction(button, clickEvent) {
   } else if (action === "delete-announcement") {
     const item = data.announcements.find((record) => record.id === button.dataset.id);
     if (!item) throw new Error("This announcement could not be found.");
-    if (window.confirm(`Remove the announcement “${item.title}”?`)) {
+    const confirmed = await confirmAction({
+      title: "Remove announcement?",
+      message: `Remove the announcement “${item.title}”?`,
+      confirmLabel: "Remove announcement",
+      tone: "danger",
+    });
+    if (confirmed) {
       const response = await fetch("/api/announcements", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
@@ -1224,9 +1880,18 @@ async function handleAction(button, clickEvent) {
     const permission = button.dataset.permission;
     const account = (data.users || []).find((user) => user.email === email);
     if (account?.role !== "official") throw new Error("Only Barangay official accounts can have permission overrides.");
+    const existingOverrides = data.accountOverrides?.[email] || {};
+    const current = existingOverrides[permission] ?? Boolean(data.permissions.official?.[permission]);
+    const permissionLabel = PERMISSION_DEFS.find((item) => item.id === permission)?.label || permission;
+    const confirmed = await confirmAction({
+      title: current ? "Disable permission?" : "Enable permission?",
+      message: `${current ? "Disable" : "Enable"} ${permissionLabel} for ${account.name}?`,
+      confirmLabel: current ? "Disable" : "Enable",
+      tone: current ? "danger" : "primary",
+    });
+    if (!confirmed) return;
     data.accountOverrides = data.accountOverrides || {};
     data.accountOverrides[email] = data.accountOverrides[email] || {};
-    const current = data.accountOverrides[email][permission] ?? Boolean(data.permissions.official?.[permission]);
     data.accountOverrides[email][permission] = !current;
     if (await localSave()) {
       render();
@@ -1237,6 +1902,13 @@ async function handleAction(button, clickEvent) {
     const account = (data.users || []).find((user) => user.email === email);
     if (account?.role !== "official") throw new Error("Only Barangay official accounts can have permission overrides.");
     if (data.accountOverrides?.[email]) {
+      const confirmed = await confirmAction({
+        title: "Reset permissions?",
+        message: `Reset ${account.name}'s permission overrides to the role default?`,
+        confirmLabel: "Reset permissions",
+        tone: "danger",
+      });
+      if (!confirmed) return;
       delete data.accountOverrides[email];
       if (await localSave()) {
         render();
@@ -1246,6 +1918,13 @@ async function handleAction(button, clickEvent) {
       toast("No overrides to reset.", "success");
     }
   } else if (action === "discard-permission-draft") {
+    const confirmed = await confirmAction({
+      title: "Discard changes?",
+      message: "Discard your unsaved role permission changes?",
+      confirmLabel: "Discard changes",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     rememberOpenPermissionGroups();
     delete permissionDrafts[selectedPermissionRole];
     render();
@@ -1276,6 +1955,12 @@ async function handleAction(button, clickEvent) {
       render();
       return;
     }
+    const confirmed = await confirmAction({
+      title: "Save permissions?",
+      message: `Save ${changes.length} permission change${changes.length === 1 ? "" : "s"} for ${ROLES[role]}?`,
+      confirmLabel: "Save permissions",
+    });
+    if (!confirmed) return;
     data.permissions[role] = { ...draft };
     changes.forEach((permission) => addActivity("Changed role permission", `${ROLES[role]} · ${permission.label}`));
     if (await localSave()) {
@@ -1315,7 +2000,19 @@ async function handleAction(button, clickEvent) {
     if (calendarMonth > 11) { calendarMonth = 0; calendarYear++; }
     render();
   } else if (action === "calendar-day") {
-    calendarSelectedDate = button.dataset.date || "";
+    const date = button.dataset.date || "";
+    const now = Date.now();
+    const isDoubleClick = clickEvent.detail === 2 ||
+      (lastCalendarClick.date === date && now - lastCalendarClick.at < 450);
+    lastCalendarClick = { date, at: now };
+    if (isDoubleClick && button.classList.contains("calendar-cell--has-events")) {
+      lastCalendarClick = { date: "", at: 0 };
+      calendarSelectedDate = date;
+      modalState = { kind: "calendar-event-detail", date };
+      render();
+      return;
+    }
+    calendarSelectedDate = date;
     render();
   } else if (action === "add-calendar-event") {
     modalState = { kind: "calendar-event", id: "", date: button.dataset.date || calendarSelectedDate || todayISO() };
@@ -1333,6 +2030,8 @@ async function handleAction(button, clickEvent) {
     toggle.setAttribute("aria-expanded", String(reportMapExpanded));
     toggle.textContent = reportMapExpanded ? "Hide map" : "Choose location on map";
     if (reportMapExpanded) initializeReportMap();
+  } else if (action === "use-current-location") {
+    useCurrentLocation();
   } else if (action === "clear-report-map-pin") {
     reportMapSelection = null;
     app.querySelector("#report-latitude").value = "";
@@ -1342,6 +2041,21 @@ async function handleAction(button, clickEvent) {
     reportMapMarker = null;
     const status = app.querySelector("#report-map-status");
     if (status) status.textContent = "No pin selected. Click the map to place one, or continue without it.";
+  } else if (action === "clear-announcement-map-pin") {
+    announcementMapSelection = null;
+    const latitudeField = app.querySelector("#announcement-latitude");
+    const longitudeField = app.querySelector("#announcement-longitude");
+    if (latitudeField) latitudeField.value = "";
+    if (longitudeField) longitudeField.value = "";
+    const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
+    if (clearButton) clearButton.hidden = true;
+    if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
+    announcementMapMarker = null;
+    const status = app.querySelector("#announcement-map-status");
+    if (status) status.textContent = "No pin selected. Click the map to place the event location.";
+  } else if (action === "view-announcement-location") {
+    modalState = { kind: "announcement-location", id: button.dataset.id };
+    render();
   } else if (action === "edit-report-draft") {
     reportDraft.step = "details";
     reportMapSelection = reportDraft.latitude === null ? null : {
@@ -1404,6 +2118,8 @@ async function handleSubmit(formEvent) {
       await updateReportStatus(fields);
     } else if (formId === "follow-up-form") {
       await submitFollowUp(fields);
+    } else if (formId === "report-priority-form") {
+      await updateReportPriority(fields);
     } else if (formId === "schedule-form") {
       await updateCollection(fields);
     } else if (formId === "profile-form") {
@@ -1413,9 +2129,10 @@ async function handleSubmit(formEvent) {
     } else if (formId === "password-form") {
       await updatePassword(fields);
     } else if (formId === "forced-password-form") {
-      await updatePassword(form);
-      modalState = null;
-      render();
+      if (await updatePassword(form)) {
+        modalState = null;
+        render();
+      }
     } else if (formId === "user-form") {
       await addOrEditUser(fields);
     } else if (formId === "user-password-form") {
@@ -1484,6 +2201,7 @@ async function syncSessionAcrossTabs() {
 
     if (!nextUser) {
       clearSession();
+      communityOfficialHours = [];
       data = emptyState();
       dataRevision = 0;
       lastPersistedSnapshot = "";
@@ -1500,6 +2218,7 @@ async function syncSessionAcrossTabs() {
     currentUser = state.user;
     data = state.data;
     dataRevision = state.revision;
+    await loadCommunityOfficialHours();
     lastPersistedSnapshot = JSON.stringify(data);
     modalState = null;
     permissionDrafts = {};
@@ -1563,6 +2282,44 @@ app.addEventListener("input", (inputEvent) => {
 app.addEventListener("change", (changeEvent) => {
   const target = changeEvent.target;
   if (target.matches("#report-photos")) handlePhotoSelection(target);
+  else if (target.matches("#announcement-is-event")) {
+    announcementMapExpanded = target.checked;
+    const region = app.querySelector("#announcement-map-region");
+    if (region) region.hidden = !target.checked;
+    if (target.checked) {
+      initializeAnnouncementMap();
+      const status = app.querySelector("#announcement-map-status");
+      if (status && !announcementMapSelection) status.textContent = "Click the map to place the event location pin.";
+    } else {
+      announcementMapSelection = null;
+      const latitudeField = app.querySelector("#announcement-latitude");
+      const longitudeField = app.querySelector("#announcement-longitude");
+      if (latitudeField) latitudeField.value = "";
+      if (longitudeField) longitudeField.value = "";
+      const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
+      if (clearButton) clearButton.hidden = true;
+      if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
+      announcementMapMarker = null;
+      const status = app.querySelector("#announcement-map-status");
+      if (status) status.textContent = "No pin selected.";
+    }
+  }
+  else if (target.matches("#user-form [name=role]")) {
+    const areaField = app.querySelector("#user-form [name=area]");
+    if (!areaField) return;
+    const areas = locationAreas();
+    const originalEmail = app.querySelector("#user-form [name=originalEmail]")?.value;
+    const selected = areas.includes(areaField.value) ? areaField.value : originalEmail ? "" : areas[0];
+    areaField.innerHTML = `${selected ? "" : '<option value="">Choose a managed location</option>'}${areas.map((area) => `<option value="${esc(area)}" ${area === selected ? "selected" : ""}>${esc(locationAreaLabels()[area] || area)}</option>`).join("")}`;
+    for (const field of app.querySelectorAll("#working-hours-start, #working-hours-end")) {
+      field.closest(".form-field").hidden = target.value !== "official";
+      field.disabled = target.value !== "official";
+      field.required = target.value === "official";
+    }
+    const availabilityField = app.querySelector(".availability-field");
+    availabilityField.hidden = target.value !== "official";
+    availabilityField.querySelectorAll("[name=availableDays]").forEach((field) => { field.disabled = target.value !== "official"; });
+  }
   else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
     const query = app.querySelector("[data-search-input]")?.value || "";
     refreshSearch(query);

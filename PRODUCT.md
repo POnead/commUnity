@@ -26,14 +26,17 @@ Residents report concerns such as road damage, damaged streetlights, drainage is
 - The source documents describe resident registration, role-based portal access, concern and urgent reporting, photo attachments, area selection, report tracking and history, collection schedules and status changes, notifications, user and role management, system monitoring, audit records, and profiles.
 - Residents can browse administrator-maintained community areas and verified recycling/junkshop listings, and provide barangay, purok/area, and street or landmark details with a report.
 - Resident reports can optionally include a Leaflet/OpenStreetMap map pin; the existing text location remains required. Residents see their saved pin on an inline map in their report details. Officials see the saved pin in the concern detail; residents and officials can optionally open directions in Google Maps.
+- Announcements can be marked as events with a required map pin. Officials and administrators can toggle the event location on or off when posting; residents see an event badge and can open the saved location on an inline map or in Google Maps.
 - Administrators monitor all reports and service activity, manage locations and directory listings, and export reports and report history. Officials and administrators can manage announcements.
 - Administrators can reset another account's password from user management; resets close that account's existing sessions.
 - Officials can claim unassigned concerns and release their own assignments for team handoff. New status-history entries record the staff member who made the update; older entries remain unattributed.
+- Residents choose a concern priority (High, Medium, or Low) when submitting a report; officials and administrators can adjust it later from the concern detail page. Follow-up limits apply per report, counting all time: High is unlimited, Medium allows 5, and Low allows 3. Existing follow-ups count retroactively, resolved concerns no longer accept follow-ups, and the report detail shows remaining follow-ups.
 - Collection reminders and report-submission/status notices are stored in the shared database and shown in account notifications. A scheduled job creates an in-app reminder the day before an eligible collection.
 - Role checks, sessions, and data writes are enforced server-side. Local PGlite is loopback-only; shared deployments use managed PostgreSQL and HTTPS.
 - No email or SMS delivery, verified identity, live collection tracking, or emergency-service dispatch is included. Collection statuses are manually maintained.
 - Directory records and operational information must be verified by barangay staff. No real recycling-business dataset is supplied.
 - The optional map uses public OpenStreetMap tiles and needs internet access; map attribution and public tile-service usage limits apply.
+- Signing out and every action that persists a data change ask for confirmation before applying it. Canceling leaves the stored data, the current screen, and any open form unchanged; read-only actions and unsaved draft edits do not prompt.
 
 ## Brand Commitments
 The product is named CommUnity. The supplied screen-reference PDF uses the eCommunity wordmark and a light, blue resident interface. The requested implementation keeps the resident blue identity, with separate teal official and graphite administrator themes.

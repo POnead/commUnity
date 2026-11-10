@@ -20,6 +20,8 @@ const SESSION_COOKIE = "community_session";
 const SESSION_HOURS = 12;
 const REMEMBER_DAYS = 30;
 const REPORT_STATUSES = ["Submitted", "Under Review", "In Progress", "Resolved"];
+const REPORT_PRIORITIES = ["High", "Medium", "Low"];
+const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
 const SCHEDULE_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
 const ROLES = ["resident", "official", "administrator"];
 const PERMISSIONS = {
@@ -40,16 +42,11 @@ function hash(value) {
 }
 
 function logError(message, error, context = {}) {
-  console.error(JSON.stringify({
-    level: "error",
-    message,
-    ...context,
-    error: {
-      name: error?.name || "Error",
-      message: error?.message || String(error),
-      ...(error?.code ? { code: error.code } : {}),
-    },
-  }));
+  const time = new Date().toTimeString().slice(0, 8);
+  const detail = error?.message || String(error || "");
+  const code = error?.code ? ` [${error.code}]` : "";
+  const where = context.path ? ` (${context.method || "request"} ${context.path})` : "";
+  console.error(`[${time}] ✗ ERROR: ${message}${where} — ${detail}${code}`);
 }
 
 function normalizeIpAddress(address) {
@@ -228,8 +225,8 @@ function jsonEqual(left, right) {
 
 function publicUser(user) {
   if (!user) return null;
-  const { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange, recoveryEmail, resetRequested } = user;
-  return { id, email, name, area, phone, role, status, joinedAt, workingHours, requiresPasswordChange: Boolean(requiresPasswordChange), recoveryEmail: recoveryEmail || "", resetRequested: Boolean(resetRequested) };
+  const { id, email, name, area, phone, role, status, joinedAt, workingHours, availableDays, requiresPasswordChange, recoveryEmail, resetRequested } = user;
+  return { id, email, name, area, phone, role, status, joinedAt, workingHours, availableDays, requiresPasswordChange: Boolean(requiresPasswordChange), recoveryEmail: recoveryEmail || "", resetRequested: Boolean(resetRequested) };
 }
 
 function validateAccount({ email, name, area, phone = "" }) {
@@ -239,6 +236,36 @@ function validateAccount({ email, name, area, phone = "" }) {
   if (typeof name !== "string" || name.trim().length < 2 || name.length > 100) throw new HttpError(400, "Enter a name between 2 and 100 characters.");
   if (typeof area !== "string" || area.trim().length < 2 || area.length > 120) throw new HttpError(400, "Enter a valid area.");
   if (typeof phone !== "string" || phone.length > 40) throw new HttpError(400, "Contact number is too long.");
+}
+
+const OFFICIAL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const DEFAULT_OFFICIAL_DAYS = OFFICIAL_DAYS.slice(0, 5);
+
+function validateWorkingHours(value) {
+  const dayList = `(?:${OFFICIAL_DAYS.join("|")})(?:,\\s*(?:${OFFICIAL_DAYS.join("|")}))*`;
+  const match = typeof value === "string" &&
+    value.match(new RegExp(`^(?:(?:Monday-Friday|${dayList}),\\s*)?(\\d{1,2}:\\d{2}\\s[AP]M)-(\\d{1,2}:\\d{2}\\s[AP]M)$`, "i"));
+  if (!match) throw new HttpError(400, "Choose valid working-hours start and end times.");
+  const minutesAfterMidnight = (time) => {
+    const [clock, period] = time.split(" ");
+    const [hour, minute] = clock.split(":").map(Number);
+    if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return -1;
+    return (hour % 12 + (period.toUpperCase() === "PM" ? 12 : 0)) * 60 + minute;
+  };
+  const start = minutesAfterMidnight(match[1]);
+  const end = minutesAfterMidnight(match[2]);
+  if (value.length > 120 || start < 0 || end < 0 || end <= start) {
+    throw new HttpError(400, "Working-hours end time must be after its start time.");
+  }
+}
+
+function validateAvailableDays(value = DEFAULT_OFFICIAL_DAYS) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > OFFICIAL_DAYS.length ||
+      value.some((day) => typeof day !== "string" || !OFFICIAL_DAYS.includes(day)) ||
+      new Set(value).size !== value.length) {
+    throw new HttpError(400, "Select at least one valid day the official is available.");
+  }
+  return OFFICIAL_DAYS.filter((day) => value.includes(day));
 }
 
 async function assertKnownArea(db, area, barangay = "") {
@@ -256,7 +283,14 @@ function validId(value) {
   return typeof value === "string" && /^[A-Za-z0-9._:-]{1,100}$/.test(value);
 }
 
+function normalizeReportPriority(report) {
+  if (!report || typeof report !== "object") return;
+  if (report.priority === undefined) report.priority = report.urgent ? "High" : "Medium";
+  report.urgent = report.priority === "High";
+}
+
 function validateReport(report) {
+  normalizeReportPriority(report);
   if (!report || !validId(report.id) || typeof report.title !== "string" || report.title.length > 200 ||
       typeof report.description !== "string" || report.description.length < 12 || report.description.length > 1200 ||
       typeof report.category !== "string" || report.category.length > 100 ||
@@ -270,6 +304,7 @@ function validateReport(report) {
       (report.longitude !== undefined && report.longitude !== null &&
         (typeof report.longitude !== "number" || !Number.isFinite(report.longitude) || report.longitude < -180 || report.longitude > 180)) ||
       !REPORT_STATUSES.includes(report.status) || typeof report.urgent !== "boolean" ||
+      !REPORT_PRIORITIES.includes(report.priority) ||
       (report.assignedTo !== undefined && report.assignedTo !== null &&
         (!report.assignedTo || typeof report.assignedTo !== "object" || !validId(report.assignedTo.id) ||
           typeof report.assignedTo.name !== "string" || report.assignedTo.name.length > 100)) ||
@@ -325,6 +360,17 @@ function validateState(data) {
       new Set(data.schedules.map((schedule) => schedule.id)).size !== data.schedules.length) {
     throw new HttpError(400, "Schedule identifiers must be valid and unique.");
   }
+  if (data.accountOverrides !== undefined) {
+    if (!data.accountOverrides || typeof data.accountOverrides !== "object" || Array.isArray(data.accountOverrides)) {
+      throw new HttpError(400, "Account permission overrides are invalid.");
+    }
+    for (const [email, overrides] of Object.entries(data.accountOverrides)) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !overrides || typeof overrides !== "object" || Array.isArray(overrides) ||
+          Object.entries(overrides).some(([permission, enabled]) => typeof enabled !== "boolean" || !Object.hasOwn(PERMISSIONS.official, permission))) {
+        throw new HttpError(400, "Account permission overrides are invalid.");
+      }
+    }
+  }
 }
 
 function makeDefaultState() {
@@ -336,6 +382,7 @@ function makeDefaultState() {
     notifications: [],
     activities: [],
     permissions: structuredClone(PERMISSIONS),
+    accountOverrides: {},
     announcements: [],
     calendarEvents: [],
     locations: [],
@@ -374,6 +421,8 @@ async function migrate(db) {
       role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
       status text NOT NULL CHECK (status IN ('Active', 'Inactive')),
       working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM',
+      available_days jsonb NOT NULL DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]'::jsonb,
+      permission_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
       requires_password_change boolean NOT NULL DEFAULT false,
       deactivation_reason text NOT NULL DEFAULT '',
       recovery_email text NOT NULL DEFAULT '',
@@ -390,6 +439,7 @@ async function migrate(db) {
       barangay text NOT NULL DEFAULT '',
       location_detail text NOT NULL DEFAULT '', latitude double precision, longitude double precision,
       description text NOT NULL, urgent boolean NOT NULL DEFAULT false,
+      priority text NOT NULL DEFAULT 'Medium',
       assigned_to text REFERENCES users(id) ON DELETE SET NULL,
       status text NOT NULL CHECK (status IN ('Submitted', 'Under Review', 'In Progress', 'Resolved')),
       submitted_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
@@ -428,6 +478,7 @@ async function migrate(db) {
       id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL, date date NOT NULL,
       approval_status text NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('pending', 'approved', 'declined')),
       decline_reason text NOT NULL DEFAULT '',
+      is_event boolean NOT NULL DEFAULT false, latitude double precision, longitude double precision,
       created_by text REFERENCES users(id) ON DELETE SET NULL
     );
     CREATE TABLE IF NOT EXISTS calendar_events (
@@ -452,6 +503,7 @@ async function migrate(db) {
       user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
       message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE INDEX IF NOT EXISTS report_follow_ups_report_id_idx ON report_follow_ups(report_id);
     CREATE TABLE IF NOT EXISTS community_locations (
       id text PRIMARY KEY, area text NOT NULL UNIQUE, barangay text NOT NULL,
       street text NOT NULL DEFAULT '', purok text NOT NULL, landmark text NOT NULL DEFAULT ''
@@ -483,14 +535,21 @@ async function migrate(db) {
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS barangay text NOT NULL DEFAULT '';
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS latitude double precision;
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS longitude double precision;
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'Medium';
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS assigned_to text REFERENCES users(id) ON DELETE SET NULL;
+    UPDATE reports SET priority='High' WHERE urgent=true AND priority='Medium';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM';
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS available_days jsonb NOT NULL DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]'::jsonb;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_overrides jsonb NOT NULL DEFAULT '{}'::jsonb;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_password_change boolean NOT NULL DEFAULT false;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason text NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email text NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_requested boolean NOT NULL DEFAULT false;
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS approval_status text NOT NULL DEFAULT 'approved';
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS decline_reason text NOT NULL DEFAULT '';
+    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS is_event boolean NOT NULL DEFAULT false;
+    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS latitude double precision;
+    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS longitude double precision;
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by text REFERENCES users(id) ON DELETE SET NULL;
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
@@ -569,17 +628,18 @@ async function readFullState(db, user = null) {
   const state = makeDefaultState();
   if (!user || user.role === "administrator") {
     const users = user
-      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
-      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
+      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
+      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
     state.users = users.rows;
   } else if (user.role === "resident") {
-    const users = await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", requires_password_change AS \"requiresPasswordChange\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
+    const users = await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
     state.users = users.rows;
   }
 
   const reports = await db.query(`
     SELECT r.id, r.user_email AS "userEmail", r.name, r.category, r.title, r.area, r.barangay,
-    r.location_detail AS "locationDetail", r.latitude, r.longitude, r.description, r.urgent,
+    r.location_detail AS "locationDetail", r.latitude, r.longitude, r.description, r.urgent, r.priority,
+    (SELECT count(*)::integer FROM report_follow_ups f WHERE f.report_id=r.id) AS "followUpCount",
     r.assigned_to AS "assignedToId", assignee.name AS "assignedToName", r.status,
     r.submitted_at AS "submittedAt", r.updated_at AS "updatedAt"
     FROM reports r LEFT JOIN users assignee ON assignee.id=r.assigned_to
@@ -606,6 +666,9 @@ async function readFullState(db, user = null) {
     const photosByReport = new Map();
     for (const row of photos.rows) {
       const list = photosByReport.get(row.report_id) || [];
+      const photoPrefix = `/api/reports/${encodeURIComponent(row.report_id)}/photos/`;
+      if (list.length >= 3 || typeof row.name !== "string" || row.name.length > 120 ||
+          typeof row.photoUrl !== "string" || !row.photoUrl.startsWith(photoPrefix)) continue;
       list.push({ name: row.name, photoUrl: row.photoUrl });
       photosByReport.set(row.report_id, list);
     }
@@ -643,8 +706,15 @@ async function readFullState(db, user = null) {
     state.permissions[role] ||= {};
     state.permissions[role][permission] = enabled;
   }
+  const permissionOverrides = await db.query("SELECT email, permission_overrides AS overrides FROM users WHERE permission_overrides <> '{}'::jsonb");
+  state.accountOverrides = Object.fromEntries(
+    permissionOverrides.rows
+      .filter((row) => row.overrides && typeof row.overrides === "object" && Object.keys(row.overrides).length)
+      .map((row) => [row.email, row.overrides]),
+  );
   const announcements = await db.query(`
-    SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date, approval_status AS "approvalStatus", decline_reason AS "declineReason"
+    SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date, approval_status AS "approvalStatus", decline_reason AS "declineReason",
+      is_event AS "isEvent", latitude, longitude
     FROM announcements
     ${user && user.role === "resident" ? "WHERE approval_status='approved'" : ""}
     ORDER BY date DESC, id DESC
@@ -690,11 +760,20 @@ async function getSessionUser(request, db) {
   if (!token || token.length > 200) return null;
   const result = await db.query(`
     SELECT u.id, u.email, u.name, u.area, u.phone, u.role, u.status, u.working_hours AS "workingHours",
+      u.available_days AS "availableDays", u.permission_overrides AS "permissionOverrides",
       u.requires_password_change AS "requiresPasswordChange", to_char(u.joined_at, 'YYYY-MM-DD') AS "joinedAt"
     FROM web_sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = $1 AND s.expires_at > now() AND u.status = 'Active'
   `, [hash(token)]);
   return result.rows[0] || null;
+}
+
+async function hasPermission(db, user, permission) {
+  if (user?.permissionOverrides && Object.hasOwn(user.permissionOverrides, permission)) {
+    return Boolean(user.permissionOverrides[permission]);
+  }
+  const result = await db.query("SELECT enabled FROM role_permissions WHERE role=$1 AND permission=$2", [user.role, permission]);
+  return Boolean(result.rows[0]?.enabled);
 }
 
 async function issueSession(response, db, user, remember, secure) {
@@ -802,10 +881,10 @@ async function insertReport(db, report) {
     photoUrl: String(photo.photoUrl || "").replace(`/api/reports/${encodeURIComponent(requestedId)}/`, `/api/reports/${encodeURIComponent(generatedId)}/`),
   }));
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, assigned_to, status, submitted_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
-    report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent,
+    report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
     report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt]);
   for (const [position, item] of report.history.entries()) {
     await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -820,14 +899,14 @@ async function insertReport(db, report) {
 async function replaceReport(db, report) {
   validateReport(report);
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, assigned_to, status, submitted_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
     ON CONFLICT (id) DO UPDATE SET user_email=excluded.user_email, name=excluded.name, category=excluded.category,
       title=excluded.title, area=excluded.area, barangay=excluded.barangay, location_detail=excluded.location_detail,
       latitude=excluded.latitude, longitude=excluded.longitude, description=excluded.description, urgent=excluded.urgent,
-      assigned_to=excluded.assigned_to, status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at
+      priority=excluded.priority, assigned_to=excluded.assigned_to, status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
-    report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent,
+    report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
     report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt]);
   await db.query("DELETE FROM report_history WHERE report_id = $1", [report.id]);
   await db.query("DELETE FROM report_photos WHERE report_id = $1", [report.id]);
@@ -1035,12 +1114,14 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       }
       if (!jsonEqual(visibleBefore.schedules, after.schedules) ||
           !jsonEqual(visibleBefore.permissions, after.permissions) ||
+          !jsonEqual(visibleBefore.accountOverrides || {}, after.accountOverrides || {}) ||
           !jsonEqual(visibleBefore.announcements, after.announcements) ||
           !jsonEqual(visibleBefore.calendarEvents, after.calendarEvents) ||
           !jsonEqual(visibleBefore.locations, after.locations) ||
           !jsonEqual(visibleBefore.recyclingLocations, after.recyclingLocations)) throw new HttpError(403, "You cannot change shared workspace data.");
       validateNotificationsReadOnly(visibleBefore.notifications, after.notifications, user);
       if (after.activities.length < visibleBefore.activities.length) throw new HttpError(403, "Activity history cannot be removed.");
+      if (nextAccount.area.trim() !== oldAccount.area.trim()) await assertKnownArea(db, nextAccount.area);
       await db.query("UPDATE users SET name=$1, area=$2, phone=$3 WHERE id=$4", [nextAccount.name.trim(), nextAccount.area.trim(), nextAccount.phone.trim(), user.id]);
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
       for (const report of addedReports) {
@@ -1066,15 +1147,16 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       await syncActivities(db, visibleBefore.activities, after.activities, user, false);
     } else if (user.role === "official") {
       if (after.users.length || !jsonEqual(visibleBefore.permissions, after.permissions) ||
+          !jsonEqual(visibleBefore.accountOverrides || {}, after.accountOverrides || {}) ||
           !jsonEqual(visibleBefore.announcements, after.announcements) ||
           !jsonEqual(visibleBefore.calendarEvents, after.calendarEvents) ||
           !jsonEqual(visibleBefore.locations, after.locations) ||
           !jsonEqual(visibleBefore.recyclingLocations, after.recyclingLocations)) throw new HttpError(403, "Officials cannot change accounts, locations, or announcements.");
       requireRole(user, ["official"]);
-      if (!before.permissions.official.manageReports && !jsonEqual(visibleBefore.reports, after.reports)) {
+      if (!await hasPermission(db, user, "manageReports") && !jsonEqual(visibleBefore.reports, after.reports)) {
         throw new HttpError(403, "Report management is not enabled for this role.");
       }
-      if (!before.permissions.official.manageSchedules && !jsonEqual(visibleBefore.schedules, after.schedules)) {
+      if (!await hasPermission(db, user, "manageSchedules") && !jsonEqual(visibleBefore.schedules, after.schedules)) {
         throw new HttpError(403, "Schedule management is not enabled for this role.");
       }
       if (after.reports.length !== visibleBefore.reports.length) throw new HttpError(403, "Officials cannot add or remove resident reports.");
@@ -1146,13 +1228,23 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         const old = oldUsers.get(account.id);
         if (!old) throw new HttpError(403, "Account identifiers cannot be added or replaced through a state update.");
         validateAccount(account);
-        if (account.role === "resident") await assertKnownArea(db, account.area);
+        const availableDays = account.availableDays === undefined
+          ? (Array.isArray(old.availableDays) && old.availableDays.length ? validateAvailableDays(old.availableDays) : validateAvailableDays())
+          : validateAvailableDays(account.availableDays);
+        if (account.role === "official" &&
+            (account.role !== old.role || account.workingHours !== old.workingHours ||
+              !jsonEqual(availableDays, old.availableDays))) {
+          validateWorkingHours(account.workingHours);
+        }
+        if (account.role === "resident" && (account.role !== old.role || account.area !== old.area)) {
+          await assertKnownArea(db, account.area);
+        }
         if (old.id === user.id && (account.email !== old.email || account.role !== "administrator" || account.status !== "Active")) {
           throw new HttpError(403, "You cannot change your own administrator sign-in or access.");
         }
-        await db.query("UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6,working_hours=$7 WHERE id=$8",
+        await db.query("UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6,working_hours=$7,available_days=$8::jsonb WHERE id=$9",
           [account.email.trim().toLowerCase(), account.name.trim(), account.area.trim(), account.phone.trim(), account.role, account.status,
-            String(account.workingHours || "Monday-Friday, 8:00 AM-5:00 PM").trim(), account.id]);
+            String(account.workingHours || "Monday-Friday, 8:00 AM-5:00 PM").trim(), JSON.stringify(availableDays), account.id]);
       }
       const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
       if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
@@ -1161,6 +1253,9 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         if (!incoming) throw new HttpError(403, "Reports cannot be deleted from the administrator workspace.");
         if (!jsonEqual(old.assignedTo, incoming.assignedTo) || !jsonEqual(old.history, incoming.history)) {
           throw new HttpError(403, "Report assignments and status history can only be changed through the concern queue.");
+        }
+        if (old.priority !== incoming.priority || old.urgent !== incoming.urgent || old.status !== incoming.status) {
+          throw new HttpError(403, "Report priority and status can only be changed through the concern queue and priority endpoint.");
         }
       }
       for (const report of after.reports) await replaceReport(db, report);
@@ -1180,6 +1275,16 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           await db.query("INSERT INTO role_permissions(role,permission,enabled) VALUES($1,$2,$3) ON CONFLICT(role,permission) DO UPDATE SET enabled=excluded.enabled",
             [role, permission, enabled]);
         }
+      }
+      const nextOverrides = after.accountOverrides || {};
+      const officialEmails = new Set(after.users.filter((account) => account.role === "official").map((account) => account.email.trim().toLowerCase()));
+      for (const email of Object.keys(nextOverrides)) {
+        if (!officialEmails.has(email)) throw new HttpError(400, "Permission overrides can only target official accounts.");
+      }
+      for (const account of after.users) {
+        if (account.role !== "official") continue;
+        const overrides = nextOverrides[account.email.trim().toLowerCase()] || {};
+        await db.query("UPDATE users SET permission_overrides=$1::jsonb WHERE id=$2", [JSON.stringify(overrides), account.id]);
       }
       const capableAdmins = await db.query(`
         SELECT u.id FROM users u
@@ -1225,16 +1330,18 @@ export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } =
 
 async function createUser(db, user, body) {
   requireRole(user, ["administrator"]);
-  const { email, name, area, phone = "", workingHours = "Monday-Friday, 8:00 AM-5:00 PM", role, status = "Active", password } = body || {};
+  const { email, name, area, phone = "", workingHours = "Monday-Friday, 8:00 AM-5:00 PM", availableDays = DEFAULT_OFFICIAL_DAYS, role, status = "Active", password } = body || {};
   validateAccount({ email, name, area, phone });
+  if (role === "official") validateWorkingHours(String(workingHours).trim());
+  const validatedAvailableDays = validateAvailableDays(availableDays);
   if (role === "resident") await assertKnownArea(db, area);
   validatePassword(password);
   if (!ROLES.includes(role) || !["Active", "Inactive"].includes(status)) throw new HttpError(400, "Choose a valid role and account status.");
   const id = randomUUID();
   await withTransaction(db, async (transaction) => {
     const db = transaction;
-    await db.query("INSERT INTO users (id,email,name,area,phone,working_hours,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-      [id, email.trim().toLowerCase(), name.trim(), area.trim(), phone.trim(), String(workingHours).trim(), role, status]);
+    await db.query("INSERT INTO users (id,email,name,area,phone,working_hours,available_days,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)",
+      [id, email.trim().toLowerCase(), name.trim(), area.trim(), phone.trim(), String(workingHours).trim(), JSON.stringify(validatedAvailableDays), role, status]);
     await db.query("INSERT INTO user_credentials (user_id,password_hash) VALUES ($1,$2)", [id, await passwordHash(password)]);
     await insertActivity(db, user, "Added user account", `${name.trim()} · ${role}`);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
@@ -1252,6 +1359,14 @@ function validateAnnouncement(body) {
       !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== body.date) {
     throw new HttpError(400, "Enter a title, message, and valid announcement date.");
   }
+  const isEvent = body.isEvent === true;
+  if (!isEvent) return { isEvent: false, latitude: null, longitude: null };
+  const { latitude, longitude } = body;
+  if (typeof latitude !== "number" || !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+      typeof longitude !== "number" || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    throw new HttpError(400, "Choose a map location for this event announcement, or turn off the event option.");
+  }
+  return { isEvent: true, latitude, longitude };
 }
 
 const apiHandlers = new Map([
@@ -1300,6 +1415,7 @@ async function handleAuth(request, response, db, options, user) {
     await recordAttempt(db, accountAttemptKey);
     const result = await db.query(`
       SELECT u.id,u.email,u.name,u.area,u.phone,u.role,u.status,u.working_hours AS "workingHours",
+        u.available_days AS "availableDays",
         u.requires_password_change AS "requiresPasswordChange",to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",c.password_hash
       FROM users u JOIN user_credentials c ON c.user_id=u.id WHERE u.email=$1
     `, [email]);
@@ -1460,7 +1576,7 @@ async function handleCommunity(request, response, db, options, user) {
   }
   if (url.pathname === "/api/community/working-hours" && request.method === "GET") {
     requireRole(user, ROLES);
-    const result = await db.query("SELECT id,name,working_hours AS \"workingHours\" FROM users WHERE role='official' AND status='Active' ORDER BY name");
+    const result = await db.query("SELECT id,name,working_hours AS \"workingHours\",available_days AS \"availableDays\" FROM users WHERE role='official' AND status='Active' ORDER BY name");
     sendJson(response, 200, { officials: result.rows });
     return;
   }
@@ -1470,19 +1586,69 @@ async function handleCommunity(request, response, db, options, user) {
     const reportId = String(request.body.reportId || "");
     const message = String(request.body.message || "").trim();
     if (!message || message.length > 1000) throw new HttpError(400, "Enter a follow-up message.");
-    const report = await db.query("SELECT id,status FROM reports WHERE id=$1 AND user_email=$2", [reportId, user.email]);
-    if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
+    let followUpResult = { count: 0, limit: null, remaining: null };
     await withTransaction(db, async (transaction) => {
+      const report = await transaction.query("SELECT id,status,priority FROM reports WHERE id=$1 AND user_email=$2 FOR UPDATE", [reportId, user.email]);
+      if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
+      const current = report.rows[0];
+      if (current.status === "Resolved") throw new HttpError(409, "This concern is resolved and no longer accepts follow-ups.");
+      const limit = Object.hasOwn(FOLLOW_UP_LIMITS, current.priority) ? FOLLOW_UP_LIMITS[current.priority] : FOLLOW_UP_LIMITS.Medium;
+      const counted = await transaction.query("SELECT count(*)::integer AS count FROM report_follow_ups WHERE report_id=$1", [reportId]);
+      const count = Number(counted.rows[0].count);
+      if (limit !== null && count >= limit) {
+        throw new HttpError(429, `This ${current.priority} priority concern has reached its ${limit} follow-up limit.`);
+      }
       const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
       await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,'resident')",
-        [reportId, Number(position.rows[0].position), "Submitted", `Follow-up: ${message}`, user.name]);
+        [reportId, Number(position.rows[0].position), current.status, `Follow-up: ${message}`, user.name]);
       await transaction.query("INSERT INTO report_follow_ups(report_id,user_email,message) VALUES($1,$2,$3)", [reportId, user.email, message]);
       const staff = await transaction.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
       for (const account of staff.rows) await insertNotification(transaction, account.email, "Report follow-up received", `${reportId}: ${message}`, reportId);
       await insertActivity(transaction, user, "Added report follow-up", `${reportId} · ${message}`);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      followUpResult = {
+        count: count + 1,
+        limit,
+        remaining: limit === null ? null : Math.max(0, limit - count - 1),
+      };
     });
-    sendJson(response, 200, { ok: true });
+    sendJson(response, 200, { ok: true, ...followUpResult });
+    return;
+  }
+  if (url.pathname === "/api/community/report-priority" && request.method === "POST") {
+    requireRole(user, ["official", "administrator"]);
+    requireJsonBody(request);
+    const reportId = String(request.body.reportId || "");
+    const priority = String(request.body.priority || "");
+    if (!REPORT_PRIORITIES.includes(priority)) throw new HttpError(400, "Choose a valid concern priority.");
+    if (user.role === "official" && !await hasPermission(db, user, "manageReports")) {
+      throw new HttpError(403, "Report management is not enabled for this role.");
+    }
+    await withTransaction(db, async (transaction) => {
+      const report = await transaction.query(
+        "SELECT id,status,priority,user_email AS \"userEmail\" FROM reports WHERE id=$1 FOR UPDATE",
+        [reportId],
+      );
+      if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
+      const current = report.rows[0];
+      if (current.priority === priority) return;
+      if (current.status === "Resolved") throw new HttpError(409, "This concern is resolved; its priority cannot be changed.");
+      const newLimit = FOLLOW_UP_LIMITS[priority];
+      if (newLimit !== null) {
+        const counted = await transaction.query("SELECT count(*)::integer AS count FROM report_follow_ups WHERE report_id=$1", [reportId]);
+        if (Number(counted.rows[0].count) > newLimit) {
+          throw new HttpError(400, `This report already has ${counted.rows[0].count} follow-ups, exceeding the ${newLimit} limit for ${priority} priority.`);
+        }
+      }
+      await transaction.query("UPDATE reports SET priority=$1, urgent=$2, updated_at=now() WHERE id=$3", [priority, priority === "High", reportId]);
+      const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
+      await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,$6)",
+        [reportId, Number(position.rows[0].position), current.status, `Priority changed to ${priority}.`, user.name, user.role]);
+      await insertNotification(transaction, current.userEmail, "Concern priority updated", `${reportId}: Your concern priority is now ${priority}.`, reportId);
+      await insertActivity(transaction, user, "Changed report priority", `${reportId} · ${priority}`);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { ok: true, priority });
     return;
   }
   if (url.pathname === "/api/community/mark-notifications-read" && request.method === "POST") {
@@ -1652,12 +1818,13 @@ async function handleAnnouncements(request, response, db, options, user) {
       const db = transaction;
       const found = await db.query(`
         SELECT a.id, a.title, to_char(a.date, 'YYYY-MM-DD') AS date, a.created_by AS "createdBy",
-          u.email AS "creatorEmail"
+          a.approval_status AS "approvalStatus", u.email AS "creatorEmail"
         FROM announcements a LEFT JOIN users u ON u.id = a.created_by
-        WHERE a.id=$1
+        WHERE a.id=$1 FOR UPDATE OF a
       `, [Number(request.body.id)]);
       if (!found.rows.length) throw new HttpError(404, "This announcement could not be found.");
       const item = found.rows[0];
+      if (item.approvalStatus !== "pending") throw new HttpError(409, "This announcement has already been decided.");
       await db.query("UPDATE announcements SET approval_status=$1, decline_reason=$2 WHERE id=$3", [status, reason, item.id]);
       await insertActivity(db, user, `${status === "approved" ? "Approved" : "Declined"} an announcement`, `${item.title}${status === "declined" ? ` · ${reason}` : ""}`);
       if (item.creatorEmail && item.createdBy !== user.id) {
@@ -1685,11 +1852,7 @@ async function handleAnnouncements(request, response, db, options, user) {
   if (url.pathname === "/api/announcements" && ["POST", "PUT", "DELETE"].includes(request.method)) {
     requireRole(user, ["official", "administrator"]);
     if (request.method === "POST") requireRole(user, ["official"]);
-    const permission = await db.query(
-      "SELECT enabled FROM role_permissions WHERE role=$1 AND permission='manageAnnouncements'",
-      [user.role],
-    );
-    if (!permission.rows[0]?.enabled) throw new HttpError(403, "Announcement management is not enabled for this role.");
+    if (!await hasPermission(db, user, "manageAnnouncements")) throw new HttpError(403, "Announcement management is not enabled for this role.");
     requireJsonBody(request);
     const body = request.body;
     await withTransaction(db, async (transaction) => {
@@ -1700,11 +1863,11 @@ async function handleAnnouncements(request, response, db, options, user) {
         if (!deleted.rowCount) throw new HttpError(404, "This announcement could not be found.");
         await insertActivity(db, user, "Removed an announcement", `Announcement ${body.id}`);
       } else {
-        validateAnnouncement(body);
+        const location = validateAnnouncement(body);
         if (request.method === "POST") {
           const approvalStatus = user.role === "official" ? "pending" : "approved";
-          await db.query("INSERT INTO announcements (title,detail,date,approval_status,created_by) VALUES ($1,$2,$3,$4,$5)",
-            [body.title.trim(), body.detail.trim(), body.date, approvalStatus, user.id]);
+          await db.query("INSERT INTO announcements (title,detail,date,approval_status,created_by,is_event,latitude,longitude) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+            [body.title.trim(), body.detail.trim(), body.date, approvalStatus, user.id, location.isEvent, location.latitude, location.longitude]);
           await insertActivity(db, user, approvalStatus === "pending" ? "Submitted an announcement" : "Published an announcement", body.title.trim());
           if (approvalStatus === "pending") {
             const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
@@ -1721,8 +1884,9 @@ async function handleAnnouncements(request, response, db, options, user) {
           }
         } else {
           if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
-          const updated = await db.query("UPDATE announcements SET title=$1,detail=$2,date=$3 WHERE id=$4",
-            [body.title.trim(), body.detail.trim(), body.date, Number(body.id)]);
+          const repending = user.role === "official" ? ",approval_status='pending',decline_reason=''" : "";
+          const updated = await db.query(`UPDATE announcements SET title=$1,detail=$2,date=$3,is_event=$4,latitude=$5,longitude=$6${repending} WHERE id=$7`,
+            [body.title.trim(), body.detail.trim(), body.date, location.isEvent, location.latitude, location.longitude, Number(body.id)]);
           if (!updated.rowCount) throw new HttpError(404, "This announcement could not be found.");
           await insertActivity(db, user, "Updated an announcement", body.title.trim());
         }
@@ -1760,11 +1924,7 @@ async function handleCalendar(request, response, db, options, user) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/calendar/events" && request.method === "POST") {
     requireRole(user, ["official", "administrator"]);
-    const permission = await db.query(
-      "SELECT enabled FROM role_permissions WHERE role=$1 AND permission='manageSchedules'",
-      [user.role],
-    );
-    if (!permission.rows[0]?.enabled) throw new HttpError(403, "Calendar event management is not enabled for this role.");
+    if (!await hasPermission(db, user, "manageSchedules")) throw new HttpError(403, "Calendar event management is not enabled for this role.");
     requireJsonBody(request);
     validateCalendarEvent(request.body);
     const approvalStatus = user.role === "official" ? "pending" : "approved";
@@ -1815,12 +1975,13 @@ async function handleCalendar(request, response, db, options, user) {
       const db = transaction;
       const found = await db.query(`
         SELECT e.id, e.title, to_char(e.date, 'YYYY-MM-DD') AS date, e.created_by AS "createdBy",
-          u.email AS "creatorEmail", u.name AS "creatorName"
+          e.approval_status AS "approvalStatus", u.email AS "creatorEmail", u.name AS "creatorName"
         FROM calendar_events e LEFT JOIN users u ON u.id = e.created_by
-        WHERE e.id=$1
+        WHERE e.id=$1 FOR UPDATE OF e
       `, [id]);
       if (!found.rows.length) throw new HttpError(404, "This event request could not be found.");
       const item = found.rows[0];
+      if (item.approvalStatus !== "pending") throw new HttpError(409, "This event request has already been decided.");
       await db.query("UPDATE calendar_events SET approval_status=$1, decline_reason=$2 WHERE id=$3", [status, reason, id]);
       await insertActivity(db, user,
         `${status === "approved" ? "Approved" : "Declined"} a calendar event`,

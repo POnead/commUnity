@@ -25,7 +25,22 @@ const CATEGORIES = [
   "Missed garbage collection",
   "Other community concern",
 ];
+const REPORT_PRIORITIES = ["High", "Medium", "Low"];
+const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
 const AREAS = ["Purok 1", "Purok 2", "Purok 3", "Purok 4", "Purok 5", "Main Road"];
+const PALSARA_CENTER = [14.01799, 121.09465];
+const PALSARA_BOUNDS = [
+  [13.9900, 121.0600],
+  [14.0450, 121.1300],
+];
+const AREA_COORDINATES = {
+  "Purok 1": [14.01799, 121.09465],
+  "Purok 2": [14.0250, 121.0870],
+  "Purok 3": [14.0100, 121.1020],
+  "Purok 4": [14.0050, 121.0900],
+  "Purok 5": [14.0300, 121.0980],
+  "Main Road": [14.0200, 121.0800],
+};
 const EMERGENCY_HOTLINES = [
   ["Barangay emergency desk", "(042) 123-4567"],
   ["Police", "911"],
@@ -72,6 +87,7 @@ const app = document.getElementById("app");
 const toastEl = document.getElementById("toast");
 let data;
 let currentUser;
+let communityOfficialHours = [];
 let currentRoute;
 let dataRevision = 0;
 let lastKnownHash = window.location.hash;
@@ -381,6 +397,7 @@ async function localSave() {
     data = result.data;
     currentUser = result.user;
     lastPersistedSnapshot = JSON.stringify(data);
+    announceSessionChange();
     return true;
   } catch (error) {
     console.error("CommUnity could not save data.", error);
@@ -389,6 +406,19 @@ async function localSave() {
     }
     toast(error.message || "Your change could not be saved. Check that the CommUnity server is running, then try again.", "error");
     return false;
+  }
+}
+
+async function loadCommunityOfficialHours() {
+  communityOfficialHours = [];
+  if (currentUser?.role !== "resident") return;
+  try {
+    const response = await fetch("/api/community/working-hours");
+    const result = await response.json();
+    if (!response.ok || !Array.isArray(result.officials)) return;
+    communityOfficialHours = result.officials;
+  } catch (error) {
+    console.error("CommUnity could not load official working hours.", error);
   }
 }
 
@@ -421,6 +451,7 @@ async function loadLocalData() {
     data.activities ||= [];
     data.permissions ||= structuredClone(DEFAULT_PERMISSIONS);
     data.announcements ||= [];
+    await loadCommunityOfficialHours();
     lastPersistedSnapshot = stored.data ? JSON.stringify(data) : "";
     return Boolean(stored.data);
   } catch (error) {
@@ -436,6 +467,71 @@ function toast(message, kind = "") {
   toastEl.classList.add("visible");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 3400);
+}
+
+let activeConfirmation = null;
+
+function confirmAction({
+  title = "Confirm change",
+  message = "",
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  tone = "primary",
+} = {}) {
+  if (activeConfirmation) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop confirm-backdrop";
+    backdrop.innerHTML = `<section class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+      <header class="modal-head"><div><h2 id="confirm-dialog-title">${esc(title)}</h2></div></header>
+      <div class="modal-content confirm-content">
+        <p id="confirm-dialog-message">${esc(message)}</p>
+        <div class="form-actions"><button class="button secondary" type="button" data-confirm="cancel">${esc(cancelLabel)}</button><button class="button${tone === "danger" ? " danger" : ""}" type="button" data-confirm="accept">${esc(confirmLabel)}</button></div>
+      </div>
+    </section>`;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.body.append(backdrop);
+    const acceptButton = backdrop.querySelector('[data-confirm="accept"]');
+    const cancelButton = backdrop.querySelector('[data-confirm="cancel"]');
+    const finish = (value) => {
+      if (!activeConfirmation) return;
+      activeConfirmation = null;
+      backdrop.remove();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus && typeof previousFocus.focus === "function") previousFocus.focus();
+      resolve(value);
+    };
+    activeConfirmation = { finish };
+    acceptButton.addEventListener("click", () => finish(true));
+    cancelButton.addEventListener("click", () => finish(false));
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) finish(false);
+    });
+    backdrop.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      event.stopPropagation();
+      const focusable = [...backdrop.querySelectorAll("button:not([disabled])")];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+    cancelButton.focus();
+  });
 }
 
 function currentPath() {
@@ -466,6 +562,17 @@ function announceSessionChange() {
     // Ignore channel failures.
   }
 }
+
+sessionSyncChannel?.addEventListener("message", async (event) => {
+  if (event.data?.type !== "session") return;
+  if (modalState) return; // do not disrupt an open form or modal
+  try {
+    await loadLocalData();
+    render();
+  } catch (error) {
+    console.error("CommUnity could not refresh session data.", error);
+  }
+});
 
 function unreadCount(user = currentUser) {
   if (!user || !data.notifications) return 0;

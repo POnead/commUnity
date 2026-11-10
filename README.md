@@ -27,12 +27,31 @@ Resident accounts can register in the portal. Administrators can create official
 
 Resident concern reports can include an optional interactive map pin in addition to the required barangay, area, and street or landmark. The map uses Leaflet and OpenStreetMap tiles, so it does not need a Google Maps API key. Residents can click the map or drag the pin; they can still submit without coordinates. Residents see their saved pin in their report details. Officials see a saved pin in the concern detail. Both can optionally open directions in Google Maps; administrators can open saved pins using Google Maps. No device location permission or address-search service is used.
 
+Announcements can be marked as events. When the event option is on, officials and administrators must place a map pin for the event location before publishing; turning the option off removes the pin and saves the announcement as a normal notice. Residents see an event badge and can open the saved pin on an inline map, with a Google Maps link as a fallback.
+
 Map tiles are loaded from the public OpenStreetMap tile service and require an internet connection. Keep the visible OpenStreetMap attribution on the map and follow the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/); the public tile service is not intended for offline caching or bulk/high-volume use. The coordinates and text location remain part of the CommUnity report if tiles are temporarily unavailable.
+
+### Confirmation prompts
+
+Signing out and every action that saves, updates, approves, declines, deactivates, resets, or removes data asks for confirmation first. Canceling leaves the data and any open form unchanged. Read-only actions such as navigation, filtering, and viewing details do not prompt.
+
+### Concern priority and follow-up limits
+
+Residents choose a concern priority when submitting a report: **High** (immediate danger to health or safety), **Medium** (service disruption affecting daily activity), or **Low** (routine, cosmetic, or nuisance concern). The default is Medium. Officials and administrators can adjust a report's priority later from the concern detail page; the change is logged in the report history, activity feed, and a notification to the resident.
+
+Follow-up limits apply per report, counting all time:
+- **High** — unlimited follow-ups
+- **Medium** — 5 follow-ups
+- **Low** — 3 follow-ups
+
+Existing follow-ups count retroactively. When a resident reaches the limit, the follow-up form is hidden and the server rejects further follow-ups. Resolved concerns no longer accept follow-ups; the follow-up form is hidden and the server returns a conflict if one is attempted. The report detail shows the remaining follow-ups so residents know how many are left.
 
 ## Included workflows
 
 - Residents can submit concerns with a barangay, managed purok/area, and street or landmark, optionally add a Google Maps pin, follow report status, and export report coordinates with their reports/history as CSV.
 - Officials can review and update concerns, maintain collection schedules, and publish announcements. Administrators can browse all reports, view system monitoring, manage accounts and role permissions, and maintain community locations and recycling/junkshop listings.
+- Officials and administrators can mark an announcement as an event and place a map pin for its location. The event toggle can be turned off for notices that do not need a location.
+- Signing out and every data-changing action ask for confirmation before applying the change; canceling leaves the current data and open form untouched.
 - Administrators have a separate Settings page that organizes links to existing user, role, location, announcement, monitoring, audit, and profile areas without duplicating their forms.
 - Upcoming collections generate an in-app notification and, when SMTP is configured, an email for active residents in the scheduled area on the day before pickup. Report submitters and status updates work the same way.
 - Residents can view active recycling/junkshop listings after staff add verified details. The directory starts empty; no real business locations are supplied.

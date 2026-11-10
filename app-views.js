@@ -188,9 +188,10 @@ function panel(title, body, options = {}) {
 function reportRows(reports, role) {
   if (!reports.length) return `<div class="empty-state"><strong>No concerns in this view</strong>When a report is submitted, it will appear here.</div>`;
   const headers = role === "resident"
-    ? ["Concern", "Affected area", "Date submitted", "Status", "Action"]
-    : ["Concern", "Resident", "Affected area", "Status", "Action"];
+    ? ["Concern", "Priority", "Affected area", "Date submitted", "Status", "Action"]
+    : ["Concern", "Resident", "Priority", "Affected area", "Status", "Action"];
   const cells = reports.map((report) => {
+    const priority = report.priority || "Medium";
     const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(displayReportId(report.id))}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
     const second = role === "resident"
       ? `<div class="record-meta" role="cell" data-label="Affected area">${esc(report.area)}</div>`
@@ -198,8 +199,9 @@ function reportRows(reports, role) {
     const third = role === "resident"
       ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
       : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
-    return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status}`.toLowerCase())}">
-      ${first}${second}${third}<div role="cell" data-label="Status">${statusPill(report.status)}</div>
+    const priorityCell = `<div class="record-meta" role="cell" data-label="Priority"><span class="status" data-status="${esc(normalizeStatus(priority))}">${esc(priority)}</span></div>`;
+    return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status} ${priority}`.toLowerCase())}">
+      ${first}${second}${priorityCell}${third}<div role="cell" data-label="Status">${statusPill(report.status)}</div>
       <div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>
     </div>`;
   }).join("");
@@ -265,7 +267,22 @@ function reportDetail(report, role) {
       ? `<div id="report-detail-map" class="report-map-canvas report-detail-map" data-latitude="${report.latitude}" data-longitude="${report.longitude}" role="region" aria-label="Map centered on this concern's reported location"></div><p class="map-status" id="report-detail-map-status" role="status" aria-live="polite">Map pin at ${report.latitude.toFixed(6)}, ${report.longitude.toFixed(6)}.</p><a class="text-button map-directions-link" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open directions in Google Maps</a>`
       : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`)
     : "";
-  const followUpForm = isResident ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" required maxlength="1000"></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : "";
+  const priority = report.priority || "Medium";
+  const followUpLimit = FOLLOW_UP_LIMITS[priority] ?? FOLLOW_UP_LIMITS.Medium;
+  const followUpCount = Number(report.followUpCount || 0);
+  const followUpRemaining = followUpLimit === null ? null : Math.max(0, followUpLimit - followUpCount);
+  const followUpsOpen = report.status !== "Resolved" && (followUpLimit === null || followUpRemaining > 0);
+  const followUpNote = report.status === "Resolved"
+    ? "This concern is resolved. Follow-ups are closed."
+    : followUpLimit === null
+      ? `${priority} priority · Unlimited follow-ups.`
+      : `${priority} priority · ${followUpRemaining} of ${followUpLimit} follow-ups remaining.`;
+  const followUpForm = isResident
+    ? panel("Need to add context?", `<p class="muted small">${esc(followUpNote)}</p>${followUpsOpen ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" required maxlength="1000"></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : ""}`)
+    : "";
+  const priorityForm = role === "official" || role === "administrator"
+    ? panel("Concern priority", `<form id="report-priority-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><p class="muted small">Residents choose this at submission; staff can adjust it here.</p>${selectField("Priority", "priority", REPORT_PRIORITIES, priority)}<div class="form-actions"><button class="button secondary" type="submit">Update priority</button></div></form>`)
+    : "";
   const body = `
     <div class="content-stack">
       <div class="profile-layout">
@@ -330,13 +347,12 @@ function dashboardResident() {
   const body = `
     <div class="grid-main-side">
       <div class="content-stack">
-        ${panel("Next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div><div class="form-actions">${linkButton("View collection schedule", routeUrl("resident", "collection"), "secondary", "small")}</div>` : `<div class="empty-state"><strong>No upcoming pickup posted</strong>Check back for a schedule update from your barangay.</div>`)}
-        ${panel("Emergency hotlines", `<ul class="plain-list">${EMERGENCY_HOTLINES.map(([label, number]) => `<li><span>${esc(label)}</span><strong>${esc(number)}</strong></li>`).join("")}</ul>`, { subtitle: "For immediate danger, call emergency services directly." })}
-        ${panel("Official working hours", `<ul class="plain-list">${(data.users || []).filter((user) => user.role === "official" && user.status === "Active").map((official) => `<li><span>${esc(official.name)}</span><strong>${esc(official.workingHours || "Monday-Friday, 8:00 AM-5:00 PM")}</strong></li>`).join("") || "<li><span>No hours posted</span></li>"}`, { subtitle: "Barangay service desk hours" })}
         ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon("clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div>${statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
+        ${panel("Next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div><div class="form-actions">${linkButton("View collection schedule", routeUrl("resident", "collection"), "secondary", "small")}</div>` : `<div class="empty-state"><strong>No upcoming pickup posted</strong>Check back for a schedule update from your barangay.</div>`)}
+        ${panel("Official working hours", `<ul class="plain-list">${communityOfficialHours.map((official) => `<li><span>${esc(official.name)}</span><strong>${esc(official.workingHours || "Monday-Friday, 8:00 AM-5:00 PM")}</strong></li>`).join("") || "<li><span>No hours posted</span></li>"}`, { subtitle: "Barangay service desk hours" })}
       </div>
       <div class="content-stack">
-        ${panel("Announcements", `<ul class="plain-list">${data.announcements.map((item) => `<li><div><strong class="announcement-title">${esc(item.title)}</strong><div class="muted small">${esc(item.detail)}</div></div><span class="muted small">${esc(dateLabel(item.date, { month: "short", day: "numeric" }))}</span></li>`).join("")}</ul>`)}
+        ${panel("Announcements", `<ul class="plain-list">${data.announcements.map((item) => `<li><div><strong class="announcement-title">${esc(item.title)}</strong><div class="muted small">${esc(item.detail)}</div>${item.isEvent ? `<div class="announcement-event-meta">${announcementEventMarkup(item)}</div>` : ""}</div><span class="muted small">${esc(dateLabel(item.date, { month: "short", day: "numeric" }))}</span></li>`).join("")}</ul>`)}
       </div>
     </div>`;
   return page("resident", "dashboard", body, actions);
@@ -377,7 +393,17 @@ function calendarPage() {
   }));
   const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
   const events = [
-    ...data.announcements.map((item) => ({ date: item.date, title: item.title, detail: item.detail, kind: "Announcement" })),
+    ...data.announcements.map((item) => ({
+      id: String(item.id),
+      date: item.date,
+      title: item.title,
+      detail: item.detail,
+      kind: "Announcement",
+      status: "approved",
+      isEvent: Boolean(item.isEvent),
+      latitude: item.latitude ?? null,
+      longitude: item.longitude ?? null,
+    })),
     ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
     ...activeEvents,
   ];
@@ -415,13 +441,16 @@ function calendarPage() {
     ].filter(Boolean).join(" ");
     const cellEvents = cell.events.slice(0, 2).map((event) => `<span class="calendar-cell-event${event.status === "pending" ? " calendar-cell-event--pending" : ""}">${esc(event.title)}</span>`).join("");
     const more = cell.events.length > 2 ? `<span class="calendar-cell-more">+${cell.events.length - 2} more</span>` : "";
-    const viewButton = `<span class="calendar-cell-view" aria-hidden="true">${icon("arrow", "calendar-cell-view-icon")}</span>`;
-    return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}${hasEvents ? `, ${cell.events.length} event${cell.events.length === 1 ? "" : "s"}` : ""}"><span class="calendar-day-number">${cell.day}</span>${hasEvents ? `<span class="calendar-cell-events">${cellEvents}${more}</span>` : ""}${hasEvents ? viewButton : ""}</button>`;
+    const detailsHint = hasEvents ? `, ${cell.events.length} event${cell.events.length === 1 ? "" : "s"}; double-click to view details` : "";
+    const viewHint = hasEvents ? `<span class="calendar-cell-view" aria-hidden="true" title="Double-click to view event details">${icon("arrow", "calendar-cell-view-icon")}</span>` : "";
+    return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}${detailsHint}"><span class="calendar-day-number">${cell.day}</span>${hasEvents ? `<span class="calendar-cell-events">${cellEvents}${more}</span>` : ""}${viewHint}</button>`;
   }).join("");
 
   const eventMeta = (event) => event.kind === "Event"
     ? `<div class="calendar-event-meta">${statusPill(calendarStatusLabel(event.status))}${event.createdByName ? `<span>Requested by ${esc(event.createdByName)}</span>` : ""}</div>`
-    : "";
+    : event.kind === "Announcement" && event.isEvent
+      ? `<div class="calendar-event-meta">${announcementEventMarkup(event)}</div>`
+      : "";
 
   const selectedEvents = calendarSelectedDate ? (byDate.get(calendarSelectedDate) || []) : [];
   const canAddHere = canManage && calendarSelectedDate && calendarSelectedDate >= today;
@@ -433,7 +462,17 @@ function calendarPage() {
     : `<div class="calendar-details"><p class="muted small">Select a date to see event details.${canManage ? " Use Add event there to request an event." : ""}</p></div>`;
 
   const upcoming = activeEvents.concat(
-    data.announcements.map((item) => ({ date: item.date, title: item.title, detail: item.detail, kind: "Announcement", status: "approved" })),
+    data.announcements.map((item) => ({
+      id: String(item.id),
+      date: item.date,
+      title: item.title,
+      detail: item.detail,
+      kind: "Announcement",
+      status: "approved",
+      isEvent: Boolean(item.isEvent),
+      latitude: item.latitude ?? null,
+      longitude: item.longitude ?? null,
+    })),
     schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area}`, kind: "Collection", status: "approved" })),
   ).filter((event) => event.date && event.date >= today).sort((a, b) => asDate(a.date) - asDate(b.date)).slice(0, 10);
   const upcomingList = upcoming.length
@@ -499,18 +538,16 @@ function dashboardAdmin() {
   const residentCount = data.users.filter((user) => user.role === "resident").length;
   const officialCount = data.users.filter((user) => user.role === "official").length;
   const activeCount = data.users.filter((user) => user.status === "Active").length;
+  const openReports = data.reports.filter((report) => report.status !== "Resolved").length;
   const body = `
     <div class="content-stack">
-      ${statsStrip([
-        stat("User accounts", data.users.length, `${activeCount} active in this workspace`),
-        stat("Residents", residentCount, "Resident accounts"),
-        stat("Barangay officials", officialCount, "Official accounts"),
-        stat("Community reports", data.reports.length, "Recorded concerns"),
-      ])}
       <div class="grid-main-side">
-        ${panel("Recent activity", `<div class="activity-list">${data.activities.slice(0, 6).map((item) => `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("account") ? "users" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.actor)} · ${esc(item.detail)}</span></div><span class="item-end">${esc(dateTimeLabel(item.at))}</span></div>`).join("")}</div><div class="form-actions">${linkButton("View activity log", routeUrl("administrator", "activity"), "secondary", "small")}</div>`, { subtitle: "Latest changes in this workspace" })}
         <div class="content-stack">
-          ${panel("Account roles", `<ul class="plain-list">${Object.entries(ROLES).map(([role, label]) => `<li><span>${esc(label)}</span><strong class="num">${data.users.filter((user) => user.role === role).length}</strong></li>`).join("")}</ul><div class="form-actions">${linkButton("Manage users", routeUrl("administrator", "users"), "secondary", "small")}</div>`)}
+          ${panel("Accounts", `<ul class="plain-list"><li><span>All accounts</span><strong class="num">${data.users.length}</strong></li><li><span>Active</span><strong class="num">${activeCount}</strong></li><li><span>Residents</span><strong class="num">${residentCount}</strong></li><li><span>Barangay officials</span><strong class="num">${officialCount}</strong></li></ul><div class="form-actions">${linkButton("Manage users", routeUrl("administrator", "users"), "secondary", "small")}</div>`, { subtitle: "Accounts in this workspace" })}
+          ${panel("Open concerns", `<ul class="plain-list"><li><span>Reports needing attention</span><strong class="num">${openReports}</strong></li></ul><div class="form-actions">${linkButton("View community reports", routeUrl("administrator", "reports"), "secondary", "small")}</div>`, { subtitle: "Resident concerns not yet resolved" })}
+        </div>
+        <div class="content-stack">
+          ${panel("Recent activity", `<div class="activity-list">${data.activities.slice(0, 6).map((item) => `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("account") ? "users" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.actor)} · ${esc(item.detail)}</span></div><span class="item-end">${esc(dateTimeLabel(item.at))}</span></div>`).join("")}</div><div class="form-actions">${linkButton("View activity log", routeUrl("administrator", "activity"), "secondary", "small")}</div>`, { subtitle: "Latest changes in this workspace" })}
         </div>
       </div>
     </div>`;
@@ -583,12 +620,19 @@ function locationsPage() {
   return page("administrator", "locations", body);
 }
 
+function announcementEventMarkup(item) {
+  if (!item?.isEvent) return "";
+  const hasPin = Number.isFinite(item.latitude) && Number.isFinite(item.longitude);
+  if (!hasPin) return `<span class="approval-tag">Event</span>`;
+  return `<span class="approval-tag">Event</span><button class="text-button" type="button" data-action="view-announcement-location" data-id="${esc(item.id)}">View event location</button>`;
+}
+
 function announcementsPage(role) {
   const isManager = role === "official" || role === "administrator";
   const announcements = [...data.announcements].sort((a, b) => asDate(b.date) - asDate(a.date));
   const statusLabel = (item) => item.approvalStatus === "pending" ? "Pending approval" : item.approvalStatus === "declined" ? "Declined" : "Published";
-  const rows = announcements.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.title} ${item.detail}`.toLowerCase())}">
-    <div role="cell"><strong class="record-primary">${esc(item.title)}</strong><span class="record-secondary">${esc(item.detail)}</span></div>
+  const rows = announcements.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.title} ${item.detail} ${item.isEvent ? "event" : ""}`.toLowerCase())}">
+    <div role="cell"><strong class="record-primary">${esc(item.title)}</strong>${item.isEvent ? `<div class="announcement-event-meta">${announcementEventMarkup(item)}</div>` : ""}<span class="record-secondary">${esc(item.detail)}</span></div>
     <div class="record-date" role="cell" data-label="Publish date">${esc(dateLabel(item.date))}</div>
     ${isManager ? `<div class="record-actions" role="cell" data-label=""><span class="record-secondary">${statusLabel(item)}${item.approvalStatus === "declined" && item.declineReason ? ` · ${esc(item.declineReason)}` : ""}</span><button class="button secondary small" type="button" data-action="edit-announcement" data-id="${esc(item.id)}">Edit</button>${role === "administrator" && item.approvalStatus === "pending" ? `<a class="text-button" href="${routeUrl("administrator", "approvals")}">Review in approval queue</a>` : ""}</div>` : ""}
   </div>`).join("");
@@ -639,48 +683,47 @@ function reportFormMarkup() {
   const defaultArea = draft.area || currentUser.area || locationAreas()[0];
   const selectedReportArea = defaultArea;
   return `
-    <div class="grid-main-side">
-      <section class="panel"><div class="panel-body">
-        <div class="wizard-progress" aria-label="Step ${reportDraft?.step === "review" ? "2" : "1"} of 2">
-          <div class="wizard-step ${reportDraft?.step === "review" ? "done" : "current"}"><strong>${reportDraft?.step === "review" ? icon("check") : "1"}</strong><span>Concern details</span></div><span class="wizard-divider"></span>
-          <div class="wizard-step ${reportDraft?.step === "review" ? "current" : ""}"><strong>2</strong><span>Review & submit</span></div>
-        </div>
-        ${reportDraft?.step === "review" ? `
-          <div class="content-stack">
-            <div class="notice-bar"><span>Concern</span><strong>${esc(draft.category)}</strong></div>
-            <div class="notice-bar"><span>Purok or area</span><strong>${esc(draft.area || defaultArea)}</strong></div>
-            <div class="notice-bar"><span>Street or landmark</span><strong>${esc(draft.locationDetail)}</strong></div>
-            <div class="notice-bar"><span>Map pin</span><strong>${draft.latitude == null ? "Not selected" : `${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`}</strong></div>
-            <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
-            <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
-            <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
-          </div>` : `
-          <form id="report-draft-form" class="form-stack">
-            <div class="form-grid">
-              ${selectField("Concern category", "category", CATEGORIES, draft.category || "", { required: true, placeholder: "Choose a concern type" })}
-              ${inputField("Purok or area", "area", draft.area || selectedReportArea, { required: true, placeholder: "e.g. Purok 3" })}
-              ${inputField("Street or nearby landmark", "locationDetail", draft.locationDetail || "", { required: true, maxLength: 250 })}
-              <div class="form-field span-all report-map-picker">
-                <input type="hidden" id="report-latitude" name="latitude" value="${esc(reportMapSelection?.latitude ?? "")}">
-                <input type="hidden" id="report-longitude" name="longitude" value="${esc(reportMapSelection?.longitude ?? "")}">
-                <div class="button-row">
-                  <button class="button secondary" type="button" data-action="toggle-report-map" aria-expanded="${reportMapExpanded}">${reportMapExpanded ? "Hide map" : "Choose location on map"}</button>
-                  <button class="button secondary" type="button" data-action="clear-report-map-pin" ${reportMapSelection ? "" : "hidden"}>Clear pin</button>
-                </div>
-                <div class="report-map-region" id="report-map-region" ${reportMapExpanded ? "" : "hidden"}>
-                  <p class="visually-hidden" id="report-map-status" role="status" aria-live="polite"></p>
-                  <div class="report-map-canvas" id="report-map" role="application" aria-label="OpenStreetMap. Click to place a location pin, or drag the pin to adjust it."></div>
-                </div>
-              </div>
-              <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
-              <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
-            </div>
-            <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
-          </form>`}
-      </div></section>
-      <div class="content-stack">
+    <section class="panel"><div class="panel-body">
+      <div class="wizard-progress" aria-label="Step ${reportDraft?.step === "review" ? "2" : "1"} of 2">
+        <div class="wizard-step ${reportDraft?.step === "review" ? "done" : "current"}"><strong>${reportDraft?.step === "review" ? icon("check") : "1"}</strong><span>Concern details</span></div><span class="wizard-divider"></span>
+        <div class="wizard-step ${reportDraft?.step === "review" ? "current" : ""}"><strong>2</strong><span>Review & submit</span></div>
       </div>
-    </div>`;
+      ${reportDraft?.step === "review" ? `
+        <div class="content-stack">
+          <div class="notice-bar"><span>Concern</span><strong>${esc(draft.category)}</strong></div>
+          <div class="notice-bar"><span>Priority</span><strong>${esc(draft.priority || "Medium")}</strong></div>
+          <div class="notice-bar"><span>Purok or area</span><strong>${esc(draft.area || defaultArea)}</strong></div>
+          <div class="notice-bar"><span>Street or landmark</span><strong>${esc(draft.locationDetail)}</strong></div>
+          <div class="notice-bar"><span>Map pin</span><strong>${draft.latitude == null ? "Not selected" : `${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`}</strong></div>
+          <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
+          <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
+          <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
+        </div>` : `
+        <form id="report-draft-form" class="form-stack">
+          <div class="form-grid">
+            ${selectField("Concern category", "category", CATEGORIES, draft.category || "", { required: true, placeholder: "Choose a concern type" })}
+            ${selectField("Risk or priority", "priority", REPORT_PRIORITIES, draft.priority || "Medium", { required: true })}
+            ${selectField("Purok or area", "area", AREAS, draft.area || selectedReportArea || AREAS[0], { required: true })}
+            ${inputField("Street or nearby landmark", "locationDetail", draft.locationDetail || "", { required: true, maxLength: 250 })}
+            <div class="form-field span-all report-map-picker">
+              <input type="hidden" id="report-latitude" name="latitude" value="${esc(reportMapSelection?.latitude ?? "")}">
+              <input type="hidden" id="report-longitude" name="longitude" value="${esc(reportMapSelection?.longitude ?? "")}">
+              <div class="button-row">
+                <button class="button secondary" type="button" data-action="toggle-report-map" aria-expanded="${reportMapExpanded}">${reportMapExpanded ? "Hide map" : "Choose location on map"}</button>
+                <button class="button secondary" type="button" data-action="use-current-location">${reportMapGeoLocating ? "Locating…" : "Choose my current location"}</button>
+                <button class="button secondary" type="button" data-action="clear-report-map-pin" ${reportMapSelection ? "" : "hidden"}>Clear pin</button>
+              </div>
+              <div class="report-map-region" id="report-map-region" ${reportMapExpanded ? "" : "hidden"}>
+                <p class="visually-hidden" id="report-map-status" role="status" aria-live="polite"></p>
+                <div class="report-map-canvas" id="report-map" role="application" aria-label="OpenStreetMap. Click to place a location pin, or drag the pin to adjust it."></div>
+              </div>
+            </div>
+            <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
+            <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
+          </div>
+          <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
+        </form>`}
+    </div></section>`;
 }
 
 function reportPage() {
@@ -721,16 +764,6 @@ function reportsPage(role, view) {
       : `<button class="button secondary small" type="button" data-action="export-reports">${icon("download")} Export reports</button>`;
   const body = `
     <div class="content-stack">
-      ${role === "official" && view === "history" ? "" : role === "resident" && view !== "reports" ? statsStrip([
-        stat("All reports", filtered.length, "Your submitted concerns"),
-        stat("Submitted", filtered.filter((report) => report.status === "Submitted").length, "Received"),
-        stat("In progress", filtered.filter((report) => ["Under Review", "In Progress"].includes(report.status)).length, "Being followed up"),
-        stat("Resolved", filtered.filter((report) => report.status === "Resolved").length, "Marked as addressed"),
-      ]) : role !== "resident" ? statsStrip([
-        stat("All concerns", data.reports.length, "Recorded concerns"),
-        stat("Pending review", data.reports.filter((report) => ["Submitted", "Under Review"].includes(report.status)).length, "Submitted or under review"),
-        stat("In progress", data.reports.filter((report) => report.status === "In Progress").length, "Being addressed"),
-      ]) : ""}
       ${panel(role === "official" && view === "history" ? "Report activity" : view === "history" ? "Past and current concerns" : role === "official" ? "Concern queue" : "Reports", `${role === "official" && view === "history" ? "" : view === "reports" ? reportFilters(userRows, activeFilter) : officialQueue ? officialReportFilters(userRows, activeFilter) : ""}${searchToolbar(role === "official" && view === "history" ? "Search report activity" : undefined)}<div class="mt-16" data-report-table>${role === "official" && view === "history" ? reportHistoryRows(userRows) : reportRows(view === "history" ? filtered : activeRows, role)}</div>${resolvedRows.length && view !== "history" ? `<div class="section-heading mt-20"><div><h2>Resolved concerns</h2><p>${resolvedRows.length} marked as addressed</p></div></div><div data-report-table>${reportRows(resolvedRows, role)}</div>` : ""}`, { subtitle: role === "resident" && view === "reports" ? "" : subtitle, action: exportActions })}
     </div>`;
   return page(role, view, body, primaryAction);
@@ -777,6 +810,7 @@ function approvalsPage() {
       <span class="approval-tag">Announcement</span>
       <h4>${esc(item.title)}</h4>
       <p>${esc(item.detail)}</p>
+      ${item.isEvent ? `<div class="announcement-event-meta">${announcementEventMarkup(item)}</div>` : ""}
       <span class="record-secondary">${esc(dateLabel(item.date))}</span>
     </div>
     <div class="approval-actions">
@@ -810,7 +844,7 @@ function profilePage(role) {
                 ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
                 ${inputField("Email address", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
                 ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
-                ${role === "resident" ? inputField("Purok or area", "area", currentUser.area || "Palsara", { readonly: true }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
+                ${role === "resident" ? selectField("Purok or area", "area", locationAreas().length ? locationAreas() : AREAS, currentUser.area || (locationAreas().length ? locationAreas()[0] : "Purok 1"), { required: true }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
                 ${role === "resident" ? inputField("Recovery email", "recoveryEmail", currentUser.recoveryEmail || "", { type: "email", placeholder: "Optional", autocomplete: "email", help: "Used to receive password reset links." }) : ""}
               </div>
               <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
@@ -961,7 +995,7 @@ function loginMarkup() {
       </section>
       <section class="login-pane" aria-labelledby="login-title">
         <div class="login-box">
-          <h1 id="login-title">Welcome to CommUnity</h1>
+          <h1 id="login-title">Sign in to CommUnity</h1>
           <form class="login-form" id="login-form">
             ${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "username" })}
             <div class="form-field"><label for="password">Password</label><div class="password-field"><input class="input" id="password" name="password" type="password" required autocomplete="current-password"><button class="password-toggle" type="button" data-action="toggle-password" aria-label="Show password">${icon("eye")}</button></div></div>
@@ -985,12 +1019,11 @@ function forgotPasswordMarkup() {
       </section>
       <section class="login-pane" aria-labelledby="forgot-title"><div class="login-box">
         <h1 id="forgot-title">Forgot password</h1>
-        <p class="field-help">Enter the recovery email saved on your account. If it matches, a reset link will be sent there.</p>
+        <p class="field-help">Enter the recovery email tied to your account. If an account uses that recovery email, a password reset link will be sent to it.</p>
         <form class="login-form" id="forgot-password-form">
           ${inputField("Recovery email", "recoveryEmail", "", { required: true, type: "email", autocomplete: "email" })}
-          <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Send reset link</button></div>
+          <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Send reset request</button></div>
         </form>
-        <p class="login-register" style="margin-top:12px"><a href="#" data-action="request-admin-reset">Can't access your email? Request admin help</a></p>
       </div></section>
     </main>`;
 }
@@ -1006,7 +1039,7 @@ function resetPasswordMarkup(token) {
       </section>
       <section class="login-pane" aria-labelledby="reset-title"><div class="login-box">
         <h1 id="reset-title">Reset password</h1>
-        <p class="field-help">Enter your new password. The reset link expires in 15 minutes.</p>
+        <p class="field-help">Enter your new password.</p>
         <form class="login-form" id="reset-password-form">
           <input type="hidden" name="token" value="${esc(token)}">
           ${inputField("New password", "newPassword", "", { required: true, type: "password", minLength: 8, autocomplete: "new-password" })}

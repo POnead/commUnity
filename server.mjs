@@ -191,7 +191,13 @@ async function loadSmtpSettings(db, encryptionKey, fallback) {
 function cookieValue(request, name) {
   for (const part of (request.headers.cookie || "").split(";")) {
     const [key, ...value] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(value.join("="));
+    if (key === name) {
+      try {
+        return decodeURIComponent(value.join("="));
+      } catch {
+        return "";
+      }
+    }
   }
   return "";
 }
@@ -570,12 +576,15 @@ async function migrate(db) {
   `;
   if (typeof db.exec === "function") await db.exec(schema);
   else await db.query(schema);
-  await db.query(
-    "INSERT INTO role_permissions (role, permission, enabled) VALUES " +
-    Object.entries(PERMISSIONS).flatMap(([role, entries]) => Object.entries(entries).map(([permission, enabled]) =>
-      `('${role}', '${permission}', ${enabled})`)).join(", ") +
-    " ON CONFLICT (role, permission) DO NOTHING",
+  const permissionRows = Object.entries(PERMISSIONS).flatMap(([role, entries]) =>
+    Object.entries(entries).map(([permission, enabled]) => [role, permission, enabled])
   );
+  for (const [role, permission, enabled] of permissionRows) {
+    await db.query(
+      "INSERT INTO role_permissions (role, permission, enabled) VALUES ($1, $2, $3) ON CONFLICT (role, permission) DO NOTHING",
+      [role, permission, enabled]
+    );
+  }
 }
 
 export async function withTransaction(db, work) {
@@ -2077,6 +2086,7 @@ async function handleReports(request, response, db, options, user) {
   if (reportPhotoMatch && request.method === "GET") {
     requireRole(user, ROLES);
     const reportId = decodeURIComponent(reportPhotoMatch[1]);
+    if (!validId(reportId)) throw new HttpError(404, "The report photo could not be found.");
     const position = Number(reportPhotoMatch[2]);
     const report = await db.query("SELECT user_email FROM reports WHERE id=$1", [reportId]);
     if (!report.rows.length) throw new HttpError(404, "The report photo could not be found.");

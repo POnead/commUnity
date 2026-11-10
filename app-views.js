@@ -200,9 +200,11 @@ function reportRows(reports, role) {
       ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
       : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
     const priorityCell = `<div class="record-meta" role="cell" data-label="Priority"><span class="status" data-status="${esc(normalizeStatus(priority))}">${esc(priority)}</span></div>`;
+    const statusCell = `<div role="cell" data-label="Status">${statusPill(report.status)}</div>`;
+    const actionsCell = `<div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>`;
+    const ordered = role === "resident" ? `${priorityCell}${second}${third}` : `${second}${priorityCell}${third}`;
     return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status} ${priority}`.toLowerCase())}">
-      ${first}${second}${priorityCell}${third}<div role="cell" data-label="Status">${statusPill(report.status)}</div>
-      <div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>
+      ${first}${ordered}${statusCell}${actionsCell}
     </div>`;
   }).join("");
   return `<div class="records" data-page-size="10" role="table" aria-label="Community concerns"><div class="record-row record-head" role="row">${headers.map((header) => `<span role="columnheader">${esc(header)}</span>`).join("")}</div>${cells}</div>`;
@@ -696,7 +698,7 @@ function reportFormMarkup() {
           <div class="notice-bar"><span>Street or landmark</span><strong>${esc(draft.locationDetail)}</strong></div>
           <div class="notice-bar"><span>Map pin</span><strong>${draft.latitude == null ? "Not selected" : `${draft.latitude.toFixed(6)}, ${draft.longitude.toFixed(6)}`}</strong></div>
           <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
-          <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
+          <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${esc(photo.previewUrl)}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
           <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
         </div>` : `
         <form id="report-draft-form" class="form-stack">
@@ -719,7 +721,7 @@ function reportFormMarkup() {
               </div>
             </div>
             <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
-            <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${photo.previewUrl}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
+            <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${esc(photo.previewUrl)}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
           </div>
           <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
         </form>`}

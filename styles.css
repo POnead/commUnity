@@ -39,14 +39,15 @@ html[data-theme="resident"] {
 }
 
 html[data-theme="official"] {
-  --page: #f0fdfa;
-  --surface-soft: #ccfbf1;
+  --page: #f5f8f7;
+  --surface-soft: #eef3f1;
+  --surface-hover: #e7eded;
   --accent: #0f766e;
   --accent-strong: #115e59;
-  --accent-soft: #ccfbf1;
-  --accent-wash: #f0fdfa;
-  --accent-ink: #134e4a;
-  --line: #ccfbf1;
+  --accent-soft: #dcebe8;
+  --accent-wash: #f0f5f4;
+  --accent-ink: #12453f;
+  --line: #d9e2de;
 }
 
 html[data-theme="admin"] {
@@ -3570,7 +3571,6 @@ a:hover {
   gap: 10px;
   padding: 16px 18px;
   border: 1px solid var(--line);
-  border-top: 3px solid var(--card-accent, var(--accent));
   border-radius: 12px;
   background: var(--surface);
   width: 100%;

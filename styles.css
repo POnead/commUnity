@@ -143,7 +143,7 @@ a:hover {
   z-index: 20;
   top: 8px;
   left: 8px;
-  padding: 10px 14px;
+  padding: 12px 14px;
   transform: translateY(-160%);
   border-radius: var(--radius-small);
   background: var(--ink);
@@ -2971,7 +2971,7 @@ a:hover {
   }
 
   .page-heading-actions .button {
-    min-height: 40px;
+    min-height: 44px;
   }
 
   .grid-main-side,

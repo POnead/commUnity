@@ -16,7 +16,24 @@ let announcementMapElement = null;
 let announcementMapMarker = null;
 let announcementDetailMap = null;
 let announcementDetailMapElement = null;
+let profilePhotoFile = null;
+let profilePhotoPreview = null;
 let lastCalendarClick = { date: "", at: 0 };
+
+// Community concern locations must be within this radius of Balete, Batangas.
+const BALETE_CENTER = PALSARA_CENTER; // [14.01799, 121.09465]
+const BALETE_NEAR_RADIUS_M = 2000; // 2 km
+
+function haversineDistanceM(lat1, lon1, lat2, lon2) {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const earthRadiusM = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * earthRadiusM * Math.asin(Math.sqrt(a));
+}
 
 function routeState() {
   const path = currentPath();
@@ -956,10 +973,23 @@ async function updateProfile(form) {
     confirmLabel: "Save profile",
   });
   if (!confirmed) return;
+  let photoUrl = "";
+  if (profilePhotoFile) {
+    const photoForm = new FormData();
+    photoForm.append("photos", profilePhotoFile, profilePhotoFile.name);
+    const photoResponse = await fetch("/api/profile-photo", { method: "POST", body: photoForm });
+    const photoResult = await photoResponse.json();
+    if (!photoResponse.ok) throw new Error(photoResult.error || "The profile photo could not be uploaded.");
+    photoUrl = photoResult.photoUrl;
+    profilePhotoFile = null;
+    profilePhotoPreview = null;
+    const input = app.querySelector("#profile-photo");
+    if (input) input.value = "";
+  }
   const response = await fetch("/api/profile", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, area, phone: String(form.get("phone") || "").trim(), recoveryEmail: String(form.get("recoveryEmail") || "").trim() }),
+    body: JSON.stringify({ name, area, phone: String(form.get("phone") || "").trim(), recoveryEmail: String(form.get("recoveryEmail") || "").trim(), photoUrl }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
@@ -1408,6 +1438,14 @@ async function useCurrentLocation() {
     if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
         !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
       throw new Error("Invalid location received.");
+    }
+    const distanceM = haversineDistanceM(latitude, longitude, BALETE_CENTER[0], BALETE_CENTER[1]);
+    if (distanceM > BALETE_NEAR_RADIUS_M) {
+      const km = Math.round(distanceM / 1000);
+      const limitKm = Math.round(BALETE_NEAR_RADIUS_M / 1000);
+      if (status) status.textContent = `Your location is ${km} km from Balete, Batangas — concern locations must be within ${limitKm} km.`;
+      toast(`Location must be near Balete, Batangas. Yours is ${km} km away.`, "error");
+      return;
     }
     setReportMapPin({ lat: latitude, lng: longitude });
     if (status) status.textContent = `Your location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}.`;
@@ -2182,6 +2220,39 @@ async function handlePhotoSelection(input) {
   }
 }
 
+async function handleProfilePhotoSelection(input) {
+  const files = Array.from(input.files || []);
+  if (!files.length) {
+    profilePhotoFile = null;
+    profilePhotoPreview = null;
+    return;
+  }
+  const file = files[0];
+  try {
+    const prepared = await compressPhoto(file);
+    profilePhotoFile = prepared.file;
+    profilePhotoPreview = prepared.previewUrl;
+    input.value = "";
+    const avatarEl = app.querySelector(".profile-intro .avatar");
+    if (avatarEl) {
+      let img = avatarEl.querySelector("img");
+      if (!img) {
+        img = document.createElement("img");
+        avatarEl.textContent = "";
+        avatarEl.removeAttribute("aria-hidden");
+        avatarEl.append(img);
+      }
+      img.src = profilePhotoPreview;
+      img.alt = "Profile photo preview";
+    }
+  } catch (error) {
+    profilePhotoFile = null;
+    profilePhotoPreview = null;
+    console.error("CommUnity could not prepare the selected profile photo.", error);
+    toast(error.message, "error");
+  }
+}
+
 function showFatal(error) {
   console.error("CommUnity could not start.", error);
   app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>CommUnity could not start</h1><p>${esc(error.message || "Check that the Node server is running and reload this page.")}</p>`;
@@ -2282,6 +2353,7 @@ app.addEventListener("input", (inputEvent) => {
 app.addEventListener("change", (changeEvent) => {
   const target = changeEvent.target;
   if (target.matches("#report-photos")) handlePhotoSelection(target);
+  else if (target.matches("#profile-photo")) handleProfilePhotoSelection(target);
   else if (target.matches("#announcement-is-event")) {
     announcementMapExpanded = target.checked;
     const region = app.querySelector("#announcement-map-region");

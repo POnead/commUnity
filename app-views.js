@@ -47,7 +47,11 @@ function canOpenPage(user, pageName) {
 }
 
 function userAvatar(user, extra = "") {
-  return `<span class="avatar ${extra}" aria-hidden="true">${esc(initials(user?.name || ""))}</span>`;
+  const name = user?.name || "";
+  if (user?.photoUrl) {
+    return `<span class="avatar ${extra}"><img src="${esc(user.photoUrl)}" alt="Profile photo of ${esc(name)}"></span>`;
+  }
+  return `<span class="avatar ${extra}" aria-hidden="true">${esc(initials(name))}</span>`;
 }
 
 function checkDataConsistency() {
@@ -838,7 +842,7 @@ function profilePage(role) {
     <div class="profile-layout">
       <div class="content-stack">
         <section class="panel">
-          <div class="profile-intro">${userAvatar(currentUser, "large")}<div><strong>${esc(currentUser.name)}</strong><span>${esc(ROLES[role])} · ${esc(currentUser.area || "Palsara")}</span></div></div>
+          <div class="profile-intro"><label class="profile-avatar" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}</label><div><strong>${esc(currentUser.name)}</strong><span>${esc(ROLES[role])} · ${esc(currentUser.area || "Palsara")}</span></div></div>
           <div class="panel-body">
             <form id="profile-form" class="form-stack">
               <div class="section-heading"><div><h2>Personal information</h2></div></div>
@@ -849,6 +853,7 @@ function profilePage(role) {
                 ${role === "resident" ? selectField("Purok or area", "area", locationAreas().length ? locationAreas() : AREAS, currentUser.area || (locationAreas().length ? locationAreas()[0] : "Purok 1"), { required: true }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
                 ${role === "resident" ? inputField("Recovery email", "recoveryEmail", currentUser.recoveryEmail || "", { type: "email", placeholder: "Optional", autocomplete: "email", help: "Used to receive password reset links." }) : ""}
               </div>
+              <input type="file" id="profile-photo" accept="image/jpeg,image/png" class="visually-hidden">
               <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
             </form>
           </div>

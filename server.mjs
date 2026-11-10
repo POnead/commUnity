@@ -231,8 +231,8 @@ function jsonEqual(left, right) {
 
 function publicUser(user) {
   if (!user) return null;
-  const { id, email, name, area, phone, role, status, joinedAt, workingHours, availableDays, requiresPasswordChange, recoveryEmail, resetRequested } = user;
-  return { id, email, name, area, phone, role, status, joinedAt, workingHours, availableDays, requiresPasswordChange: Boolean(requiresPasswordChange), recoveryEmail: recoveryEmail || "", resetRequested: Boolean(resetRequested) };
+  const { id, email, name, area, phone, role, status, joinedAt, workingHours, availableDays, requiresPasswordChange, recoveryEmail, resetRequested, photoUrl } = user;
+  return { id, email, name, area, phone, role, status, joinedAt, workingHours, availableDays, requiresPasswordChange: Boolean(requiresPasswordChange), recoveryEmail: recoveryEmail || "", resetRequested: Boolean(resetRequested), photoUrl: photoUrl || "" };
 }
 
 function validateAccount({ email, name, area, phone = "" }) {
@@ -551,6 +551,7 @@ async function migrate(db) {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason text NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email text NOT NULL DEFAULT '';
     ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_requested boolean NOT NULL DEFAULT false;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS approval_status text NOT NULL DEFAULT 'approved';
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS decline_reason text NOT NULL DEFAULT '';
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS is_event boolean NOT NULL DEFAULT false;
@@ -637,11 +638,11 @@ async function readFullState(db, user = null) {
   const state = makeDefaultState();
   if (!user || user.role === "administrator") {
     const users = user
-      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
-      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
+      ? await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", photo_url AS \"photoUrl\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id <> $1 ORDER BY joined_at, email", [user.id])
+      : await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", deactivation_reason AS \"deactivationReason\", recovery_email AS \"recoveryEmail\", reset_requested AS \"resetRequested\", photo_url AS \"photoUrl\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users ORDER BY joined_at, email");
     state.users = users.rows;
   } else if (user.role === "resident") {
-    const users = await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
+    const users = await db.query("SELECT id, email, name, area, phone, role, status, working_hours AS \"workingHours\", available_days AS \"availableDays\", requires_password_change AS \"requiresPasswordChange\", photo_url AS \"photoUrl\", to_char(joined_at, 'YYYY-MM-DD') AS \"joinedAt\" FROM users WHERE id=$1", [user.id]);
     state.users = users.rows;
   }
 
@@ -770,7 +771,7 @@ async function getSessionUser(request, db) {
   const result = await db.query(`
     SELECT u.id, u.email, u.name, u.area, u.phone, u.role, u.status, u.working_hours AS "workingHours",
       u.available_days AS "availableDays", u.permission_overrides AS "permissionOverrides",
-      u.requires_password_change AS "requiresPasswordChange", to_char(u.joined_at, 'YYYY-MM-DD') AS "joinedAt"
+      u.requires_password_change AS "requiresPasswordChange", u.photo_url AS \"photoUrl\", to_char(u.joined_at, 'YYYY-MM-DD') AS "joinedAt"
     FROM web_sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = $1 AND s.expires_at > now() AND u.status = 'Active'
   `, [hash(token)]);
@@ -1387,6 +1388,7 @@ const apiHandlers = new Map([
   ["announcements", handleAnnouncements],
   ["calendar", handleCalendar],
   ["profile", handleProfile],
+  ["profile-photo", handleProfilePhotos],
   ["session", handleSession],
   ["state", handleState],
   ["users", handleUsers],
@@ -2142,6 +2144,64 @@ async function handleReportPhotos(request, response, db, options, user) {
       throw error;
     }
     sendJson(response, 201, { photos: uploaded.map(({ name, photoUrl }) => ({ name, photoUrl })) });
+    return;
+  }
+  sendJson(response, 404, { error: "API endpoint not found." });
+}
+
+async function handleProfilePhotos(request, response, db, options, user) {
+  const { uploadsDir } = options;
+  const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/profile-photo" && request.method === "POST") {
+    requireRole(user, ROLES);
+    const files = await readMultipart(request, { maxFiles: 1 });
+    if (!files.length) throw new HttpError(400, "Choose a JPG or PNG profile photo.");
+    const file = files[0];
+    const extension = PHOTO_TYPES.get(file.type);
+    if (!extension) throw new HttpError(400, `${file.name}: choose a JPG or PNG image.`);
+    if (file.data.length > MAX_PHOTO_BYTES) throw new HttpError(413, `${file.name}: photo files must be 5 MB or smaller.`);
+    const profileDir = path.join(uploadsDir, "profiles");
+    await mkdir(profileDir, { recursive: true });
+    const filename = `${user.id}${extension}`;
+    const filePath = path.join(profileDir, filename);
+    const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}`;
+    try {
+      await writeFile(filePath, file.data, { flag: "wx" });
+      await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
+    } catch (error) {
+      await unlink(filePath).catch(() => {});
+      throw error;
+    }
+    sendJson(response, 201, { photoUrl });
+    return;
+  }
+  const profilePhotoMatch = url.pathname.match(/^\/api\/profile-photo\/([^/]+)$/);
+  if (profilePhotoMatch && request.method === "GET") {
+    requireRole(user, ROLES);
+    const requestedId = decodeURIComponent(profilePhotoMatch[1]);
+    if (requestedId !== user.id && user.role !== "administrator") {
+      throw new HttpError(403, "You cannot view this profile photo.");
+    }
+    let image = null;
+    let filename = null;
+    for (const ext of [".jpg", ".png"]) {
+      const candidate = path.join(uploadsDir, "profiles", `${requestedId}${ext}`);
+      try {
+        image = await readFile(candidate);
+        filename = `${requestedId}${ext}`;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!image || !filename) throw new HttpError(404, "The profile photo could not be found.");
+    response.writeHead(200, {
+      "Cache-Control": "private, no-store",
+      "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
+      "Content-Length": image.length,
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(image);
     return;
   }
   sendJson(response, 404, { error: "API endpoint not found." });

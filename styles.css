@@ -521,7 +521,7 @@ a:hover {
 
 .nav-link {
   display: flex;
-  min-height: 36px;
+  min-height: 40px;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
@@ -3849,5 +3849,26 @@ a:hover {
 
   .calendar-cell--pending::after {
     background: var(--warning);
+  }
+}
+
+/* Touch ergonomics: on phone-sized viewports every interactive control keeps a 44px hit area (DESIGN.md) */
+@media (max-width: 768px) {
+  .button,
+  .button.small,
+  .button.secondary,
+  .button.tertiary,
+  .button.danger,
+  .icon-button,
+  .nav-link,
+  .filter-button,
+  .text-button {
+    min-height: 44px;
+  }
+
+  .icon-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
   }
 }

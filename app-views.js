@@ -298,7 +298,7 @@ function reportDetail(report, role) {
           </div></section>
           ${reportLocation}
           ${panel("Attached photos", photos)}
-          ${followUpForm ? panel("Need to add context?", followUpForm) : ""}
+          ${followUpForm}
           ${role === "official" ? panel("Record an update", statusForm) : ""}
         </div>
         <div class="content-stack">

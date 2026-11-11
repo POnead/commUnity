@@ -1161,6 +1161,12 @@ function confirmLeaveWithUnsavedPermissions() {
 
 function activityLogPage() {
   const rows = [...data.activities].sort((a, b) => asDate(b.at) - asDate(a.at));
+  const archived = [...(data.archivedActivities || [])].sort((a, b) => asDate(b.archivedAt || b.at) - asDate(a.archivedAt || a.at));
+  let archivedPanel = "";
+  if (archived.length) {
+    const archivedRows = archived.map((item) => `<div class="record-row activity-record filter-item" role="row" data-search="${esc(`${item.actor} ${item.action} ${item.detail} ${item.role} ${item.result}`.toLowerCase())}"><div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span></div><div class="record-date" role="cell" data-label="Original date">${esc(dateTimeLabel(item.at))}</div><div class="record-meta" role="cell" data-label="Archived at">${esc(dateTimeLabel(item.archivedAt))}</div><div class="record-meta" role="cell" data-label="Workspace">${esc(ROLES[item.role] || item.role)}</div><div role="cell" data-label="Result">${statusPill("active", item.result)}</div><div role="cell" data-label=""></div></div>`).join("");
+    archivedPanel = panel("Archived activity (older than 90 days)", `<div class="records mt-16" data-page-size="10" role="table" aria-label="Archived activity log"><div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Original date</span><span role="columnheader">Archived at</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>${archivedRows || `<div class="empty-state"><strong>No archived activity</strong>Records older than 90 days are archived here.</div>`}</div>`, { subtitle: "Archived records are retained and cannot be silently deleted." });
+  }
   const body = `
     <div class="content-stack">
       ${statsStrip([
@@ -1168,11 +1174,13 @@ function activityLogPage() {
         stat("Account changes", rows.filter((item) => /account|role|profile/i.test(item.action)).length, "User and role updates"),
         stat("Report activity", rows.filter((item) => /report|concern/i.test(`${item.action} ${item.detail}`)).length, "Concern workflows"),
         stat("Service activity", rows.filter((item) => /collection|schedule/i.test(`${item.action} ${item.detail}`)).length, "Collection workflows"),
+        stat("Archived records", archived.length, "Activity older than 90 days"),
       ])}
       ${panel("Activity Log", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search activity</span><input class="input" type="search" data-search-input autocomplete="off"></label><button class="button secondary small" type="button" data-action="export-activity-log">${icon("download")} Export CSV</button></div>
       <div class="records mt-16" data-page-size="10" role="table" aria-label="Activity log"><div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Date and time</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>
         ${rows.map((item) => `<div class="record-row activity-record filter-item" role="row" data-search="${esc(`${item.actor} ${item.action} ${item.detail} ${item.role} ${item.result}`.toLowerCase())}"><div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span></div><div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div><div class="record-meta" role="cell" data-label="Workspace">${esc(ROLES[item.role] || item.role)}</div><div role="cell" data-label="Result">${statusPill("active", item.result)}</div><div role="cell" data-label=""></div></div>`).join("") || `<div class="empty-state"><strong>No activity recorded</strong>Actions recorded in this workspace will appear here.</div>`}
       </div>`, { subtitle: "Actions recorded in this workspace" })}
+      ${archivedPanel}
     </div>`;
   return page("administrator", "activity", body);
 }

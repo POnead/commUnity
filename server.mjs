@@ -859,8 +859,10 @@ async function readFullState(db, user = null) {
   `, user ? [user.email] : []);
   state.notifications = notifications.rows.map((item) => ({ ...item, reportId: item.reportId || "", createdAt: timestamp(item.createdAt) }));
   if (!user || user.role === "administrator") {
-    const activities = await db.query("SELECT id, actor, role, action, detail, at, result, result_reason AS \"resultReason\", affected_id AS \"affectedId\", client_ip AS \"clientIp\" FROM activities ORDER BY at DESC, id");
+    const activities = await db.query("SELECT id, actor, role, action, detail, at, result, result_reason AS \"resultReason\", affected_id AS \"affectedId\", client_ip AS \"clientIp\" FROM activities ORDER BY at DESC, id LIMIT 200");
     state.activities = activities.rows.map((item) => ({ ...item, at: timestamp(item.at) }));
+    const archived = await db.query("SELECT id, actor, role, action, detail, at, result, result_reason AS \"resultReason\", affected_id AS \"affectedId\", client_ip AS \"clientIp\", archived_at AS \"archivedAt\" FROM activity_archive ORDER BY archived_at DESC, id LIMIT 200");
+    state.archivedActivities = archived.rows.map((item) => ({ ...item, at: timestamp(item.at), archivedAt: timestamp(item.archivedAt) }));
   }
   const permissions = await db.query("SELECT role, permission, enabled FROM role_permissions ORDER BY role, permission");
   for (const { role, permission, enabled } of permissions.rows) {
@@ -911,6 +913,7 @@ function stateForRole(state, user) {
     reports: user.role === "resident" ? state.reports.filter((item) => item.userEmail === user.email) : state.reports,
     notifications: state.notifications.filter((item) => item.targetEmail === user.email),
     activities: user.role === "administrator" ? state.activities : [],
+    archivedActivities: user.role === "administrator" ? state.archivedActivities : [],
     recyclingLocations: user.role === "administrator"
       ? state.recyclingLocations
       : state.recyclingLocations.filter((item) => item.active),
@@ -1103,10 +1106,7 @@ async function insertActivity(db, user, action, detail, { result = "Success", re
 }
 
 async function logSecurityEvent(db, actor, role, action, detail, result, { resultReason = "", affectedId = "", clientIp = "" } = {}) {
-  await db.query(
-    "INSERT INTO activities (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip) VALUES ($1,$2,$3,$4,$5,now(),$6,$7,$8,$9)",
-    [randomUUID(), actor || "system", role || "system", action, detail.slice(0, 1000), result, resultReason.slice(0, 500), affectedId, clientIp || ""],
-  );
+  await insertActivity(db, { name: actor || "system", role: role || "system" }, action, detail, { result, resultReason, affectedId, clientIp });
 }
 
 async function syncNotifications(db, oldItems, newItems, user) {
@@ -1358,12 +1358,8 @@ async function syncRecyclingLocations(db, oldLocations, newLocations) {
   }
 }
 
-async function syncActivities(db, oldItems, newItems, user, administrator) {
-  if (administrator) {
-    validateActivityAppend(oldItems, newItems, user);
-  } else {
-    validateActivityAppend(oldItems, newItems, user);
-  }
+async function syncActivities(db, oldItems, newItems, user) {
+  validateActivityAppend(oldItems, newItems, user);
   for (const item of newItems.slice(oldItems.length)) {
     await db.query("INSERT INTO activities (id,actor,role,action,detail,at,result) VALUES ($1,$2,$3,$4,$5,$6,$7)",
       [item.id, item.actor, item.role, item.action, item.detail, item.at, item.result]);
@@ -1374,6 +1370,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
   if (!body || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new HttpError(400, "A valid database revision is required.");
   if (body.data && typeof body.data === "object" && !Array.isArray(body.data.calendarEvents)) body.data.calendarEvents = [];
   validateState(body.data);
+  let nextRevision = 0;
   await withTransaction(db, async (transaction) => {
     const db = transaction;
     const revision = await db.query("SELECT revision FROM app_meta WHERE id=1 FOR UPDATE");
@@ -1436,7 +1433,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         await insertNotification(db, user.email, "Report submitted",
           `Your concern ${report.id} was submitted and is now on file.`, report.id);
       }
-      await syncActivities(db, visibleBefore.activities, after.activities, user, false);
+      await syncActivities(db, visibleBefore.activities, after.activities, user);
     } else if (user.role === "official") {
       if (after.users.length || !jsonEqual(visibleBefore.permissions, after.permissions) ||
           !jsonEqual(visibleBefore.accountOverrides || {}, after.accountOverrides || {}) ||
@@ -1524,7 +1521,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       }
       await syncSchedules(db, visibleBefore.schedules, after.schedules, user);
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
-      await syncActivities(db, visibleBefore.activities, after.activities, user, false);
+      await syncActivities(db, visibleBefore.activities, after.activities, user);
     } else {
       requireRole(user, ["administrator"]);
       if (after.users.length !== before.users.length) throw new HttpError(403, "Create accounts through the account management form.");
@@ -1598,12 +1595,12 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         GROUP BY u.id HAVING count(*)=2
       `);
       if (!capableAdmins.rows.length) throw new HttpError(400, "Keep at least one active administrator with both account and role management enabled.");
-      await syncActivities(db, before.activities, after.activities, user, true);
+      await syncActivities(db, before.activities, after.activities, user);
     }
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    nextRevision = Number(revision.rows[0].revision) + 1;
   });
-  await runScheduleReminders(db, { mailer, smtpFrom, appOrigin });
-  return Number((await db.query("SELECT revision FROM app_meta WHERE id=1")).rows[0].revision);
+  return nextRevision;
 }
 
 export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } = {}) {
@@ -1715,9 +1712,11 @@ async function handleApi(request, response, db, options) {
   try {
     await handler(request, response, db, options, user);
   } catch (error) {
-    if (error.status === 403 && user) {
+    if (error.status === 403) {
       const clientAddress = requestClientAddress(request, options.trustedProxyAddresses);
-      await logSecurityEvent(db, user.name, user.role, "Authorization denied", error.message, "Failed", {
+      const actor = user ? user.name : "system";
+      const role = user ? user.role : "system";
+      await logSecurityEvent(db, actor, role, "Authorization denied", error.message, "Failed", {
         resultReason: error.message,
         clientIp: clientAddress,
       }).catch((logError2) => logError("CommUnity could not log authorization denial.", logError2));
@@ -2035,6 +2034,12 @@ async function handleCommunity(request, response, db, options, user) {
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     }
     sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (url.pathname === "/api/community/activity-archive" && request.method === "GET") {
+    requireRole(user, ["administrator"]);
+    const result = await db.query("SELECT id, actor, role, action, detail, at, result, result_reason AS \"resultReason\", affected_id AS \"affectedId\", client_ip AS \"clientIp\", archived_at AS \"archivedAt\" FROM activity_archive ORDER BY archived_at DESC, id LIMIT 200");
+    sendJson(response, 200, { activities: result.rows.map((item) => ({ ...item, at: timestamp(item.at), archivedAt: timestamp(item.archivedAt) })) });
     return;
   }
   sendJson(response, 404, { error: "API endpoint not found." });

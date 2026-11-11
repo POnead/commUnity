@@ -72,15 +72,6 @@ export function createExpressApp({
     request.requestId = createRequestId();
     response.setHeader("X-Request-Id", request.requestId);
     try {
-      if (request.url?.split("?")[0] === "/healthz") {
-        if (request.method !== "GET") {
-          response.writeHead(405, { Allow: "GET" }).end();
-          return;
-        }
-        await db.query("SELECT 1");
-        sendJson(response, 200, { status: "ok" });
-        return;
-      }
       if (request.url?.startsWith("/api/")) {
         next();
         return;

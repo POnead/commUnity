@@ -620,7 +620,7 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.equal(home.headers.get("x-content-type-options"), "nosniff");
     assert.equal(home.headers.get("x-frame-options"), "DENY");
     assert.equal(home.headers.get("x-powered-by"), null);
-    const health = await fetch(`${app.origin}/healthz`);
+    const health = await fetch(`${app.origin}/api/healthz`);
     assert.equal(health.status, 200);
     assert.equal((await health.json()).status, "ok");
     assert.ok(health.headers.get("x-request-id"));
@@ -2981,4 +2981,88 @@ test("analytics page shows report metrics and trends", async () => {
   assert.match(html, /Purok 2/);
   assert.match(html, /Road damage/);
   assert.match(html, /Drainage problem/);
+});
+
+test("authorization denials are logged as security events even without a session", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-authz-audit-"));
+  const app = await startServer(dataDir);
+  try {
+    // No session cookie -> unauthenticated 403 on a protected endpoint
+    const denied = await api(app, "/api/state", {
+      method: "PUT",
+      body: { revision: 0, data: { version: 1, users: [], reports: [], schedules: [], notifications: [], activities: [], announcements: [], locations: [], recyclingLocations: [], permissions: {} } },
+    });
+    assert.equal(denied.status, 401);
+
+    const admin = await signIn(app);
+    // Resident (not admin) hitting admin-only endpoint -> 403 with user
+    const residentCookie = await (() => {
+      return api(app, "/api/auth/register", {
+        method: "POST",
+        body: {
+          name: "Audit Resident",
+          email: "audit-resident@example.test",
+          area: "Purok 1",
+          password: "A-unique-resident-password!",
+          confirmPassword: "A-unique-resident-password!",
+        },
+      }).then((r) => r.headers.get("set-cookie")?.split(";")[0] || "");
+    })();
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const tampered = structuredClone(state.data);
+    tampered.permissions.administrator.manageUsers = false;
+    const elevation = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: tampered },
+    });
+    assert.equal(elevation.status, 403);
+
+    const stateAfter = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const denialEvents = stateAfter.data.activities.filter(
+      (item) => item.action === "Authorization denied" && item.result === "Failed",
+    );
+    assert.ok(denialEvents.length >= 1, "Authorization denial should be logged as a security event");
+    const event = denialEvents[0];
+    assert.ok(event.resultReason);
+    assert.ok(event.clientIp);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("activity archive endpoint returns archived records", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-archive-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    // Insert an activity older than 90 days directly, then run the archive query
+    const oldDate = new Date(Date.now() - 100 * 86400000).toISOString();
+    await app.db.query(
+      "INSERT INTO activities (id, actor, role, action, detail, at, result) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+      ["ARCH-OLD-1", "Archived Actor", "administrator", "Archived action", "Archived detail", oldDate, "Success"],
+    );
+
+    await app.db.query(
+      "INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at) SELECT id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, now() FROM activities WHERE at < now() - interval '90 days'",
+    );
+    await app.db.query("DELETE FROM activities WHERE at < now() - interval '90 days'");
+
+    const archive = await api(app, "/api/community/activity-archive", { cookie: admin.cookie });
+    assert.equal(archive.status, 200);
+    const body = await archive.json();
+    assert.ok(Array.isArray(body.activities));
+    assert.ok(body.activities.some((item) => item.id === "ARCH-OLD-1"), "Archived record should be readable via endpoint");
+    assert.ok(body.activities.some((item) => item.archivedAt), "Archived record should have archivedAt timestamp");
+
+    // Current activities should not include the archived one
+    const currentState = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    assert.ok(!currentState.data.activities.some((item) => item.id === "ARCH-OLD-1"), "Archived record should not appear in current activities");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });

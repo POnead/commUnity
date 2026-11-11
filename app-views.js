@@ -51,9 +51,12 @@ function officialReportFilters(reports, activeFilter) {
 
 function canOpenPage(user, pageName) {
   const permission = requiredPermission(user?.role, pageName);
+  if (!permission) return true;
   const override = user?.email ? data.accountOverrides?.[user.email] : null;
-  const allowed = override && permission ? Boolean(override[permission]) : Boolean(data.permissions?.[user?.role]?.[permission]);
-  return !permission || allowed;
+  const allowed = override && Object.hasOwn(override, permission)
+    ? Boolean(override[permission])
+    : Boolean(data.permissions?.[user?.role]?.[permission]);
+  return allowed;
 }
 
 function userAvatar(user, extra = "") {
@@ -214,7 +217,8 @@ function reportRows(reports, role) {
       ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
       : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
     const priorityCell = `<div class="record-meta" role="cell" data-label="Priority"><span class="status" data-status="${esc(normalizeStatus(priority))}">${esc(priority)}</span></div>`;
-    const statusCell = `<div role="cell" data-label="Status">${statusPill(report.status)}</div>`;
+    const overdueBadge = report.overdue ? `<span class="status-overdue" title="Response deadline passed without a staff response">Overdue</span>` : "";
+    const statusCell = `<div role="cell" data-label="Status">${statusPill(report.status)}${overdueBadge}</div>`;
     const actionsCell = `<div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>`;
     const ordered = role === "resident" ? `${priorityCell}${second}${third}` : `${second}${priorityCell}${third}`;
     return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status} ${priority}`.toLowerCase())}">
@@ -267,13 +271,18 @@ function timelineMarkup(history) {
 
 function reportDetail(report, role) {
   const isResident = role === "resident";
-  const statusForm = role === "official" ? `
+  const nextStatuses = report.status === "Resolved" ? [] : (REPORT_TRANSITIONS[report.status] || []);
+  const needsNote = nextStatuses.length ? `<p class="field-help">Add an update note for the resident. Marking a concern <strong>Resolved</strong> requires a resolution explanation.</p>` : "";
+  const statusForm = role === "official" && nextStatuses.length ? `
     <form class="form-stack" id="report-status-form">
       <input type="hidden" name="reportId" value="${esc(report.id)}">
-      ${selectField("Update status", "status", STATUSES, report.status)}
+      ${selectField("Update status", "status", nextStatuses, report.status)}
       <div class="form-field"><label for="status-note">Update for the resident</label><textarea class="textarea" id="status-note" name="note" maxlength="400"></textarea></div>
+      ${needsNote}
       <div class="form-actions"><button class="button" type="submit">Save report update</button></div>
-    </form>` : "";
+    </form>` : role === "official"
+      ? `<p class="muted small">This concern is resolved. Residents can confirm it was addressed or request that it be reopened.</p>`
+      : "";
   const photos = (report.photos || []).length
     ? `<div class="photo-preview">${report.photos.map((photo) => `<a class="photo-thumb" href="${esc(photo.photoUrl)}" target="_blank" rel="noopener" aria-label="Open report photo ${esc(photo.name)}"><img src="${esc(photo.photoUrl)}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
     : `<p class="muted small">No photo was attached to this report.</p>`;
@@ -311,11 +320,15 @@ function reportDetail(report, role) {
             <div class="notice-bar mt-16"><span>Street or landmark</span><strong>${esc(report.locationDetail || "Not provided")}</strong></div>
             ${role === "administrator" && hasMapPin ? `<div class="notice-bar mt-16"><span>Exact map location</span><a href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
             <div class="inline-between mt-16"><span class="muted small">Submitted ${esc(dateTimeLabel(report.submittedAt))}</span><span class="muted small">Updated ${esc(dateTimeLabel(report.updatedAt))}</span></div>
+            ${report.responseDeadline ? `<div class="notice-bar mt-16"><span>Response deadline</span><strong>${esc(dateLabel(report.responseDeadline))}</strong>${report.overdue ? `<span class="muted small"> · Overdue — no staff response yet</span>` : report.respondedAt ? `<span class="muted small"> · First response ${esc(dateTimeLabel(report.respondedAt))}</span>` : ""}</div>` : ""}
           </div></section>
           ${reportLocation}
           ${panel("Attached photos", photos)}
           ${followUpForm}
           ${role === "official" ? panel("Record an update", statusForm) : ""}
+          ${isResident && report.status === "Resolved"
+            ? panel("Close or reopen this concern", `<div class="form-actions"><button class="button" type="button" data-action="confirm-report" data-id="${esc(report.id)}">Confirm addressed</button><button class="button secondary small" type="button" data-action="reopen-report" data-id="${esc(report.id)}">Request reopening</button></div><p class="field-help">Confirming marks the concern as addressed. Reopening returns it to the concern queue with your reason so staff can review it again.</p>`)
+            : ""}
         </div>
         <div class="content-stack">
           ${role !== "resident" ? `<section class="panel"><header class="panel-head"><div><h2>Reported by</h2></div></header><div class="panel-body"><div class="account-summary">${userAvatar({ name: report.name })}<div><strong>${esc(report.name)}</strong><span>${esc((getUser(report.userEmail)?.area || report.area) + " · Resident")}</span><span>${esc(report.userEmail)}</span></div></div></div></section>` : ""}
@@ -337,17 +350,36 @@ function upcomingSchedule(area = currentUser.area) {
   );
 }
 
+function scheduleHistoryMarkup(history = []) {
+  if (!history.length) return `<div class="empty-state"><strong>No status changes recorded</strong>Updates will appear here as the barangay works through this pickup.</div>`;
+  return `<ol class="timeline">${[...history].reverse().map((item, index) => {
+    const transition = item.previousStatus ? `${item.previousStatus} → ${item.status}` : item.status;
+    const replacement = item.status === "Rescheduled" && item.replacementDate
+      ? `<span>Replacement pickup: ${esc(dateLabel(item.replacementDate, { weekday: "long", month: "long", day: "numeric" }))}, ${esc(item.replacementStart || "")}–${esc(item.replacementEnd || "")}</span>`
+      : "";
+    return `<li class="timeline-item ${index === 0 ? "" : "future"}"><span class="timeline-dot" aria-hidden="true"></span><div class="timeline-copy"><strong>${esc(transition)}</strong>${replacement}<span>${esc(item.note || "Status updated.")}${item.actorName ? ` · By ${esc(item.actorName)}` : ""} · ${esc(dateTimeLabel(item.at))}</span></div></li>`;
+  }).join("")}</ol>`;
+}
+
 function scheduleRows(schedules, canEdit = false) {
   if (!schedules.length) return `<div class="empty-state"><strong>No collection schedules</strong>Schedules for this area will appear here when the barangay posts them.</div>`;
   return `<div class="records" data-page-size="10" role="table" aria-label="Collection schedule">
     <div class="record-row record-head schedule-record-head" role="row"><span role="columnheader">Area and service</span><span role="columnheader">Collection date</span><span role="columnheader">Collection window</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
-    ${schedules.map((schedule) => `<div class="record-row schedule-record filter-item" role="row" data-search="${esc(`${schedule.id} ${schedule.area} ${schedule.zone} ${schedule.wasteType} ${schedule.status}`.toLowerCase())}">
+    ${schedules.map((schedule) => {
+      const latest = (schedule.history || []).at(-1);
+      const statusDetail = schedule.status === "Rescheduled" && latest?.replacementDate
+        ? `<span class="record-secondary">Moved from ${esc(dateLabel(latest.previousDate || schedule.date))} to ${esc(dateLabel(latest.replacementDate))}</span>`
+        : ["Delayed", "Cancelled"].includes(schedule.status) && latest?.note
+          ? `<span class="record-secondary">${esc(latest.note)}</span>`
+          : "";
+      return `<div class="record-row schedule-record filter-item" role="row" data-search="${esc(`${schedule.id} ${schedule.area} ${schedule.zone} ${schedule.wasteType} ${schedule.status}`.toLowerCase())}">
       <div role="cell"><strong class="record-primary">${esc(schedule.wasteType)}</strong><span class="record-secondary">${esc(schedule.area)} · ${esc(schedule.zone)}</span></div>
       <div class="record-date" role="cell" data-label="Collection date">${esc(dateLabel(schedule.date))}<span class="record-secondary">${esc(new Intl.DateTimeFormat("en-PH", { weekday: "long" }).format(asDate(schedule.date)))}</span></div>
       <div class="record-meta" role="cell" data-label="Collection window">${esc(schedule.start)} – ${esc(schedule.end)}<span class="record-secondary">${esc(schedule.team)}</span></div>
-      <div role="cell" data-label="Status">${statusPill(schedule.status)}</div>
-      <div class="record-actions" role="cell" data-label="">${canEdit ? `<button class="button secondary small" type="button" data-action="edit-schedule" data-id="${esc(schedule.id)}">Edit</button>` : `<span class="record-meta">${esc(schedule.frequency)}</span>`}</div>
-    </div>`).join("")}</div>`;
+      <div role="cell" data-label="Status">${statusPill(schedule.status)}${statusDetail}</div>
+      <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-schedule" data-id="${esc(schedule.id)}">Details</button>${canEdit ? `<button class="button secondary small" type="button" data-action="edit-schedule" data-id="${esc(schedule.id)}">Edit</button>` : `<span class="record-meta">${esc(schedule.frequency)}</span>`}</div>
+    </div>`;
+    }).join("")}</div>`;
 }
 
 function dashboardResident() {
@@ -396,17 +428,7 @@ function calendarPage() {
   const schedules = isResident
     ? sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area)
     : sortedSchedules(data.schedules);
-  const calendarEvents = (data.calendarEvents || []).map((item) => ({
-    id: String(item.id),
-    date: item.date,
-    title: item.title,
-    detail: item.detail || "",
-    kind: "Event",
-    status: item.approvalStatus || "approved",
-    declineReason: item.declineReason || "",
-    createdBy: item.createdBy || "",
-    createdByName: item.createdByName || "",
-  }));
+  const calendarEvents = (data.calendarEvents || []).map(calendarEventFromRecord);
   const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
   const events = [
     ...data.announcements
@@ -604,10 +626,11 @@ function emailDeliverySection() {
 function collectionResident() {
   const schedules = sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area);
   const next = upcomingSchedule(currentUser.area);
+  const nextNote = next && ["Delayed", "Cancelled"].includes(next.status) ? (next.history || []).at(-1)?.note : "";
   const body = `
     <div class="content-stack">
       <div class="grid-main-side">
-        ${panel("Your next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div>` : `<div class="empty-state"><strong>No upcoming collection posted</strong>Your barangay will appear here when a schedule is available.</div>`)}
+        ${panel("Your next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span>${nextNote ? `<span class="muted small">${esc(nextNote)}</span>` : ""}</div>` : `<div class="empty-state"><strong>No upcoming collection posted</strong>Your barangay will appear here when a schedule is available.</div>`)}
       </div>
       ${panel("Collection schedule", `${scheduleRows(schedules)}`, { subtitle: "Upcoming collections for your selected area" })}
       ${panel("Missed collection?", `<div class="form-actions">${linkButton(`${icon("flag")} Report a missed pickup`, routeUrl("resident", "report"), "")}</div>`)}
@@ -667,21 +690,118 @@ function announcementsPage(role) {
 function analyticsPage() {
   const reports = data.reports;
   const schedules = sortedSchedules(data.schedules);
-  const open = reports.filter((report) => report.status !== "Resolved");
-  const due = schedules.filter((item) => item.date >= todayISO() && !["Completed", "Cancelled"].includes(item.status));
+  const users = data.users || [];
+  const officials = users.filter((u) => u.role === "official" && u.status === "Active");
+  const now = new Date();
+
+  const totalReports = reports.length;
+  const openReports = reports.filter((r) => r.status !== "Resolved").length;
+  const resolvedReports = reports.filter((r) => r.status === "Resolved").length;
+  const overdueReports = reports.filter(
+    (r) => r.status !== "Resolved" && r.responseDeadline && new Date(r.responseDeadline) < now,
+  ).length;
+
+  let totalReviewDelayMinutes = 0;
+  let reviewCount = 0;
+  let totalResolutionMinutes = 0;
+  let resolutionCount = 0;
+
+  for (const report of reports) {
+    const history = report.history || [];
+    const submitted = new Date(report.submittedAt);
+    let firstReviewAt = null;
+    let resolvedAt = null;
+    for (const entry of history) {
+      if (entry.status !== "Submitted" && !firstReviewAt) firstReviewAt = new Date(entry.at);
+      if (entry.status === "Resolved") resolvedAt = new Date(entry.at);
+    }
+    if (firstReviewAt) {
+      totalReviewDelayMinutes += (firstReviewAt - submitted) / 60000;
+      reviewCount += 1;
+    }
+    if (resolvedAt) {
+      totalResolutionMinutes += (resolvedAt - submitted) / 60000;
+      resolutionCount += 1;
+    }
+  }
+  const avgReviewDelay = reviewCount ? Math.round(totalReviewDelayMinutes / reviewCount) : 0;
+  const avgResolution = resolutionCount ? Math.round(totalResolutionMinutes / resolutionCount / 60) : 0;
+
+  const byArea = {};
+  for (const report of reports) {
+    byArea[report.area] = (byArea[report.area] || 0) + 1;
+  }
+  const areaRows = Object.entries(byArea)
+    .sort((a, b) => b[1] - a[1])
+    .map(([area, count]) => `<li><span>${esc(area)}</span><strong class="num">${count}</strong></li>`)
+    .join("") || "<li><span>No reports</span></li>";
+
+  const byCategory = {};
+  for (const report of reports) {
+    byCategory[report.category] = (byCategory[report.category] || 0) + 1;
+  }
+  const categoryRows = Object.entries(byCategory)
+    .sort((a, b) => b[1] - a[1])
+    .map(([cat, count]) => `<li><span>${esc(cat)}</span><strong class="num">${count}</strong></li>`)
+    .join("") || "<li><span>No reports</span></li>";
+
+  const completedCollections = schedules.filter((s) => s.status === "Completed").length;
+  const cancelledCollections = schedules.filter((s) => s.status === "Cancelled").length;
+  const totalWithOutcome = schedules.filter((s) => ["Completed", "Cancelled"].includes(s.status)).length;
+  const completionRate = totalWithOutcome ? Math.round((completedCollections / totalWithOutcome) * 100) : 0;
+  const cancellationRate = totalWithOutcome ? Math.round((cancelledCollections / totalWithOutcome) * 100) : 0;
+
+  const workloadRows = officials
+    .map((official) => {
+      const assigned = reports.filter((r) => r.assignedTo?.id === official.id).length;
+      const resolved = reports.filter(
+        (r) => r.assignedTo?.id === official.id && r.status === "Resolved",
+      ).length;
+      return `<tr><td>${esc(official.name)}</td><td>${assigned}</td><td>${resolved}</td></tr>`;
+    })
+    .join("") || "<tr><td colspan=3>No active officials</td></tr>";
+
+  const months = [];
+  for (let i = 5; i >= 0; i -= 1) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  const monthly = {};
+  for (const report of reports) {
+    const m = new Date(report.submittedAt).toISOString().slice(0, 7);
+    monthly[m] = (monthly[m] || 0) + 1;
+  }
+  const trendRows = months
+    .map((m) => `<tr><td>${m}</td><td>${monthly[m] || 0}</td></tr>`)
+    .join("");
+
   const body = `<div class="content-stack">
     ${statsStrip([
-      stat("Database", "Available", "Latest server data loaded", "success"),
-      stat("Open reports", open.length, `${reports.length} total reports`),
-      stat("Upcoming collections", due.length, "Scheduled or in progress"),
+      stat("Total reports", totalReports, "All submitted concerns"),
+      stat("Open reports", openReports, "Awaiting or in progress"),
+      stat("Resolved reports", resolvedReports, "Marked resolved"),
+      stat("Overdue concerns", overdueReports, "Past response deadline", overdueReports ? "warning" : ""),
+      stat("Avg. first review", `${avgReviewDelay} min`, "Submitted to first status change"),
+      stat("Avg. time to resolve", `${avgResolution} hrs`, "Submitted to resolved"),
     ])}
     <div class="grid-main-side">
-      ${panel("Report status", `<ul class="plain-list">${STATUSES.map((status) => `<li><span>${esc(status)}</span><strong class="num">${reports.filter((report) => report.status === status).length}</strong></li>`).join("")}</ul><div class="form-actions">${linkButton("Open community reports", routeUrl("administrator", "reports"), "secondary", "small")}</div>`, { subtitle: "Counts from the current database snapshot" })}
-      ${panel("Collection service", `<ul class="plain-list">${COLLECTION_STATUSES.map((status) => `<li><span>${esc(status)}</span><strong class="num">${schedules.filter((item) => item.status === status).length}</strong></li>`).join("")}</ul><div class="form-actions">${linkButton("Manage locations and listings", routeUrl("administrator", "locations"), "secondary", "small")}</div>`, { subtitle: "Schedules and statuses currently stored" })}
+      <div class="content-stack">
+        ${panel("Reports by area", `<ul class="plain-list">${areaRows}</ul>`, { subtitle: "Concern volume by purok or area" })}
+        ${panel("Reports by category", `<ul class="plain-list">${categoryRows}</ul>`, { subtitle: "Concern types reported" })}
+      </div>
+      <div class="content-stack">
+        ${panel("Collection service", `<ul class="plain-list"><li><span>Completed</span><strong class="num">${completedCollections}</strong></li><li><span>Cancelled</span><strong class="num">${cancelledCollections}</strong></li><li><span>Completion rate</span><strong class="num">${completionRate}%</strong></li><li><span>Cancellation rate</span><strong class="num">${cancellationRate}%</strong></li></ul>`, { subtitle: "Schedule outcomes across all areas" })}
+        ${panel("Monthly submissions", `<table class="trend-table"><thead><tr><th>Month</th><th>Reports</th></tr></thead><tbody>${trendRows}</tbody></table>`, { subtitle: "Concerns submitted in the last 6 months" })}
+      </div>
+    </div>
+    <div class="content-stack">
+      ${panel("Official workload", `<table class="workload-table"><thead><tr><th>Official</th><th>Assigned</th><th>Resolved</th></tr></thead><tbody>${workloadRows}</tbody></table>`, { subtitle: "Concerns assigned to and resolved by each active official" })}
     </div>
   </div>`;
   return page("administrator", "analytics", body);
 }
+
+
 
 function collectionOfficial() {
   const schedules = sortedSchedules(data.schedules);
@@ -700,7 +820,12 @@ function collectionOfficial() {
 
 function reportFormMarkup() {
   const draft = reportDraft || {};
-  const defaultArea = draft.area || currentUser.area || locationAreas()[0];
+  const reportAreas = residentAreaOptions();
+  const defaultArea = reportAreas.includes(draft.area)
+    ? draft.area
+    : reportAreas.includes(currentUser.area)
+      ? currentUser.area
+      : reportAreas[0];
   const selectedReportArea = defaultArea;
   return `
     <section class="panel"><div class="panel-body">
@@ -723,7 +848,7 @@ function reportFormMarkup() {
           <div class="form-grid">
             ${selectField("Concern category", "category", CATEGORIES, draft.category || "", { required: true, placeholder: "Choose a concern type" })}
             ${selectField("Risk or priority", "priority", REPORT_PRIORITIES, draft.priority || "Medium", { required: true })}
-            ${selectField("Purok or area", "area", AREAS, draft.area || selectedReportArea || AREAS[0], { required: true })}
+            ${selectField("Purok or area", "area", reportAreas, selectedReportArea, { required: true })}
             ${inputField("Street or nearby landmark", "locationDetail", draft.locationDetail || "", { required: true, maxLength: 250 })}
             <div class="form-field span-all report-map-picker">
               <input type="hidden" id="report-latitude" name="latitude" value="${esc(reportMapSelection?.latitude ?? "")}">
@@ -916,12 +1041,11 @@ function usersPage() {
 }
 
 function rolesPage() {
-  selectedPermissionRole = "official";
-  const roles = ["official"];
+  const roles = ["resident", "official", "administrator"];
   const selectedRole = selectedPermissionRole;
   permissionDrafts[selectedRole] ||= { ...data.permissions[selectedRole] };
   if (!Object.hasOwn(permissionOpenGroups, selectedRole)) {
-    permissionOpenGroups[selectedRole] = [selectedRole === "administrator" ? "Portal administration" : "Community services"];
+    permissionOpenGroups[selectedRole] = [...new Set(PERMISSION_DEFS.map(({ group }) => group))];
   }
   const isDirty = (role) => Boolean(permissionDrafts[role] && PERMISSION_DEFS.some(({ id }) =>
     permissionDrafts[role][id] !== Boolean(data.permissions[role]?.[id]),
@@ -930,42 +1054,90 @@ function rolesPage() {
     permissionDrafts[selectedRole][id] !== Boolean(data.permissions[selectedRole]?.[id]),
   ).length;
   const openGroups = permissionOpenGroups[selectedRole];
-  const canEditRole = false;
   const officialAccounts = (data.users || []).filter((user) => user.role === "official" && user.status === "Active");
-  const permissionAccounts = selectedRole === "official" ? (officialAccounts.length ? officialAccounts.map((official) => {
-    const override = data.accountOverrides?.[official.email] || {};
-    const overrideCount = Object.keys(override).length;
-    return `
-  <details class="permission-account">
-    <summary class="permission-account-head">
-      <span class="permission-copy">
-        <strong>${esc(official.name)}</strong>
-        <small>${esc(official.email)}${overrideCount ? ` · ${overrideCount} override${overrideCount === 1 ? "" : "s"}` : ""}</small>
-      </span>
-      <span class="permission-account-toggle" aria-hidden="true">▾</span>
-    </summary>
-    <div class="permission-list">${PERMISSION_DEFS.map((permission) => {
-      const enabled = override && permission.id in override ? Boolean(override[permission.id]) : Boolean(data.permissions.official?.[permission.id]);
-      const hasOverride = override && permission.id in override;
-      return `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}${hasOverride ? " · Override active" : ""}</small></span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${esc(`Barangay official: ${official.name} · ${permission.label}`)}" data-action="toggle-account-permission" data-email="${esc(official.email)}" data-permission="${esc(permission.id)}"></button></div>`;
-    }).join("")}</div>
-    <div class="permission-account-foot">
-      <button class="button secondary small" type="button" data-action="reset-account-permissions" data-email="${esc(official.email)}">Reset to role default</button>
-    </div>
-  </details>`;
-  }).join("") : `<div class="empty-state"><strong>No accounts yet</strong>Add official accounts in User management to assign per-account permissions.</div>`) : "";
-  const roleTabs = roles.length > 1 ? roles.map((role) => `<button class="permission-role-button" type="button" data-action="select-permission-role" data-role="${esc(role)}" aria-pressed="${role === selectedRole}"><span>${esc(ROLES[role])}</span>${isDirty(role) ? '<span class="permission-unsaved">Unsaved</span>' : ""}</button>`).join("") : "";
-  const permissionGroups = selectedRole === "official" ? "" : [...new Set(PERMISSION_DEFS.map(({ group }) => group))].map((group) => {
+
+  const roleTabs = roles.map((role) => `
+    <button class="permission-role-button" type="button" data-action="select-permission-role" data-role="${esc(role)}" aria-pressed="${role === selectedRole}">
+      <span>${esc(ROLES[role])}</span>${isDirty(role) ? '<span class="permission-unsaved">Unsaved</span>' : ""}
+    </button>
+  `).join("");
+
+  const roleDefaults = [...new Set(PERMISSION_DEFS.map(({ group }) => group))].map((group) => {
     const items = PERMISSION_DEFS.filter((permission) => permission.group === group);
-    return `<details class="permission-group" data-permission-group="${esc(group)}" ${openGroups.includes(group) ? "open" : ""}><summary><span>${esc(group)}</span></summary><div class="permission-list">${items.map((permission) => `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}</small></span><span class="permission-state">${Boolean(permissionDrafts[selectedRole]?.[permission.id]) ? "Enabled" : "Disabled"}</span></div>`).join("")}</div></details>`;
+    return `<details class="permission-group" data-permission-group="${esc(group)}" ${openGroups.includes(group) ? "open" : ""}>
+      <summary><span>${esc(group)}</span><span class="permission-group-count">${items.filter(p => Boolean(permissionDrafts[selectedRole]?.[p.id])).length} of ${items.length} enabled</span></summary>
+      <div class="permission-list">${items.map((permission) => {
+        const enabled = Boolean(permissionDrafts[selectedRole]?.[permission.id]);
+        return `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}</small></span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${esc(`${ROLES[selectedRole]} · ${permission.label}`)}" data-action="toggle-permission" data-permission="${esc(permission.id)}"></button></div>`;
+      }).join("")}</div>
+    </details>`;
   }).join("");
+
+  const saveDisabled = dirtyCount === 0;
+
+  const permissionAccounts = officialAccounts.length ? officialAccounts.map((official) => {
+    const override = data.accountOverrides?.[official.email] || {};
+    const effective = effectivePermissions(official, data);
+    const overrideCount = Object.keys(override).length;
+    return `<details class="permission-account">
+      <summary class="permission-account-head">
+        <span class="permission-copy">
+          <strong>${esc(official.name)}</strong>
+          <small>${esc(official.email)} · Effective: ${Object.values(effective).filter(Boolean).length} of ${Object.keys(effective).length} enabled</small>
+        </span>
+        <span class="permission-account-toggle" aria-hidden="true">▾</span>
+      </summary>
+      <div class="permission-list">${PERMISSION_DEFS.map((permission) => {
+        const defaultEnabled = Boolean(data.permissions.official?.[permission.id]);
+        const overrideEnabled = Object.hasOwn(override, permission.id) ? Boolean(override[permission.id]) : null;
+        const effectiveEnabled = effective[permission.id];
+        const hasOverride = overrideEnabled !== null;
+        const differsFromDefault = hasOverride && overrideEnabled !== defaultEnabled;
+        return `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}${hasOverride ? ` · Override: ${overrideEnabled ? "Enabled" : "Disabled"}` : " · Role default"}${differsFromDefault ? " · Differs from default" : ""}</small></span><div class="permission-account-controls">${hasOverride ? `<button class="button secondary small" type="button" data-action="reset-account-permission" data-email="${esc(official.email)}" data-permission="${esc(permission.id)}">Clear override</button>` : `<button class="button secondary small" type="button" data-action="toggle-account-permission" data-email="${esc(official.email)}" data-permission="${esc(permission.id)}">${defaultEnabled ? "Disable" : "Enable"} override</button>`}<span class="permission-effective-state" data-effective="${effectiveEnabled}">${effectiveEnabled ? "Effective: On" : "Effective: Off"}</span></div></div>`;
+      }).join("")}</div>
+      <div class="permission-account-foot">${overrideCount ? `<button class="button secondary small" type="button" data-action="reset-account-permissions" data-email="${esc(official.email)}">Reset all to role default</button>` : `<span class="permission-empty">No overrides — using role defaults</span>`}</div>
+    </details>`;
+  }).join("") : `<div class="empty-state"><strong>No official accounts</strong>Add official accounts in User management to assign per-account overrides.</div>`;
+
+  const effectiveTable = officialAccounts.length ? `<table class="permission-effective-table">
+    <thead><tr><th>Account</th>${PERMISSION_DEFS.map(p => `<th title="${esc(p.description)}">${esc(p.label)}</th>`).join("")}</tr></thead>
+    <tbody>${officialAccounts.map(official => {
+      const effective = effectivePermissions(official, data);
+      return `<tr><td><strong>${esc(official.name)}</strong><br><small>${esc(official.email)}</small></td>${PERMISSION_DEFS.map(p => `<td><span class="permission-cell-state" data-effective="${effective[p.id]}">${effective[p.id] ? "On" : "Off"}</span></td>`).join("")}</tr>`;
+    }).join("")}</tbody>
+  </table>` : `<div class="empty-state"><strong>No effective permissions to show</strong>Add official accounts to see computed effective permissions.</div>`;
+
   const body = `
     <div class="content-stack">
-      ${roleTabs ? `<div class="permission-roles" role="group" aria-label="Choose a role to edit">${roleTabs}</div>` : ""}
-      ${selectedRole !== "official" ? `<div class="permission-role-context"><strong>${esc(ROLES[selectedRole])}</strong></div>` : ""}
-      ${permissionGroups ? `<div class="permission-groups">${permissionGroups}</div>` : ""}
-      ${selectedRole === "official" && permissionAccounts ? `<div class="permission-accounts-intro"><h3>Accounts</h3><p class="field-help">Each official can override the role defaults below. An unset override falls back to the role default; a set override always wins. Changes save immediately.</p></div>` : ""}
-      ${permissionAccounts}
+      <section class="panel">
+        <header class="panel-head"><div><h2>Role defaults</h2></div></header>
+        <div class="panel-body">
+          <p class="field-help">Standard permissions assigned to every account of each role. Changes here apply to all accounts of that role unless overridden individually.</p>
+          <div class="permission-roles" role="group" aria-label="Choose a role to edit">${roleTabs}</div>
+          ${dirtyCount ? `<p class="field-help mt-8">${dirtyCount} unsaved change${dirtyCount === 1 ? "" : "s"} for ${ROLES[selectedRole]}.</p>` : ""}
+          <div class="permission-groups">${roleDefaults}</div>
+          <div class="permission-actions">
+            <button class="button secondary" type="button" data-action="discard-permission-draft" ${saveDisabled ? "disabled" : ""}>Discard changes</button>
+            <button class="button" type="button" data-action="save-permission-draft" ${saveDisabled ? "disabled" : ""}>Save role defaults</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><div><h2>Individual overrides</h2></div></header>
+        <div class="panel-body">
+          <p class="field-help">Exceptions for specific official accounts. A set override always wins over the role default; an unset permission falls back to the role default. Changes save immediately.</p>
+          ${permissionAccounts}
+        </div>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head"><div><h2>Effective permissions</h2></div></header>
+        <div class="panel-body">
+          <p class="field-help">The final permission set for each official after applying role defaults and individual overrides.</p>
+          ${effectiveTable}
+        </div>
+      </section>
     </div>`;
   return page("administrator", "roles", body);
 }
@@ -1072,6 +1244,7 @@ function resetPasswordMarkup(token) {
 }
 
 function registerMarkup() {
+  const areaOptions = residentAreaOptions();
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
@@ -1083,7 +1256,7 @@ function registerMarkup() {
       <section class="login-pane" aria-labelledby="register-title"><div class="register-box">
         <h1 id="register-title">Create a resident account</h1>
         <form class="form-stack" id="register-form">
-          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${selectField("Purok or area", "area", AREAS, "", { required: true })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
+          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${selectField("Purok or area", "area", areaOptions, "", { required: true, placeholder: "Choose your purok or area" })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Create account</button></div>
         </form>
       </div></section>

@@ -20,8 +20,15 @@ const SESSION_COOKIE = "community_session";
 const SESSION_HOURS = 12;
 const REMEMBER_DAYS = 30;
 const REPORT_STATUSES = ["Submitted", "Under Review", "In Progress", "Resolved"];
+const REPORT_TRANSITIONS = {
+  Submitted: ["Under Review"],
+  "Under Review": ["In Progress"],
+  "In Progress": ["Resolved"],
+  Resolved: [],
+};
 const REPORT_PRIORITIES = ["High", "Medium", "Low"];
 const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
+const RESPONSE_DEADLINE_DAYS = { High: 1, Medium: 3, Low: 7 };
 const SCHEDULE_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
 const ROLES = ["resident", "official", "administrator"];
 const PERMISSIONS = {
@@ -289,10 +296,24 @@ function validId(value) {
   return typeof value === "string" && /^[A-Za-z0-9._:-]{1,100}$/.test(value);
 }
 
+function validISODate(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 function normalizeReportPriority(report) {
   if (!report || typeof report !== "object") return;
   if (report.priority === undefined) report.priority = report.urgent ? "High" : "Medium";
   report.urgent = report.priority === "High";
+}
+
+function computeResponseDeadline(report) {
+  if (!report || report.responseDeadline) return report;
+  const days = RESPONSE_DEADLINE_DAYS[report.priority] ?? RESPONSE_DEADLINE_DAYS.Medium;
+  const submitted = report.submittedAt ? new Date(report.submittedAt) : new Date();
+  report.responseDeadline = new Date(submitted.getTime() + days * 86400000).toISOString();
+  return report;
 }
 
 function validateReport(report) {
@@ -311,6 +332,8 @@ function validateReport(report) {
         (typeof report.longitude !== "number" || !Number.isFinite(report.longitude) || report.longitude < -180 || report.longitude > 180)) ||
       !REPORT_STATUSES.includes(report.status) || typeof report.urgent !== "boolean" ||
       !REPORT_PRIORITIES.includes(report.priority) ||
+      (report.responseDeadline !== undefined && report.responseDeadline !== null && typeof report.responseDeadline !== "string") ||
+      (report.respondedAt !== undefined && report.respondedAt !== null && typeof report.respondedAt !== "string") ||
       (report.assignedTo !== undefined && report.assignedTo !== null &&
         (!report.assignedTo || typeof report.assignedTo !== "object" || !validId(report.assignedTo.id) ||
           typeof report.assignedTo.name !== "string" || report.assignedTo.name.length > 100)) ||
@@ -334,7 +357,46 @@ function validateReport(report) {
   }
 }
 
+function validateScheduleHistory(schedule) {
+  const history = schedule?.history;
+  if (history === undefined) return;
+  if (!Array.isArray(history) || history.length > 100) throw new HttpError(400, "Collection history contains invalid data.");
+  for (const item of history) {
+    const previousStatus = item?.previousStatus ?? null;
+    const replacementDate = item?.replacementDate ?? null;
+    const previousDate = item?.previousDate ?? null;
+    if (!item || !SCHEDULE_STATUSES.includes(item.status) ||
+        (previousStatus !== null && !SCHEDULE_STATUSES.includes(previousStatus)) ||
+        typeof item.at !== "string" || Number.isNaN(Date.parse(item.at)) ||
+        typeof item.note !== "string" || item.note.length > 500 ||
+        (item.actorName !== undefined && (typeof item.actorName !== "string" || item.actorName.length > 100)) ||
+        (item.actorRole !== undefined && item.actorRole !== "" && !ROLES.includes(item.actorRole)) ||
+        (replacementDate !== null && !validISODate(replacementDate)) ||
+        typeof (item.replacementStart ?? "") !== "string" || (item.replacementStart ?? "").length > 30 ||
+        typeof (item.replacementEnd ?? "") !== "string" || (item.replacementEnd ?? "").length > 30 ||
+        (previousDate !== null && !validISODate(previousDate)) ||
+        typeof (item.previousStart ?? "") !== "string" || (item.previousStart ?? "").length > 30 ||
+        typeof (item.previousEnd ?? "") !== "string" || (item.previousEnd ?? "").length > 30) {
+      throw new HttpError(400, "Collection history contains invalid data.");
+    }
+  }
+  if (!history.length) return;
+  const latest = history.at(-1);
+  if (latest.status !== schedule.status) {
+    throw new HttpError(400, "The latest collection history entry must match the current status.");
+  }
+  if (["Delayed", "Cancelled"].includes(schedule.status) && !latest.note.trim()) {
+    throw new HttpError(400, `${schedule.status} collections need a reason in the collection history.`);
+  }
+  if (schedule.status === "Rescheduled" &&
+      (!latest.replacementDate || !String(latest.replacementStart || "").trim() || !String(latest.replacementEnd || "").trim())) {
+    throw new HttpError(400, "A rescheduled collection needs the replacement pickup date and time.");
+  }
+}
+
 function validateSchedule(schedule) {
+  const seriesId = schedule?.seriesId ?? null;
+  const recurrenceEnd = schedule?.recurrenceEnd ?? null;
   if (!schedule || !validId(schedule.id) || typeof schedule.area !== "string" || schedule.area.length > 120 ||
       typeof schedule.zone !== "string" || schedule.zone.length > 100 ||
       typeof schedule.wasteType !== "string" || !schedule.wasteType.trim() || schedule.wasteType.length > 120 ||
@@ -343,9 +405,43 @@ function validateSchedule(schedule) {
       typeof schedule.end !== "string" || schedule.end.length > 30 ||
       typeof schedule.frequency !== "string" || schedule.frequency.length > 50 ||
       typeof schedule.team !== "string" || schedule.team.length > 120 ||
+      (seriesId !== null && (typeof seriesId !== "string" || !validId(seriesId))) ||
+      (recurrenceEnd !== null && !validISODate(recurrenceEnd)) ||
       !SCHEDULE_STATUSES.includes(schedule.status)) {
     throw new HttpError(400, "A collection schedule contains invalid data.");
   }
+  validateScheduleHistory(schedule);
+}
+
+function normalizeSchedule(schedule) {
+  return {
+    id: schedule.id,
+    area: schedule.area,
+    zone: schedule.zone,
+    date: schedule.date,
+    wasteType: schedule.wasteType,
+    start: schedule.start,
+    end: schedule.end,
+    frequency: schedule.frequency,
+    team: schedule.team,
+    status: schedule.status,
+    seriesId: schedule.seriesId ?? null,
+    recurrenceEnd: schedule.recurrenceEnd ?? null,
+    history: (schedule.history || []).map((item) => ({
+      previousStatus: item.previousStatus ?? null,
+      status: item.status,
+      at: item.at,
+      actorName: item.actorName || "",
+      actorRole: item.actorRole || "",
+      note: item.note || "",
+      previousDate: item.previousDate ?? null,
+      previousStart: item.previousStart ?? null,
+      previousEnd: item.previousEnd ?? null,
+      replacementDate: item.replacementDate ?? null,
+      replacementStart: item.replacementStart ?? null,
+      replacementEnd: item.replacementEnd ?? null,
+    })),
+  };
 }
 
 function validateState(data) {
@@ -465,7 +561,17 @@ async function migrate(db) {
       id text PRIMARY KEY, area text NOT NULL, zone text NOT NULL, date date NOT NULL,
       waste_type text NOT NULL, start_time text NOT NULL, end_time text NOT NULL,
       frequency text NOT NULL, team text NOT NULL,
+      series_id text, recurrence_end date,
       status text NOT NULL CHECK (status IN ('Scheduled', 'On the way', 'Collecting', 'Completed', 'Delayed', 'Cancelled', 'Rescheduled'))
+    );
+    CREATE TABLE IF NOT EXISTS schedule_history (
+      id bigserial PRIMARY KEY, schedule_id text NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+      position integer NOT NULL, previous_status text, status text NOT NULL,
+      at timestamptz NOT NULL, actor_name text NOT NULL DEFAULT '', actor_role text NOT NULL DEFAULT '',
+      note text NOT NULL DEFAULT '', previous_date date, previous_start text NOT NULL DEFAULT '',
+      previous_end text NOT NULL DEFAULT '', replacement_date date,
+      replacement_start text NOT NULL DEFAULT '', replacement_end text NOT NULL DEFAULT '',
+      UNIQUE (schedule_id, position)
     );
     CREATE TABLE IF NOT EXISTS notifications (
       id text PRIMARY KEY, target_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
@@ -474,7 +580,14 @@ async function migrate(db) {
     );
     CREATE TABLE IF NOT EXISTS activities (
       id text PRIMARY KEY, actor text NOT NULL, role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
-      action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL
+      action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL,
+      result_reason text NOT NULL DEFAULT '', affected_id text NOT NULL DEFAULT '', client_ip text NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS activity_archive (
+      id text PRIMARY KEY, actor text NOT NULL, role text NOT NULL,
+      action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL,
+      result_reason text NOT NULL DEFAULT '', affected_id text NOT NULL DEFAULT '', client_ip text NOT NULL DEFAULT '',
+      archived_at timestamptz NOT NULL DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS role_permissions (
       role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
@@ -564,6 +677,16 @@ async function migrate(db) {
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
     ALTER TABLE report_photos ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
+    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS series_id text;
+    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS recurrence_end date;
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS response_deadline timestamptz;
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS responded_at timestamptz;
+    UPDATE reports SET response_deadline = submitted_at +
+      CASE priority WHEN 'High' THEN interval '1 day' WHEN 'Medium' THEN interval '3 days' ELSE interval '7 days' END
+    WHERE response_deadline IS NULL;
+    ALTER TABLE activities ADD COLUMN IF NOT EXISTS result_reason text NOT NULL DEFAULT '';
+    ALTER TABLE activities ADD COLUMN IF NOT EXISTS affected_id text NOT NULL DEFAULT '';
+    ALTER TABLE activities ADD COLUMN IF NOT EXISTS client_ip text NOT NULL DEFAULT '';
     ALTER TABLE report_photos DROP COLUMN IF EXISTS data_url;
     UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
       FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';
@@ -654,7 +777,8 @@ async function readFullState(db, user = null) {
     r.location_detail AS "locationDetail", r.latitude, r.longitude, r.description, r.urgent, r.priority,
     (SELECT count(*)::integer FROM report_follow_ups f WHERE f.report_id=r.id) AS "followUpCount",
     r.assigned_to AS "assignedToId", assignee.name AS "assignedToName", r.status,
-    r.submitted_at AS "submittedAt", r.updated_at AS "updatedAt"
+    r.submitted_at AS "submittedAt", r.updated_at AS "updatedAt",
+    r.response_deadline AS "responseDeadline", r.responded_at AS "respondedAt"
     FROM reports r LEFT JOIN users assignee ON assignee.id=r.assigned_to
     ${user?.role === "resident" ? "WHERE r.user_email=$1" : ""}
     ORDER BY submitted_at DESC, id
@@ -687,11 +811,16 @@ async function readFullState(db, user = null) {
     }
     state.reports = reports.rows.map((report) => {
       const { assignedToId, assignedToName, ...details } = report;
+      const responseDeadline = report.responseDeadline ? new Date(report.responseDeadline) : null;
+      const now = new Date();
       return {
         ...details,
         assignedTo: assignedToId ? { id: assignedToId, name: assignedToName } : null,
         submittedAt: timestamp(report.submittedAt),
         updatedAt: timestamp(report.updatedAt),
+        responseDeadline: report.responseDeadline ? timestamp(report.responseDeadline) : null,
+        respondedAt: report.respondedAt ? timestamp(report.respondedAt) : null,
+        overdue: report.status !== "Resolved" && responseDeadline && responseDeadline < now,
         history: historyByReport.get(report.id) || [],
         photos: photosByReport.get(report.id) || [],
       };
@@ -699,10 +828,29 @@ async function readFullState(db, user = null) {
   }
   const schedules = await db.query(`
     SELECT id, area, zone, to_char(date, 'YYYY-MM-DD') AS date, waste_type AS "wasteType",
-      start_time AS start, end_time AS "end", frequency, team, status
+      start_time AS start, end_time AS "end", frequency, team, status,
+      series_id AS "seriesId", to_char(recurrence_end, 'YYYY-MM-DD') AS "recurrenceEnd"
     FROM schedules ORDER BY date, start_time, id
   `);
-  state.schedules = schedules.rows;
+  const scheduleHistory = await db.query(`
+    SELECT schedule_id AS "scheduleId", previous_status AS "previousStatus", status, at,
+      actor_name AS "actorName", actor_role AS "actorRole", note,
+      to_char(previous_date, 'YYYY-MM-DD') AS "previousDate", previous_start AS "previousStart",
+      previous_end AS "previousEnd", to_char(replacement_date, 'YYYY-MM-DD') AS "replacementDate",
+      replacement_start AS "replacementStart", replacement_end AS "replacementEnd"
+    FROM schedule_history ORDER BY schedule_id, position
+  `);
+  const scheduleHistoryById = new Map();
+  for (const row of scheduleHistory.rows) {
+    const { scheduleId, ...entry } = row;
+    const list = scheduleHistoryById.get(scheduleId) || [];
+    list.push({ ...entry, at: timestamp(entry.at) });
+    scheduleHistoryById.set(scheduleId, list);
+  }
+  state.schedules = schedules.rows.map((schedule) => ({
+    ...schedule,
+    history: scheduleHistoryById.get(schedule.id) || [],
+  }));
   const notifications = await db.query(`
     SELECT id, target_email AS "targetEmail", report_id AS "reportId", title, body,
       created_at AS "createdAt", read FROM notifications
@@ -711,7 +859,7 @@ async function readFullState(db, user = null) {
   `, user ? [user.email] : []);
   state.notifications = notifications.rows.map((item) => ({ ...item, reportId: item.reportId || "", createdAt: timestamp(item.createdAt) }));
   if (!user || user.role === "administrator") {
-    const activities = await db.query("SELECT id, actor, role, action, detail, at, result FROM activities ORDER BY at DESC, id");
+    const activities = await db.query("SELECT id, actor, role, action, detail, at, result, result_reason AS \"resultReason\", affected_id AS \"affectedId\", client_ip AS \"clientIp\" FROM activities ORDER BY at DESC, id");
     state.activities = activities.rows.map((item) => ({ ...item, at: timestamp(item.at) }));
   }
   const permissions = await db.query("SELECT role, permission, enabled FROM role_permissions ORDER BY role, permission");
@@ -853,7 +1001,10 @@ function validateSameOrigin(request, server, appOrigin) {
 }
 
 function validateActivityAppend(oldItems, newItems, user) {
-  if (newItems.length < oldItems.length || !oldItems.every((item, index) => jsonEqual(item, newItems[index]))) {
+  // Existing activities must be preserved as a prefix; the server may append
+  // security events between reads, so only verify no existing entry was altered
+  // or removed. New client-submitted entries are validated below.
+  if (!oldItems.every((item, index) => jsonEqual(item, newItems[index]))) {
     throw new HttpError(403, "Activity history cannot be altered.");
   }
   for (const item of newItems.slice(oldItems.length)) {
@@ -886,6 +1037,7 @@ function validateScheduleCollection(schedules) {
 
 async function insertReport(db, report) {
   validateReport(report);
+  computeResponseDeadline(report);
   const requestedId = report.id;
   const generatedId = /^RPT-/i.test(requestedId)
     ? requestedId
@@ -895,11 +1047,11 @@ async function insertReport(db, report) {
     photoUrl: String(photo.photoUrl || "").replace(`/api/reports/${encodeURIComponent(requestedId)}/`, `/api/reports/${encodeURIComponent(generatedId)}/`),
   }));
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
     report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
-    report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt]);
+    report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt, report.responseDeadline ?? null, report.respondedAt ?? null]);
   for (const [position, item] of report.history.entries()) {
     await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
       [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);
@@ -912,16 +1064,18 @@ async function insertReport(db, report) {
 
 async function replaceReport(db, report) {
   validateReport(report);
+  computeResponseDeadline(report);
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
     ON CONFLICT (id) DO UPDATE SET user_email=excluded.user_email, name=excluded.name, category=excluded.category,
       title=excluded.title, area=excluded.area, barangay=excluded.barangay, location_detail=excluded.location_detail,
       latitude=excluded.latitude, longitude=excluded.longitude, description=excluded.description, urgent=excluded.urgent,
-      priority=excluded.priority, assigned_to=excluded.assigned_to, status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at
+      priority=excluded.priority, assigned_to=excluded.assigned_to, status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at,
+      response_deadline=excluded.response_deadline, responded_at=excluded.responded_at
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
     report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
-    report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt]);
+    report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt, report.responseDeadline ?? null, report.respondedAt ?? null]);
   await db.query("DELETE FROM report_history WHERE report_id = $1", [report.id]);
   await db.query("DELETE FROM report_photos WHERE report_id = $1", [report.id]);
   for (const [position, item] of report.history.entries()) {
@@ -941,10 +1095,17 @@ async function insertNotification(db, userEmail, title, body, reportId = "") {
   `, [randomUUID(), userEmail, reportId || null, title.slice(0, 200), body.slice(0, 1000)]);
 }
 
-async function insertActivity(db, user, action, detail) {
+async function insertActivity(db, user, action, detail, { result = "Success", resultReason = "", affectedId = "", clientIp = "" } = {}) {
   await db.query(
-    "INSERT INTO activities (id, actor, role, action, detail, at, result) VALUES ($1,$2,$3,$4,$5,now(),'Success')",
-    [randomUUID(), user.name, user.role, action, detail.slice(0, 1000)],
+    "INSERT INTO activities (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip) VALUES ($1,$2,$3,$4,$5,now(),$6,$7,$8,$9)",
+    [randomUUID(), user.name, user.role, action, detail.slice(0, 1000), result, resultReason.slice(0, 500), affectedId, clientIp || ""],
+  );
+}
+
+async function logSecurityEvent(db, actor, role, action, detail, result, { resultReason = "", affectedId = "", clientIp = "" } = {}) {
+  await db.query(
+    "INSERT INTO activities (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip) VALUES ($1,$2,$3,$4,$5,now(),$6,$7,$8,$9)",
+    [randomUUID(), actor || "system", role || "system", action, detail.slice(0, 1000), result, resultReason.slice(0, 500), affectedId, clientIp || ""],
   );
 }
 
@@ -954,7 +1115,35 @@ async function syncNotifications(db, oldItems, newItems, user) {
   for (const item of changed) await db.query("UPDATE notifications SET read=true WHERE id=$1 AND target_email=$2", [item.id, user.email]);
 }
 
-async function syncSchedules(db, oldSchedules, newSchedules) {
+async function persistScheduleHistory(db, schedule) {
+  await db.query("DELETE FROM schedule_history WHERE schedule_id=$1", [schedule.id]);
+  for (const [position, item] of normalizeSchedule(schedule).history.entries()) {
+    await db.query(`
+      INSERT INTO schedule_history (schedule_id,position,previous_status,status,at,actor_name,actor_role,note,
+        previous_date,previous_start,previous_end,replacement_date,replacement_start,replacement_end)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    `, [schedule.id, position, item.previousStatus, item.status, item.at, item.actorName, item.actorRole, item.note,
+      item.previousDate, item.previousStart || "", item.previousEnd || "", item.replacementDate,
+      item.replacementStart || "", item.replacementEnd || ""]);
+  }
+}
+
+function scheduleUpdateMessage(schedule) {
+  const entry = (schedule.history || []).at(-1);
+  const reason = entry?.note ? ` Reason: ${entry.note}` : "";
+  if (schedule.status === "Rescheduled" && entry?.replacementDate) {
+    const from = entry.previousDate
+      ? `${entry.previousDate}${entry.previousStart ? ` ${entry.previousStart}` : ""}`
+      : "its original schedule";
+    return `${schedule.wasteType} pickup for ${schedule.area} was rescheduled from ${from} to ${entry.replacementDate} ${entry.replacementStart}–${entry.replacementEnd}.${reason}`;
+  }
+  if (["Delayed", "Cancelled"].includes(schedule.status)) {
+    return `${schedule.wasteType} pickup for ${schedule.area} on ${schedule.date} was ${schedule.status.toLowerCase()}.${reason}`;
+  }
+  return `${schedule.wasteType} pickup ${schedule.status.toLowerCase()} for ${schedule.area} on ${schedule.date}.${reason}`;
+}
+
+async function syncSchedules(db, oldSchedules, newSchedules, user) {
   validateScheduleCollection(newSchedules);
   const oldById = new Map(oldSchedules.map((item) => [item.id, item]));
   const newById = new Map(newSchedules.map((item) => [item.id, item]));
@@ -962,15 +1151,85 @@ async function syncSchedules(db, oldSchedules, newSchedules) {
   for (const item of newSchedules) {
     await assertKnownArea(db, item.area);
     const previous = oldById.get(item.id);
-    if (!previous || !jsonEqual(previous, item)) {
+    let history = Array.isArray(item.history) ? item.history.map((entry) => ({ ...entry })) : [];
+    if (!previous) {
+      if (item.status === "Rescheduled") throw new HttpError(400, "A new collection cannot be marked Rescheduled. Save it first, then move it to a replacement date.");
+      if (!history.length && ["Delayed", "Cancelled"].includes(item.status)) {
+        throw new HttpError(400, `${item.status} collections need a reason in the collection history.`);
+      }
+      if (history.length > 1) throw new HttpError(400, "A new collection can only start with one history entry.");
+      if (!history.length) {
+        history = [{
+          previousStatus: null,
+          status: item.status,
+          at: new Date().toISOString(),
+          actorName: "",
+          actorRole: "",
+          note: `Collection ${item.status.toLowerCase()}.`,
+          previousDate: null,
+          previousStart: null,
+          previousEnd: null,
+          replacementDate: null,
+          replacementStart: null,
+          replacementEnd: null,
+        }];
+      }
+      history.at(-1).actorName = user.name;
+      history.at(-1).actorRole = user.role;
+      history.at(-1).at = new Date().toISOString();
+    } else {
+      const oldHistory = Array.isArray(previous.history) ? previous.history : [];
+      const statusChanged = item.status !== previous.status;
+      if (statusChanged) {
+        const entry = history.at(-1);
+        const validTransition = Boolean(entry) &&
+          history.length === oldHistory.length + 1 &&
+          jsonEqual(history.slice(0, -1), oldHistory) &&
+          entry.status === item.status &&
+          (entry.previousStatus ?? null) === previous.status;
+        if (!validTransition) {
+          throw new HttpError(400, "A collection status change must add one history entry that records the previous and new status.");
+        }
+        history.at(-1).actorName = user.name;
+        history.at(-1).actorRole = user.role;
+        history.at(-1).at = new Date().toISOString();
+        history.at(-1).previousDate = previous.date;
+        history.at(-1).previousStart = previous.start;
+        history.at(-1).previousEnd = previous.end;
+        if (["Delayed", "Cancelled"].includes(item.status) && !history.at(-1).note.trim()) {
+          throw new HttpError(400, `${item.status} collections need a reason in the collection history.`);
+        }
+        if (item.status === "Rescheduled") {
+          const replacement = history.at(-1);
+          if (!replacement.replacementDate || !String(replacement.replacementStart || "").trim() ||
+              !String(replacement.replacementEnd || "").trim()) {
+            throw new HttpError(400, "A rescheduled collection needs the replacement pickup date and time.");
+          }
+          item.date = replacement.replacementDate;
+          item.start = replacement.replacementStart;
+          item.end = replacement.replacementEnd;
+        }
+      } else if (!jsonEqual(history, oldHistory)) {
+        throw new HttpError(400, "Collection history can only change together with a status update.");
+      }
+    }
+    item.history = history;
+    const schedule = normalizeSchedule(item);
+    if (!previous || !jsonEqual(normalizeSchedule(previous), schedule)) {
       changed.add(item.id);
       await db.query(`
-        INSERT INTO schedules (id,area,zone,date,waste_type,start_time,end_time,frequency,team,status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        INSERT INTO schedules (id,area,zone,date,waste_type,start_time,end_time,frequency,series_id,recurrence_end,team,status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT (id) DO UPDATE SET area=excluded.area,zone=excluded.zone,date=excluded.date,
           waste_type=excluded.waste_type,start_time=excluded.start_time,end_time=excluded.end_time,
-          frequency=excluded.frequency,team=excluded.team,status=excluded.status
-      `, [item.id, item.area, item.zone, item.date, item.wasteType, item.start, item.end, item.frequency, item.team, item.status]);
+          frequency=excluded.frequency,series_id=excluded.series_id,recurrence_end=excluded.recurrence_end,
+          team=excluded.team,status=excluded.status
+      `, [schedule.id, schedule.area, schedule.zone, schedule.date, schedule.wasteType, schedule.start,
+        schedule.end, schedule.frequency, schedule.seriesId, schedule.recurrenceEnd, schedule.team, schedule.status]);
+      await persistScheduleHistory(db, item);
+      if (previous && previous.date !== item.date) {
+        await db.query("DELETE FROM schedule_reminders WHERE schedule_id=$1", [item.id]);
+      }
     }
   }
   for (const item of oldSchedules) {
@@ -979,14 +1238,33 @@ async function syncSchedules(db, oldSchedules, newSchedules) {
       await db.query("DELETE FROM schedules WHERE id=$1", [item.id]);
     }
   }
+  const additionsByGroup = new Map();
   for (const id of changed) {
-    const schedule = newById.get(id) || oldById.get(id);
-    const message = newById.has(id)
-      ? `${schedule.wasteType} pickup ${schedule.status.toLowerCase()} for ${schedule.area} on ${schedule.date}.`
-      : `${schedule.wasteType} collection previously scheduled for ${schedule.area} has been removed.`;
-    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [schedule.area]);
+    const schedule = newById.get(id);
+    if (schedule && !oldById.has(id)) {
+      const key = `${schedule.area}\u0000${schedule.wasteType}`;
+      if (!additionsByGroup.has(key)) additionsByGroup.set(key, []);
+      additionsByGroup.get(key).push(schedule);
+      continue;
+    }
+    const removed = oldById.get(id);
+    const message = schedule
+      ? scheduleUpdateMessage(schedule)
+      : `${removed.wasteType} collection previously scheduled for ${removed.area} has been removed.`;
+    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [(schedule || removed).area]);
     for (const resident of residents.rows) await insertNotification(db, resident.email,
-      newById.has(id) ? `Collection update for ${schedule.area}` : "Collection schedule removed", message);
+      schedule ? `Collection update for ${schedule.area}` : "Collection schedule removed", message);
+  }
+  for (const group of additionsByGroup.values()) {
+    group.sort((left, right) => left.date.localeCompare(right.date));
+    const first = group[0];
+    const last = group[group.length - 1];
+    const message = group.length === 1
+      ? `${first.wasteType} pickup ${first.status.toLowerCase()} for ${first.area} on ${first.date}.`
+      : `${group.length} ${first.wasteType} pickups are scheduled for ${first.area} from ${first.date} to ${last.date}.`;
+    const title = group.length === 1 ? `Collection update for ${first.area}` : `Collection schedule added for ${first.area}`;
+    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [first.area]);
+    for (const resident of residents.rows) await insertNotification(db, resident.email, title, message);
   }
 }
 
@@ -1178,8 +1456,8 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         const incoming = after.reports.find((report) => report.id === oldReport.id);
         if (!incoming) throw new HttpError(403, "Officials cannot remove resident reports.");
         if (!jsonEqual(oldReport, incoming)) {
-          const previousCore = (({ status, updatedAt, history, assignedTo, ...rest }) => rest)(oldReport);
-          const incomingCore = (({ status, updatedAt, history, assignedTo, ...rest }) => rest)(incoming);
+          const previousCore = (({ status, updatedAt, history, assignedTo, respondedAt, responseDeadline, ...rest }) => rest)(oldReport);
+          const incomingCore = (({ status, updatedAt, history, assignedTo, respondedAt, responseDeadline, ...rest }) => rest)(incoming);
           const assignmentChanged = !jsonEqual(oldReport.assignedTo, incoming.assignedTo);
           const statusChanged = incoming.status !== oldReport.status ||
             incoming.updatedAt !== oldReport.updatedAt ||
@@ -1193,6 +1471,19 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
               (statusChanged && !validStatusUpdate) ||
               (!assignmentChanged && !statusChanged)) {
             throw new HttpError(403, "Officials may only claim or release an assignment and add a report status update.");
+          }
+          if (statusChanged) {
+            const allowed = REPORT_TRANSITIONS[oldReport.status] ?? [];
+            if (!allowed.includes(incoming.status)) {
+              throw new HttpError(403, `Concerns cannot move from ${oldReport.status} to ${incoming.status} directly. Follow the review path: Submitted → Under Review → In Progress → Resolved.`);
+            }
+            const note = String(incoming.history.at(-1).note || "").trim();
+            if (!note) {
+              throw new HttpError(400, `Add an update note when changing the status to ${incoming.status}.`);
+            }
+            if (oldReport.status === "Submitted") {
+              incoming.respondedAt = incoming.updatedAt;
+            }
           }
           if (assignmentChanged) {
             const previousAssigneeId = oldReport.assignedTo?.id || null;
@@ -1231,7 +1522,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           }
         }
       }
-      await syncSchedules(db, visibleBefore.schedules, after.schedules);
+      await syncSchedules(db, visibleBefore.schedules, after.schedules, user);
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
       await syncActivities(db, visibleBefore.activities, after.activities, user, false);
     } else {
@@ -1273,7 +1564,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         }
       }
       for (const report of after.reports) await replaceReport(db, report);
-      await syncSchedules(db, before.schedules, after.schedules);
+      await syncSchedules(db, before.schedules, after.schedules, user);
       await syncLocations(db, before.locations, after.locations);
       await syncRecyclingLocations(db, before.recyclingLocations, after.recyclingLocations);
       if (!jsonEqual(before.announcements, after.announcements)) throw new HttpError(403, "Announcements cannot be changed through this workspace.");
@@ -1400,19 +1691,39 @@ const apiHandlers = new Map([
 ]);
 
 async function handleApi(request, response, db, options) {
-  const { server, appOrigin } = options;
+  const { server, appOrigin, trustedProxyAddresses } = options;
   if (!validateSameOrigin(request, server, appOrigin)) {
     sendJson(response, 403, { error: "This request did not come from the CommUnity website." });
     return;
   }
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname === "/api/healthz" && request.method === "GET") {
+    try {
+      await db.query("SELECT 1");
+      sendJson(response, 200, { status: "ok", database: "available", checked_at: new Date().toISOString() });
+    } catch {
+      sendJson(response, 503, { status: "error", database: "unavailable", checked_at: new Date().toISOString() });
+    }
+    return;
+  }
   const user = await getSessionUser(request, db);
   const handler = apiHandlers.get(url.pathname.split("/")[2]);
   if (!handler) {
     sendJson(response, 404, { error: "API endpoint not found." });
     return;
   }
-  await handler(request, response, db, options, user);
+  try {
+    await handler(request, response, db, options, user);
+  } catch (error) {
+    if (error.status === 403 && user) {
+      const clientAddress = requestClientAddress(request, options.trustedProxyAddresses);
+      await logSecurityEvent(db, user.name, user.role, "Authorization denied", error.message, "Failed", {
+        resultReason: error.message,
+        clientIp: clientAddress,
+      }).catch((logError2) => logError("CommUnity could not log authorization denial.", logError2));
+    }
+    throw error;
+  }
 }
 
 async function handleAuth(request, response, db, options, user) {
@@ -1438,6 +1749,10 @@ async function handleAuth(request, response, db, options, user) {
     const passwordMatches = await verifyPassword(password, account?.password_hash ||
       "scrypt$00000000000000000000000000000000$00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
     if (!account || !passwordMatches || account.status !== "Active") {
+      await logSecurityEvent(db, email, "resident", "Failed sign-in", `Failed sign-in attempt for ${email}`, "Failed", {
+        resultReason: "Invalid credentials or inactive account",
+        clientIp: clientAddress,
+      });
       throw new HttpError(401, "Those sign-in details do not match an active account.");
     }
     await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [accountAttemptKey]);
@@ -1667,6 +1982,50 @@ async function handleCommunity(request, response, db, options, user) {
     sendJson(response, 200, { ok: true, priority });
     return;
   }
+  if (url.pathname === "/api/community/report-confirm" && request.method === "POST") {
+    requireRole(user, ["resident"]);
+    requireJsonBody(request);
+    const reportId = String(request.body.reportId || "");
+    const note = String(request.body.note || "").trim();
+    await withTransaction(db, async (transaction) => {
+      const report = await transaction.query("SELECT id,status,user_email AS \"userEmail\" FROM reports WHERE id=$1 AND user_email=$2 FOR UPDATE", [reportId, user.email]);
+      if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
+      const current = report.rows[0];
+      if (current.status !== "Resolved") throw new HttpError(409, "Only a resolved concern can be confirmed as addressed.");
+      const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
+      await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,'resident')",
+        [reportId, Number(position.rows[0].position), current.status, `Resident confirmed the issue was addressed.${note ? ` ${note}` : ""}`, user.name]);
+      const staff = await transaction.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
+      for (const account of staff.rows) await insertNotification(transaction, account.email, "Concern confirmed addressed", `${reportId}: The resident confirmed this concern was addressed.`, reportId);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (url.pathname === "/api/community/report-reopen" && request.method === "POST") {
+    requireRole(user, ["resident"]);
+    requireJsonBody(request);
+    const reportId = String(request.body.reportId || "");
+    const reason = String(request.body.reason || "").trim();
+    if (!reason) throw new HttpError(400, "Explain why the concern should be reopened.");
+    await withTransaction(db, async (transaction) => {
+      const report = await transaction.query("SELECT id,status,user_email AS \"userEmail\",priority FROM reports WHERE id=$1 AND user_email=$2 FOR UPDATE", [reportId, user.email]);
+      if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
+      const current = report.rows[0];
+      if (current.status !== "Resolved") throw new HttpError(409, "Only a resolved concern can be reopened.");
+      const days = RESPONSE_DEADLINE_DAYS[current.priority] ?? RESPONSE_DEADLINE_DAYS.Medium;
+      const deadline = new Date(Date.now() + days * 86400000).toISOString();
+      await transaction.query("UPDATE reports SET status='Submitted', updated_at=now(), response_deadline=$1 WHERE id=$2", [deadline, reportId]);
+      const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
+      await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,'resident')",
+        [reportId, Number(position.rows[0].position), "Submitted", `Resident requested reopening: ${reason}`, user.name]);
+      const staff = await transaction.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
+      for (const account of staff.rows) await insertNotification(transaction, account.email, "Concern reopened", `${reportId}: The resident requested this concern be reopened. Reason: ${reason}`, reportId);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { ok: true });
+    return;
+  }
   if (url.pathname === "/api/community/mark-notifications-read" && request.method === "POST") {
     requireRole(user, ROLES);
     requireJsonBody(request);
@@ -1867,7 +2226,6 @@ async function handleAnnouncements(request, response, db, options, user) {
   }
   if (url.pathname === "/api/announcements" && ["POST", "PUT", "DELETE"].includes(request.method)) {
     requireRole(user, ["official", "administrator"]);
-    if (request.method === "POST") requireRole(user, ["official"]);
     if (!await hasPermission(db, user, "manageAnnouncements")) throw new HttpError(403, "Announcement management is not enabled for this role.");
     requireJsonBody(request);
     const body = request.body;
@@ -2270,7 +2628,8 @@ export async function createCommunityServer({
     runScheduleReminders(db, { mailer: mailerState.mailer, smtpFrom: mailerState.settings.from, appOrigin }).catch((error) => logError("CommUnity could not create collection reminders.", error));
     pruneExpiredAuthState(db).catch((error) => logError("CommUnity could not prune expired authentication data.", error));
     db.query("DELETE FROM notifications WHERE created_at < now() - interval '90 days'").catch((error) => logError("CommUnity could not prune old notifications.", error));
-    db.query("DELETE FROM activities WHERE at < now() - interval '90 days'").catch((error) => logError("CommUnity could not prune old activity records.", error));
+    // Archive activities older than 90 days before purging, per retention policy
+    db.query("INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at) SELECT id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, now() FROM activities WHERE at < now() - interval '90 days'").then(() => db.query("DELETE FROM activities WHERE at < now() - interval '90 days'")).catch((error) => logError("CommUnity could not archive or prune old activity records.", error));
   }, 15 * 60 * 1000);
   reminderTimer.unref();
   const secure = production || Boolean(databaseUrl);

@@ -96,6 +96,12 @@ test("renders saved concern pins inline for residents and officials with a direc
   const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
   const context = {
     STATUSES: ["Submitted", "Under Review", "In Progress", "Resolved"],
+    REPORT_TRANSITIONS: {
+      Submitted: ["Under Review"],
+      "Under Review": ["In Progress"],
+      "In Progress": ["Resolved"],
+      Resolved: [],
+    },
     REPORT_PRIORITIES: ["High", "Medium", "Low"],
     FOLLOW_UP_LIMITS: { High: null, Medium: 5, Low: 3 },
     currentUser: { id: "official-one" },
@@ -204,7 +210,7 @@ test("renders latest reports with status pill and view button on resident dashbo
     sortedReports: (reports = []) => [...reports],
     sortedSchedules: () => [],
     upcomingSchedule: () => null,
-    statusPill: (status) => `<span class="status">${esc(status)}</span>`,
+    statusPill: (status) => `<span class="status">${String(status)}</span>`,
     icon: () => "",
     panel: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
     linkButton: () => "",
@@ -232,6 +238,324 @@ test("displays timestamp-based concern IDs in a compact format", async () => {
   assert.equal(context.displayReportId("R1794145468286-7wnokm"), "R-MW7VVZB2-7WNOKM");
   assert.equal(context.displayReportId("R-4J8K2M9W7Q"), "R-4J8K2M9W7Q");
   assert.equal(context.displayReportId("R-MJ9F3F4A-7WNOKM"), "R-MJ9F3F4A-7WNOKM");
+});
+
+test("builds the report draft with the priority selected in the form", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const context = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+  };
+  runInNewContext(core, context);
+
+  const formFields = (priority) => {
+    const fields = new FormData();
+    fields.set("category", "Drainage problem");
+    fields.set("area", "Purok 2");
+    fields.set("locationDetail", "Beside the community hall");
+    fields.set("latitude", "");
+    fields.set("longitude", "");
+    fields.set("description", "The drain is blocked beside the community hall.");
+    fields.set("priority", priority);
+    return fields;
+  };
+
+  for (const priority of ["High", "Medium", "Low"]) {
+    const draft = context.reportDraftFromForm(formFields(priority));
+    assert.equal(draft.priority, priority);
+    assert.equal(draft.urgent, priority === "High");
+  }
+
+  assert.throws(() => context.reportDraftFromForm(formFields("Urgent")), /Choose a valid concern priority/);
+});
+
+test("uses only a specific account override without hiding other permitted pages", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {
+    data: {
+      permissions: {
+        official: { manageReports: true, manageSchedules: true, manageAnnouncements: true },
+      },
+      accountOverrides: {
+        "official.one@example.test": { manageSchedules: false },
+        "official.two@example.test": { manageReports: false },
+      },
+    },
+  };
+  runInNewContext(views, context);
+
+  const officialOne = { role: "official", email: "official.one@example.test" };
+  assert.equal(context.canOpenPage(officialOne, "concerns"), true);
+  assert.equal(context.canOpenPage(officialOne, "announcements"), true);
+  assert.equal(context.canOpenPage(officialOne, "collection"), false);
+  assert.equal(context.canOpenPage(officialOne, "profile"), true);
+
+  const officialTwo = { role: "official", email: "official.two@example.test" };
+  assert.equal(context.canOpenPage(officialTwo, "concerns"), false);
+  assert.equal(context.canOpenPage(officialTwo, "collection"), true);
+
+  const officialWithoutOverride = { role: "official", email: "official.three@example.test" };
+  assert.equal(context.canOpenPage(officialWithoutOverride, "concerns"), true);
+  assert.equal(context.canOpenPage(officialWithoutOverride, "collection"), true);
+});
+
+test("effective permissions combine role defaults and account overrides", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const context = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    data: {
+      permissions: {
+        official: { manageReports: true, manageSchedules: true, manageAnnouncements: false },
+      },
+      accountOverrides: {
+        "official.one@example.test": { manageSchedules: false, manageAnnouncements: true },
+      },
+    },
+  };
+  runInNewContext(core, context);
+
+  const withOverride = { role: "official", email: "official.one@example.test" };
+  const eff = context.effectivePermissions(withOverride, context.data);
+  assert.equal(eff.manageReports, true, "role default: manageReports on");
+  assert.equal(eff.manageSchedules, false, "override: manageSchedules off");
+  assert.equal(eff.manageAnnouncements, true, "override: manageAnnouncements on");
+
+  const withoutOverride = { role: "official", email: "official.two@example.test" };
+  const eff2 = context.effectivePermissions(withoutOverride, context.data);
+  assert.equal(eff2.manageReports, true, "falls back to role default");
+  assert.equal(eff2.manageSchedules, true, "falls back to role default");
+  assert.equal(eff2.manageAnnouncements, false, "falls back to role default");
+});
+
+test("roles page renders role defaults, individual overrides, and effective permissions", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const coreContext = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    data: { permissions: {} },
+  };
+  runInNewContext(core, coreContext);
+
+  const context = {
+    ...coreContext,
+    data: {
+      permissions: {
+        official: { manageReports: true, manageSchedules: true, manageAnnouncements: false },
+      },
+      accountOverrides: {
+        "official.one@example.test": { manageSchedules: false },
+      },
+      reports: [],
+      calendarEvents: [],
+      announcements: [],
+      notifications: [],
+      users: [
+        { id: "u1", name: "Official One", email: "official.one@example.test", role: "official", status: "Active" },
+        { id: "u2", name: "Official Two", email: "official.two@example.test", role: "official", status: "Active" },
+      ],
+    },
+    ROLES: { resident: "Resident", official: "Barangay official", administrator: "Administrator" },
+    PERMISSION_DEFS: [
+      { id: "submitReports", label: "Submit and track concerns", group: "Community services", description: "Create concerns and view their updates." },
+      { id: "viewSchedules", label: "View collection schedules", group: "Community services", description: "See posted collection dates and service updates." },
+      { id: "manageReports", label: "Review and update reports", group: "Community services", description: "Review resident concerns and record status updates." },
+      { id: "manageSchedules", label: "Manage collection schedules", group: "Community services", description: "Create, update, and remove service schedules." },
+      { id: "manageAnnouncements", label: "Manage announcements", group: "Community services", description: "Publish or remove updates shared with residents." },
+      { id: "manageUsers", label: "Manage user accounts", group: "Portal administration", description: "Review accounts and adjust access in this workspace." },
+      { id: "manageRoles", label: "Change role permissions", group: "Portal administration", description: "Choose which workspace functions each role can access." },
+      { id: "viewAudit", label: "Review activity history", group: "Portal administration", description: "Review recorded account and service activity." },
+    ],
+    selectedPermissionRole: "official",
+    permissionDrafts: {},
+    permissionOpenGroups: {},
+    currentUser: { id: "admin", name: "Admin User", email: "admin@example.test", role: "administrator", area: "Palsara" },
+    modalState: null,
+    esc: (value) => String(value ?? ""),
+    page: (_role, _view, body) => body,
+  };
+  runInNewContext(views, context);
+
+  const html = context.rolesPage();
+  assert.match(html, /Role defaults/);
+  assert.match(html, /Individual overrides/);
+  assert.match(html, /Effective permissions/);
+  assert.match(html, /Resident/);
+  assert.match(html, /Official/);
+  assert.match(html, /Administrator/);
+  assert.match(html, /Official One/);
+  assert.match(html, /Official Two/);
+  assert.match(html, /Effective: On/);
+  assert.match(html, /Effective: Off/);
+});
+
+test("calendar events send paired map coordinates and keep them on records", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const context = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+  };
+  runInNewContext(core, context);
+
+  const formFields = (latitude, longitude) => {
+    const fields = new FormData();
+    fields.set("title", "Community clean-up");
+    fields.set("detail", "Meet at the covered court.");
+    fields.set("date", "2026-11-20");
+    fields.set("latitude", latitude);
+    fields.set("longitude", longitude);
+    return fields;
+  };
+
+  const withPin = context.calendarEventFromForm(formFields("14.01799", "121.09465"));
+  assert.equal(withPin.latitude, 14.01799);
+  assert.equal(withPin.longitude, 121.09465);
+
+  const withoutPin = context.calendarEventFromForm(formFields("", ""));
+  assert.equal(withoutPin.latitude, null);
+  assert.equal(withoutPin.longitude, null);
+
+  assert.throws(() => context.calendarEventFromForm(formFields("14.01799", "")), /Choose a valid map location/);
+  assert.throws(() => context.calendarEventFromForm(formFields("", "121.09465")), /Choose a valid map location/);
+  assert.throws(() => context.calendarEventFromForm(formFields("not-a-number", "121.09465")), /Choose a valid map location/);
+
+  const event = context.calendarEventFromRecord({
+    id: 9,
+    date: "2026-11-20",
+    title: "Community clean-up",
+    detail: "Meet at the covered court.",
+    approvalStatus: "approved",
+    latitude: 14.01799,
+    longitude: 121.09465,
+  });
+  assert.equal(event.latitude, 14.01799);
+  assert.equal(event.longitude, 121.09465);
+
+  const eventWithoutPin = context.calendarEventFromRecord({ id: 10, date: "2026-11-21", title: "No pin" });
+  assert.equal(eventWithoutPin.latitude, null);
+  assert.equal(eventWithoutPin.longitude, null);
+});
+
+test("recurring schedules generate separate dated occurrences and reject invalid ranges", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const context = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+  };
+  runInNewContext(core, context);
+
+  assert.deepEqual(
+    Array.from(context.scheduleOccurrenceDates("2026-11-02", "Weekly", "2026-11-30")),
+    ["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"],
+  );
+  assert.deepEqual(
+    Array.from(context.scheduleOccurrenceDates("2026-11-02", "Bi-weekly", "2026-12-01")),
+    ["2026-11-02", "2026-11-16", "2026-11-30"],
+  );
+  assert.deepEqual(
+    Array.from(context.scheduleOccurrenceDates("2026-01-31", "Monthly", "2026-04-30")),
+    ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"],
+  );
+  assert.deepEqual(Array.from(context.scheduleOccurrenceDates("2026-11-02", "One-time", "2027-11-02")), ["2026-11-02"]);
+
+  const defaultMonthly = context.scheduleOccurrenceDates("2027-01-04", "Monthly");
+  assert.equal(defaultMonthly.length, 12);
+  assert.equal(defaultMonthly[0], "2027-01-04");
+  assert.equal(defaultMonthly[11], "2027-12-04");
+
+  assert.throws(() => context.scheduleOccurrenceDates("2026-11-02", "Weekly", "2026-10-01"), /repeat-until date/);
+  assert.throws(() => context.scheduleOccurrenceDates("2026-02-30", "Weekly"), /valid collection date/);
+  assert.throws(() => context.scheduleOccurrenceDates("2026-11-02", "Daily"), /valid collection frequency/);
+});
+
+test("schedule status entries require a reason or replacement pickup details", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const context = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+  };
+  runInNewContext(core, context);
+  const scheduled = { id: "GCS-2028-001", status: "Scheduled", date: "2028-03-06", start: "6:00 AM", end: "9:00 AM" };
+
+  assert.equal(context.scheduleStatusEntry(scheduled, { status: "Scheduled", note: "" }), null);
+  assert.throws(() => context.scheduleStatusEntry(scheduled, { status: "Delayed", note: "" }), /need an explanation/);
+  assert.throws(() => context.scheduleStatusEntry(scheduled, { status: "Cancelled", note: "  " }), /need an explanation/);
+
+  const delayed = context.scheduleStatusEntry(scheduled, {
+    status: "Delayed", note: "Heavy rain flooded the route.", actorName: "Official One", actorRole: "official",
+  });
+  assert.equal(delayed.previousStatus, "Scheduled");
+  assert.equal(delayed.status, "Delayed");
+  assert.equal(delayed.note, "Heavy rain flooded the route.");
+  assert.equal(delayed.actorName, "Official One");
+  assert.equal(delayed.previousDate, "2028-03-06");
+
+  assert.throws(() => context.scheduleStatusEntry(scheduled, {
+    status: "Rescheduled", note: "Next slot.", date: "2028-03-06", start: "6:00 AM", end: "9:00 AM",
+  }), /Change the pickup date or time/);
+  assert.throws(() => context.scheduleStatusEntry(scheduled, {
+    status: "Rescheduled", date: "2028-03-08", start: "10:00 AM", end: "7:00 AM",
+  }), /valid replacement pickup time/);
+
+  const moved = context.scheduleStatusEntry(scheduled, {
+    status: "Rescheduled", note: "Next available slot.", date: "2028-03-08", start: "7:00 AM", end: "10:00 AM",
+  });
+  assert.equal(moved.replacementDate, "2028-03-08");
+  assert.equal(moved.replacementStart, "7:00 AM");
+  assert.equal(moved.replacementEnd, "10:00 AM");
+  assert.equal(moved.previousDate, "2028-03-06");
+  assert.equal(moved.previousStart, "6:00 AM");
+});
+
+test("collection history markup shows status transitions, reasons and replacements", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = { esc: (value) => String(value ?? ""), dateLabel: (value) => String(value), dateTimeLabel: (value) => String(value) };
+  runInNewContext(views, context);
+
+  const html = context.scheduleHistoryMarkup([
+    { previousStatus: null, status: "Scheduled", note: "Collection scheduled.", actorName: "Official One", at: "2028-03-01T08:00:00.000Z" },
+    { previousStatus: "Scheduled", status: "Cancelled", note: "Holiday closure.", actorName: "Official Two", at: "2028-03-05T10:00:00.000Z" },
+  ]);
+  assert.match(html, /Scheduled → Cancelled/);
+  assert.match(html, /Holiday closure\./);
+  assert.match(html, /By Official Two/);
+  assert.match(html, /Collection scheduled\./);
+  assert.ok(html.indexOf("Cancelled") < html.indexOf("Collection scheduled."), "newest entry should render first");
+
+  const moved = context.scheduleHistoryMarkup([
+    {
+      previousStatus: "Scheduled", status: "Rescheduled", note: "Route change.", actorName: "Official One",
+      at: "2028-03-05T10:00:00.000Z", replacementDate: "2028-03-08", replacementStart: "7:00 AM", replacementEnd: "10:00 AM",
+    },
+  ]);
+  assert.match(moved, /Replacement pickup: 2028-03-08, 7:00 AM–10:00 AM/);
+  assert.match(context.scheduleHistoryMarkup([]), /No status changes recorded/);
+});
+
+test("resident area choices come from managed Palsara locations", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+  };
+  runInNewContext(core, context);
+  runInNewContext(views, context);
+  runInNewContext(`data = { locations: [
+    { id: "LOC-6", area: "Purok 6", barangay: "Palsara", purok: "Purok 6", street: "", landmark: "" },
+    { id: "LOC-7", area: "Purok 7", barangay: "Palsara", purok: "Purok 7", street: "", landmark: "" },
+    { id: "LOC-8", area: "San Isidro Proper", barangay: "San Isidro", purok: "Purok 1", street: "", landmark: "" }
+  ] };`, context);
+
+  assert.deepEqual(Array.from(context.residentAreaOptions()), ["Purok 6", "Purok 7"]);
+  assert.equal(context.isResidentArea("Purok 6"), true);
+  assert.equal(context.isResidentArea("San Isidro Proper"), false);
+
+  const markup = context.registerMarkup();
+  assert.match(markup, />Purok 6</);
+  assert.match(markup, />Purok 7</);
+  assert.doesNotMatch(markup, /San Isidro Proper/);
 });
 
 test("renders an event location action only for event announcements", async () => {
@@ -1047,6 +1371,255 @@ test("enforces official report and schedule permissions and sends resident notif
   }
 });
 
+test("enforces concern status transition sequence, resolution notes, deadlines and resident reopen/confirm", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-status-transition-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const adminCookie = admin.cookie;
+    const officialCreated = await api(app, "/api/users", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        name: "Official One",
+        email: "official@example.test",
+        area: "Palsara",
+        phone: "",
+        role: "official",
+        status: "Active",
+        availableDays: ["Tuesday", "Thursday"],
+        password: "A-unique-official-password!",
+      },
+    });
+    assert.equal(officialCreated.status, 201);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Transition Resident",
+        email: "transition-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+
+    const now = new Date().toISOString();
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-transition-01",
+      userEmail: "transition-resident@example.test",
+      name: "Transition Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the barangay hall",
+      description: "A large pothole near the barangay hall needs patching.",
+      urgent: false,
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
+    });
+    state.data.activities.push({
+      id: "A-transition-submit",
+      actor: "Transition Resident",
+      role: "resident",
+      action: "Submitted a concern",
+      detail: "RPT-2026-transition-01 · Road damage · Purok 1",
+      at: now,
+      result: "Success",
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+
+    const signedIn = await signIn(app, "official@example.test", "A-unique-official-password!");
+    assert.equal(signedIn.response.status, 200);
+    const officialCookie = signedIn.cookie;
+    state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const report = state.data.reports.find((item) => item.id === "RPT-2026-transition-01");
+    assert.equal(report.status, "Submitted");
+    assert.ok(report.responseDeadline, "a response deadline is computed from the priority");
+
+    const put = (mutate) => {
+      const next = structuredClone(state.data);
+      mutate(next.reports.find((item) => item.id === "RPT-2026-transition-01"));
+      return api(app, "/api/state", { method: "PUT", cookie: officialCookie, body: { revision: state.revision, data: next } });
+    };
+
+    // A newly submitted concern cannot jump directly to Resolved.
+    let response = await put((item) => {
+      item.status = "Resolved";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "Resolved", at: item.updatedAt, note: "Fixed." });
+    });
+    assert.equal(response.status, 403);
+    assert.match((await response.json()).error, /Follow the review path/);
+
+    // Submitted → Under Review is the first valid step.
+    response = await put((item) => {
+      item.status = "Under Review";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "Under Review", at: item.updatedAt, note: "A barangay official is reviewing this report." });
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+    const underReview = state.data.reports.find((item) => item.id === "RPT-2026-transition-01");
+    assert.equal(underReview.status, "Under Review");
+    assert.equal(underReview.respondedAt, underReview.updatedAt);
+    assert.equal(underReview.history.at(-1).actorRole, "official");
+
+    // A status change without a note is rejected.
+    response = await put((item) => {
+      item.status = "In Progress";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "In Progress", at: item.updatedAt, note: "   " });
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /update note/);
+
+    // Under Review → Resolved skips In Progress and is rejected.
+    response = await put((item) => {
+      item.status = "Resolved";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "Resolved", at: item.updatedAt, note: "All done." });
+    });
+    assert.equal(response.status, 403);
+
+    // Under Review → In Progress is valid.
+    response = await put((item) => {
+      item.status = "In Progress";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "In Progress", at: item.updatedAt, note: "Crew dispatched to patch the pothole." });
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+
+    // In Progress → Resolved with an empty note is rejected.
+    response = await put((item) => {
+      item.status = "Resolved";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "Resolved", at: item.updatedAt, note: "   " });
+    });
+    assert.equal(response.status, 400);
+
+    // In Progress → Resolved with a resolution explanation is valid.
+    response = await put((item) => {
+      item.status = "Resolved";
+      item.updatedAt = new Date().toISOString();
+      item.history.push({ status: "Resolved", at: item.updatedAt, note: "Pothole patched and road surface restored." });
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+    const resolved = state.data.reports.find((item) => item.id === "RPT-2026-transition-01");
+    assert.equal(resolved.status, "Resolved");
+    assert.equal(resolved.history.at(-1).note, "Pothole patched and road surface restored.");
+    assert.equal(resolved.history.at(-1).actorRole, "official");
+
+    // The resident can confirm a resolved concern as addressed.
+    response = await api(app, "/api/community/report-confirm", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-2026-transition-01", note: "Looks good to me." },
+    });
+    assert.equal(response.status, 200);
+    const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    assert.ok(officialState.data.notifications.some((item) => /confirmed this concern was addressed/.test(item.body)));
+
+    // The resident can request reopening with a reason.
+    response = await api(app, "/api/community/report-reopen", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-2026-transition-01", reason: "The pothole reopened after the rain." },
+    });
+    assert.equal(response.status, 200);
+    state = await api(app, "/api/state", { cookie: adminCookie }).then((response) => response.json());
+    const reopened = state.data.reports.find((item) => item.id === "RPT-2026-transition-01");
+    assert.equal(reopened.status, "Submitted");
+    assert.equal(reopened.history.at(-1).status, "Submitted");
+    assert.match(reopened.history.at(-1).note, /requested reopening/);
+
+    // Reopening without a reason is rejected.
+    response = await api(app, "/api/community/report-reopen", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-2026-transition-01", reason: "" },
+    });
+    assert.equal(response.status, 400);
+
+    // Confirming a non-resolved concern is rejected.
+    response = await api(app, "/api/community/report-confirm", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-2026-transition-01", note: "" },
+    });
+    assert.equal(response.status, 409);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("flags concerns past their response deadline as overdue", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-overdue-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const adminCookie = admin.cookie;
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Overdue Resident",
+        email: "overdue-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const old = new Date(Date.now() - 10 * 86400000).toISOString();
+    let state = await api(app, "/api/state", { cookie: adminCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-overdue-01",
+      userEmail: "overdue-resident@example.test",
+      name: "Overdue Resident",
+      category: "Drainage problem",
+      title: "Blocked drain · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the market",
+      description: "The drain near the market is blocked and flooding the street.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt: old,
+      updatedAt: old,
+      photos: [],
+      history: [{ status: "Submitted", at: old, note: "Report received." }],
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: adminCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+    state = await api(app, "/api/state", { cookie: adminCookie }).then((response) => response.json());
+    const report = state.data.reports.find((item) => item.id === "RPT-2026-overdue-01");
+    assert.ok(report.responseDeadline);
+    assert.ok(report.overdue, "a concern past its Medium-priority deadline is overdue");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("manages locations and announcements and sends idempotent collection reminders", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-directory-"));
   const app = await startServer(dataDir);
@@ -1270,6 +1843,268 @@ test("manages locations and announcements and sends idempotent collection remind
     assert.equal(afterReminder.data.notifications.filter((item) => item.title === "Collection reminder").length, 1);
     const reminderRows = await app.db.query("SELECT count(*)::integer AS count FROM schedule_reminders");
     assert.equal(reminderRows.rows[0].count, 1);
+
+    const registeredNewArea = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Purok Six Resident",
+        email: "purok-six-resident@example.test",
+        area: "Purok 6",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registeredNewArea.status, 201);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("stores recurring schedule occurrences as independent dated rows", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-recurring-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Recurring Resident",
+        email: "recurring-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+    let state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const series = [
+      ["GCS-2027-101", "2027-01-05"],
+      ["GCS-2027-102", "2027-01-12"],
+      ["GCS-2027-103", "2027-01-19"],
+    ];
+    for (const [id, date] of series) {
+      state.data.schedules.push({
+        id,
+        area: "Purok 1",
+        zone: "Zone A",
+        date,
+        wasteType: "Biodegradable",
+        start: "6:00 AM",
+        end: "9:00 AM",
+        frequency: "Weekly",
+        team: "Team A",
+        status: "Scheduled",
+        seriesId: "GCS-2027-101",
+        recurrenceEnd: "2027-01-19",
+      });
+    }
+    let response = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+    state = await response.json();
+    const saved = state.data.schedules.filter((item) => item.seriesId === "GCS-2027-101");
+    assert.deepEqual(saved.map((item) => item.id), ["GCS-2027-101", "GCS-2027-102", "GCS-2027-103"]);
+    assert.deepEqual(saved.map((item) => item.date), ["2027-01-05", "2027-01-12", "2027-01-19"]);
+    assert.equal(saved.every((item) => item.recurrenceEnd === "2027-01-19"), true);
+
+    const residentAfterSeries = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    const addedNotifications = residentAfterSeries.data.notifications.filter((item) => item.title === "Collection schedule added for Purok 1");
+    assert.equal(addedNotifications.length, 1);
+    assert.match(addedNotifications[0].body, /3 Biodegradable pickups/);
+
+    const delayed = saved.find((item) => item.id === "GCS-2027-101");
+    delayed.status = "Delayed";
+    delayed.history.push({
+      previousStatus: "Scheduled",
+      status: "Delayed",
+      at: new Date().toISOString(),
+      actorName: "Forged name",
+      actorRole: "resident",
+      note: "Heavy rain flooded the route.",
+      previousDate: delayed.date,
+      previousStart: delayed.start,
+      previousEnd: delayed.end,
+      replacementDate: null,
+      replacementStart: null,
+      replacementEnd: null,
+    });
+    response = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+    const delayedStored = state.data.schedules.find((item) => item.id === "GCS-2027-101");
+    assert.equal(delayedStored.status, "Delayed");
+    assert.equal(delayedStored.history.at(-1).note, "Heavy rain flooded the route.");
+    assert.equal(delayedStored.history.at(-1).previousStatus, "Scheduled");
+    assert.notEqual(delayedStored.history.at(-1).actorName, "Forged name");
+    assert.equal(delayedStored.history.at(-1).actorRole, "administrator");
+    assert.equal(state.data.schedules.find((item) => item.id === "GCS-2027-102").status, "Scheduled");
+    assert.equal(state.data.schedules.find((item) => item.id === "GCS-2027-103").status, "Scheduled");
+    const residentAfterDelay = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    const delayNotifications = residentAfterDelay.data.notifications.filter((item) => item.title === "Collection update for Purok 1");
+    assert.equal(delayNotifications.length, 1);
+    assert.match(delayNotifications[0].body, /Heavy rain flooded the route/);
+
+    const stored = await app.db.query(`
+      SELECT count(*)::integer AS count, count(DISTINCT series_id)::integer AS series,
+        count(DISTINCT recurrence_end)::integer AS recurrence_ends
+      FROM schedules
+    `);
+    assert.deepEqual(stored.rows[0], { count: 3, series: 1, recurrence_ends: 1 });
+
+    const invalidSeries = structuredClone(state.data);
+    invalidSeries.schedules[0].seriesId = "not a valid id!";
+    const rejected = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: invalidSeries },
+    });
+    assert.equal(rejected.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("collection status changes keep a history and require reasons and replacement pickups", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-schedule-history-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "History Resident",
+        email: "history-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+    let state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    state.data.schedules.push({
+      id: "GCS-2028-001",
+      area: "Purok 1",
+      zone: "Zone A",
+      date: "2028-03-06",
+      wasteType: "Biodegradable",
+      start: "6:00 AM",
+      end: "9:00 AM",
+      frequency: "One-time",
+      team: "Team A",
+      status: "Scheduled",
+      seriesId: null,
+      recurrenceEnd: null,
+    });
+    let response = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+    let schedule = state.data.schedules.find((item) => item.id === "GCS-2028-001");
+    assert.equal(schedule.history.length, 1);
+    assert.equal(schedule.history[0].status, "Scheduled");
+    assert.equal(schedule.history[0].previousStatus, null);
+
+    const entry = (previousStatus, status, note, overrides = {}) => ({
+      previousStatus,
+      status,
+      at: new Date().toISOString(),
+      actorName: "",
+      actorRole: "",
+      note,
+      previousDate: null,
+      previousStart: null,
+      previousEnd: null,
+      replacementDate: null,
+      replacementStart: null,
+      replacementEnd: null,
+      ...overrides,
+    });
+    const put = (mutate) => {
+      const next = structuredClone(state.data);
+      mutate(next.schedules.find((item) => item.id === "GCS-2028-001"));
+      return api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: next } });
+    };
+
+    response = await put((item) => { item.status = "Delayed"; });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /history/);
+
+    response = await put((item) => {
+      item.status = "Delayed";
+      item.history.push(entry("Scheduled", "Delayed", "   "));
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /need a reason/);
+
+    response = await put((item) => {
+      item.status = "Rescheduled";
+      item.history.push(entry("Scheduled", "Rescheduled", "Route change."));
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /replacement pickup date and time/);
+
+    response = await put((item) => {
+      item.status = "Cancelled";
+      item.history.push(entry("Scheduled", "Cancelled", "Holiday closure.", {
+        previousDate: item.date, previousStart: item.start, previousEnd: item.end,
+      }));
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+    schedule = state.data.schedules.find((item) => item.id === "GCS-2028-001");
+    assert.equal(schedule.status, "Cancelled");
+    assert.equal(schedule.history.at(-1).note, "Holiday closure.");
+    assert.equal(schedule.history.at(-1).previousStatus, "Scheduled");
+    assert.ok(schedule.history.at(-1).actorName);
+    assert.equal(schedule.history.at(-1).actorRole, "administrator");
+    const residentAfterCancel = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    assert.ok(residentAfterCancel.data.notifications.some((item) => /Holiday closure/.test(item.body)));
+
+    response = await put((item) => {
+      item.status = "Rescheduled";
+      item.date = "2028-03-08";
+      item.start = "7:00 AM";
+      item.end = "10:00 AM";
+      item.history.push(entry("Cancelled", "Rescheduled", "Replacement after the holiday.", {
+        previousDate: "2028-03-06",
+        previousStart: "6:00 AM",
+        previousEnd: "9:00 AM",
+        replacementDate: "2028-03-08",
+        replacementStart: "7:00 AM",
+        replacementEnd: "10:00 AM",
+      }));
+    });
+    assert.equal(response.status, 200);
+    state = await response.json();
+    schedule = state.data.schedules.find((item) => item.id === "GCS-2028-001");
+    assert.equal(schedule.date, "2028-03-08");
+    assert.equal(schedule.start, "7:00 AM");
+    assert.equal(schedule.history.at(-1).previousDate, "2028-03-06");
+    assert.equal(schedule.history.at(-1).replacementDate, "2028-03-08");
+    assert.equal(schedule.history.at(-1).actorRole, "administrator");
+    const storedHistory = await app.db.query("SELECT count(*)::integer AS count FROM schedule_history WHERE schedule_id='GCS-2028-001'");
+    assert.equal(storedHistory.rows[0].count, 3);
+    const residentAfterReschedule = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    assert.ok(residentAfterReschedule.data.notifications.some((item) => /rescheduled from 2028-03-06/.test(item.body)));
+
+    response = await put((item) => {
+      item.history.push(entry("Rescheduled", "Rescheduled", "Tampered history."));
+    });
+    assert.equal(response.status, 400);
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -1749,6 +2584,39 @@ test("follow-up cells: Under Review and In Progress record the current status in
   }
 });
 
+test("stores calendar event coordinates and returns them in saved state", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-calendar-coords-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const response = await api(app, "/api/calendar/events", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        title: "Community clean-up",
+        detail: "Meet at the covered court before the clean-up starts.",
+        date,
+        latitude: 14.01799,
+        longitude: 121.09465,
+      },
+    });
+    const created = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(created));
+    const event = created.data.calendarEvents.find((item) => item.title === "Community clean-up");
+    assert.equal(event.latitude, 14.01799);
+    assert.equal(event.longitude, 121.09465);
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((result) => result.json());
+    const saved = state.data.calendarEvents.find((item) => item.id === event.id);
+    assert.equal(saved.latitude, 14.01799);
+    assert.equal(saved.longitude, 121.09465);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("pending announcement decline stores reason, notifies creator and hides from residents", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-decline-cell-"));
   const app = await startServer(dataDir);
@@ -1917,6 +2785,39 @@ test("official announcement edit re-pends approval and clears decline reason", a
   }
 });
 
+test("administrators publish announcements directly while officials submit for approval", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-announcement-roles-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const date = new Date().toISOString().slice(0, 10);
+
+    const adminResponse = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { title: "Direct admin notice", detail: "Published directly by an administrator.", date },
+    });
+    const adminState = await adminResponse.json();
+    assert.equal(adminResponse.status, 200, JSON.stringify(adminState));
+    const adminAnnouncement = adminState.data.announcements.find((item) => item.title === "Direct admin notice");
+    assert.equal(adminAnnouncement.approvalStatus, "approved");
+
+    const officialResponse = await api(app, "/api/announcements", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { title: "Official request", detail: "Submitted for administrator approval.", date },
+    });
+    const officialState = await officialResponse.json();
+    assert.equal(officialResponse.status, 200, JSON.stringify(officialState));
+    const officialAnnouncement = officialState.data.announcements.find((item) => item.title === "Official request");
+    assert.equal(officialAnnouncement.approvalStatus, "pending");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("priority downgrade at exactly the new limit succeeds, then the next follow-up is blocked", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-downgrade-boundary-"));
   const app = await startServer(dataDir);
@@ -1946,4 +2847,138 @@ test("priority downgrade at exactly the new limit succeeds, then the next follow
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
   }
+});
+
+test("health endpoint reports database availability", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-health-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const health = await api(app, "/api/healthz", { cookie: admin.cookie });
+    assert.equal(health.status, 200);
+    const body = await health.json();
+    assert.equal(body.status, "ok");
+    assert.equal(body.database, "available");
+    assert.ok(body.checked_at);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("failed sign-in attempts are logged as security events", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-failed-login-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const failed = await api(app, "/api/auth/login", {
+      method: "POST",
+      body: { email: "nonexistent@example.test", password: "wrong-password!" },
+    });
+    assert.equal(failed.status, 401);
+
+    const stateAfter = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const failedLoginEvents = stateAfter.data.activities.filter(
+      (item) => item.action === "Failed sign-in" && item.result === "Failed",
+    );
+    assert.ok(failedLoginEvents.length >= 1, "Failed sign-in should be logged as a security event");
+    const event = failedLoginEvents[0];
+    assert.match(event.detail || "", /nonexistent/);
+    assert.ok(event.resultReason);
+    assert.ok(event.clientIp);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("analytics page shows report metrics and trends", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const coreContext = {
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    data: { permissions: {} },
+  };
+  runInNewContext(core, coreContext);
+
+  const now = new Date().toISOString();
+  const oldDate = new Date(Date.now() - 10 * 86400000).toISOString();
+  const context = {
+    ...coreContext,
+    data: {
+      permissions: {},
+      reports: [
+        {
+          id: "RPT-2026-001",
+          userEmail: "r1@example.test",
+          name: "Resident One",
+          category: "Road damage",
+          title: "Pothole",
+          area: "Purok 1",
+          barangay: "Palsara",
+          locationDetail: "Near hall",
+          description: "A large pothole needs patching.",
+          urgent: false,
+          status: "Resolved",
+          submittedAt: oldDate,
+          updatedAt: now,
+          photos: [],
+          history: [
+            { status: "Submitted", at: oldDate, note: "Report received." },
+            { status: "Under Review", at: new Date(Date.now() - 5 * 86400000).toISOString(), note: "Reviewing.", actorName: "Official One", actorRole: "official" },
+            { status: "Resolved", at: now, note: "Fixed.", actorName: "Official One", actorRole: "official" },
+          ],
+        },
+        {
+          id: "RPT-2026-002",
+          userEmail: "r2@example.test",
+          name: "Resident Two",
+          category: "Drainage problem",
+          title: "Blocked drain",
+          area: "Purok 2",
+          barangay: "Palsara",
+          locationDetail: "Near market",
+          description: "The drain is blocked.",
+          urgent: false,
+          status: "Submitted",
+          submittedAt: now,
+          updatedAt: now,
+          photos: [],
+          history: [{ status: "Submitted", at: now, note: "Report received." }],
+        },
+      ],
+      users: [
+        { id: "u1", name: "Official One", email: "official@example.test", role: "official", status: "Active" },
+      ],
+      schedules: [],
+    },
+    ROLES: { resident: "Resident", official: "Barangay official", administrator: "Administrator" },
+    PERMISSION_DEFS: [],
+    esc: (value) => String(value ?? ""),
+    page: (_role, _view, body) => body,
+    selectedPermissionRole: "official",
+    permissionDrafts: {},
+    permissionOpenGroups: {},
+    currentUser: { id: "admin", name: "Admin User", email: "admin@example.test", role: "administrator", area: "Palsara" },
+    modalState: null,
+  };
+  runInNewContext(views, context);
+
+  const html = context.analyticsPage();
+  assert.match(html, /Total reports/);
+  assert.match(html, /Open reports/);
+  assert.match(html, /Resolved reports/);
+  assert.match(html, /Overdue concerns/);
+  assert.match(html, /Avg. first review/);
+  assert.match(html, /Avg. time to resolve/);
+  assert.match(html, /Reports by area/);
+  assert.match(html, /Reports by category/);
+  assert.match(html, /Collection service/);
+  assert.match(html, /Official workload/);
+  assert.match(html, /Monthly submissions/);
+  assert.match(html, /Purok 1/);
+  assert.match(html, /Purok 2/);
+  assert.match(html, /Road damage/);
+  assert.match(html, /Drainage problem/);
 });

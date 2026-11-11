@@ -216,10 +216,46 @@ function modalMarkup() {
   if (modalState.kind === "schedule") {
     const schedule = modalState.id ? data.schedules.find((item) => item.id === modalState.id) : null;
     const title = schedule ? "Edit collection schedule" : "Add collection schedule";
-    const body = `<form id="schedule-form" class="modal-form"><input type="hidden" name="id" value="${esc(schedule?.id || "")}">
-      <div class="modal-form-fields"><div class="form-grid">${selectField("Area", "area", locationAreas(), schedule?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Collection date", "date", schedule?.date || todayISO(), { type: "date", required: true })}${inputField("Waste type", "wasteType", schedule?.wasteType || "", { required: true, placeholder: "e.g. Biodegradable" })}${selectField("Service status", "status", COLLECTION_STATUSES, schedule?.status || "Scheduled", { required: true })}${inputField("Start time", "start", schedule?.start || "6:00 AM", { required: true })}${inputField("End time", "end", schedule?.end || "9:00 AM", { required: true })}${selectField("Frequency", "frequency", ["Weekly", "Bi-weekly", "Monthly", "One-time"], schedule?.frequency || "Weekly", { required: true })}${inputField("Collection team", "team", schedule?.team || "Team A · Truck 01")}</div></div>
+    const initialStatus = schedule?.status || "Scheduled";
+    const seriesNotice = schedule?.seriesId
+      ? `<p class="field-help">This pickup is part of a recurring series. Changes here apply only to ${esc(dateLabel(schedule.date))}, not the other pickups.</p>`
+      : "";
+    const body = `<form id="schedule-form" class="modal-form" data-initial-status="${esc(initialStatus)}"><input type="hidden" name="id" value="${esc(schedule?.id || "")}">
+      <div class="modal-form-fields">${seriesNotice}<div class="form-grid">${selectField("Area", "area", locationAreas(), schedule?.area || locationAreas()[0], { required: true, labels: locationAreaLabels() })}${inputField("Collection date", "date", schedule?.date || todayISO(), { type: "date", required: true })}${inputField("Waste type", "wasteType", schedule?.wasteType || "", { required: true, placeholder: "e.g. Biodegradable" })}${selectField("Service status", "status", COLLECTION_STATUSES, initialStatus, { required: true })}${inputField("Start time", "start", schedule?.start || "6:00 AM", { required: true })}${inputField("End time", "end", schedule?.end || "9:00 AM", { required: true })}${selectField("Frequency", "frequency", SCHEDULE_FREQUENCIES, schedule?.frequency || "Weekly", { required: true })}${inputField("Repeat until", "recurrenceEnd", schedule?.recurrenceEnd || "", { type: "date" })}${inputField("Collection team", "team", schedule?.team || "Team A · Truck 01")}</div>
+        <div class="form-field span-all" id="schedule-status-note-field" hidden>
+          <label for="statusNote">Explanation for residents</label>
+          <textarea class="textarea" id="statusNote" name="statusNote" maxlength="400" placeholder="e.g. Truck breakdown, flooding along the route, or a public holiday."></textarea>
+          <p class="field-help">Required for Delayed and Cancelled. Recorded in the collection history with your name and the time of the change.</p>
+        </div>
+        <p class="field-help span-all" id="schedule-reschedule-hint" hidden>Set the collection date and times above to the replacement pickup. The original and replacement details will both appear in the collection history.</p>
+        <p class="field-help">Weekly, bi-weekly, and monthly schedules create a separate pickup for every date. Leave “Repeat until” empty to cover the next 12 months.</p></div>
       <div class="form-actions">${schedule ? `<button class="button danger" type="button" data-action="delete-schedule" data-id="${esc(schedule.id)}">Remove schedule</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Save schedule</button></div></form>`;
     return makeModal(title, body);
+  }
+  if (modalState.kind === "schedule-detail") {
+    const schedule = data.schedules.find((item) => item.id === modalState.id);
+    if (!schedule) {
+      modalState = null;
+      return "";
+    }
+    const latest = (schedule.history || []).at(-1);
+    const statusNote = latest && ["Delayed", "Cancelled", "Rescheduled"].includes(schedule.status) && latest.note
+      ? `<div class="notice-bar"><strong>${esc(schedule.status)}</strong><span>${esc(latest.note)}</span></div>`
+      : "";
+    const body = `<div class="modal-form-fields">
+      <div class="status-line">${statusPill(schedule.status)}<span class="muted small">${esc(schedule.area)} · ${esc(schedule.zone)}</span></div>
+      <ul class="plain-list">
+        <li><span>Service</span><strong>${esc(schedule.wasteType)}</strong></li>
+        <li><span>Collection date</span><strong>${esc(dateLabel(schedule.date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</strong></li>
+        <li><span>Collection window</span><strong>${esc(schedule.start)} – ${esc(schedule.end)}</strong></li>
+        <li><span>Collection team</span><strong>${esc(schedule.team)}</strong></li>
+      </ul>
+      ${statusNote}
+      <div class="section-heading"><div><h2>Collection history</h2><p>Previous status, new status, who changed it, and why.</p></div></div>
+      ${scheduleHistoryMarkup(schedule.history)}
+    </div>
+    <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Close</button></div>`;
+    return makeModal(`Collection details · ${schedule.id}`, body);
   }
   if (modalState.kind === "location") {
     const location = data.locations.find((item) => item.id === modalState.id);
@@ -374,6 +410,22 @@ function modalMarkup() {
   <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", accountAreas, selectedArea, { required: true, labels: locationAreaLabels(), placeholder: selectedArea ? "" : "Choose a managed location" })}${selectField("Role", "role", Object.keys(ROLES), accountRole, { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}<div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-start">Working hours start</label><select class="select" id="working-hours-start" name="workingHoursStart" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.start)}</select></div><div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-end">Working hours end</label><select class="select" id="working-hours-end" name="workingHoursEnd" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.end)}</select></div><fieldset class="availability-field span-all" ${accountRole !== "official" ? "hidden" : ""}><legend>Available days</legend><p class="availability-help">Choose the days this official is available.</p><div class="availability-days">${availableDayOptions(availableDays)}</div></fieldset>${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
     <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">${user.resetRequested ? "Approve &amp; Generate" : "Reset password"}</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
   return makeModal(user ? "Edit account" : "Add account", body);
+}
+
+function syncScheduleStatusFields(form) {
+  const status = String(form.elements.status?.value || "Scheduled");
+  const initialStatus = String(form.dataset.initialStatus || "");
+  const changed = !initialStatus || status !== initialStatus;
+  const noteField = form.querySelector("#schedule-status-note-field");
+  const noteInput = form.querySelector("#statusNote");
+  const rescheduleHint = form.querySelector("#schedule-reschedule-hint");
+  const needsReason = changed && SCHEDULE_REASON_STATUSES.includes(status);
+  if (noteField) noteField.hidden = !changed;
+  if (noteInput) {
+    noteInput.required = needsReason;
+    noteInput.setAttribute("aria-required", needsReason ? "true" : "false");
+  }
+  if (rescheduleHint) rescheduleHint.hidden = !(changed && status === "Rescheduled");
 }
 
 function showModal(kind, id = "") {
@@ -574,6 +626,13 @@ async function updateReportStatus(form) {
   const status = String(form.get("status"));
   const note = String(form.get("note") || "").trim();
   if (!STATUSES.includes(status)) throw new Error("Choose a valid report status.");
+  if (status !== report.status) {
+    const allowed = REPORT_TRANSITIONS[report.status] ?? [];
+    if (!allowed.includes(status)) {
+      throw new Error(`This concern cannot move from ${report.status} to ${status}. Follow the path: Submitted → Under Review → In Progress → Resolved.`);
+    }
+    if (!note) throw new Error(`Add an update note when changing the status to ${status}.`);
+  }
   if (status === report.status && !note) {
     toast("Choose a new status or add an update for the resident.", "error");
     return;
@@ -612,6 +671,65 @@ async function updateReportAssignment(id, claim) {
   if (!await localSave()) return;
   render();
   toast(claim ? `${report.id} assigned to you.` : `${report.id} released to the queue.`, "success");
+}
+
+async function confirmReport(reportId, note) {
+  const report = getReport(reportId);
+  if (!report || currentUser.role !== "resident") throw new Error("This concern could not be found.");
+  if (report.userEmail !== currentUser.email) throw new Error("Residents can only confirm their own concerns.");
+  if (report.status !== "Resolved") throw new Error("Only a resolved concern can be confirmed as addressed.");
+  const confirmed = await confirmAction({
+    title: "Confirm addressed?",
+    message: `Confirm that ${reportId} was addressed and close the follow-up?`,
+    confirmLabel: "Confirm addressed",
+  });
+  if (!confirmed) return;
+  const response = await fetch("/api/community/report-confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reportId, note }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The concern could not be confirmed.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "The concern was confirmed, but the report list could not be refreshed.");
+  data = state.data;
+  dataRevision = state.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
+  selectedReportId = null;
+  render();
+  toast(`${reportId} confirmed as addressed.`, "success");
+}
+
+async function reopenReport(reportId, reason) {
+  const report = getReport(reportId);
+  if (!report || currentUser.role !== "resident") throw new Error("This concern could not be found.");
+  if (report.userEmail !== currentUser.email) throw new Error("Residents can only reopen their own concerns.");
+  if (report.status !== "Resolved") throw new Error("Only a resolved concern can be reopened.");
+  const confirmed = await confirmAction({
+    title: "Reopen concern?",
+    message: `Reopen ${reportId} and return it to the concern queue?`,
+    confirmLabel: "Reopen concern",
+    tone: "danger",
+  });
+  if (!confirmed) return;
+  const response = await fetch("/api/community/report-reopen", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reportId, reason }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The concern could not be reopened.");
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "The concern was reopened, but the report list could not be refreshed.");
+  data = state.data;
+  dataRevision = state.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
+  selectedReportId = null;
+  render();
+  toast(`${reportId} reopened. It is back in the concern queue.`, "success");
 }
 
 function followUpLimitFor(priority) {
@@ -703,7 +821,10 @@ async function updateCollection(form) {
   const date = String(form.get("date") || "");
   const area = String(form.get("area") || "");
   const status = String(form.get("status") || "");
+  const frequency = String(form.get("frequency") || "Weekly");
+  const recurrenceEnd = String(form.get("recurrenceEnd") || "").trim() || null;
   if (!locationAreas().includes(area) || !COLLECTION_STATUSES.includes(status) || !date) throw new Error("Choose a valid area, collection date, and service status.");
+  if (!SCHEDULE_FREQUENCIES.includes(frequency)) throw new Error("Choose a valid collection frequency.");
   const record = {
     ...(existing || { id: nextScheduleId(date) }),
     area,
@@ -712,7 +833,9 @@ async function updateCollection(form) {
     wasteType: String(form.get("wasteType") || "").trim(),
     start: String(form.get("start") || "").trim(),
     end: String(form.get("end") || "").trim(),
-    frequency: String(form.get("frequency") || "Weekly"),
+    frequency,
+    recurrenceEnd: frequency === "One-time" ? null : recurrenceEnd,
+    seriesId: existing?.seriesId || null,
     team: String(form.get("team") || "").trim() || "Collection team",
     status,
   };
@@ -720,17 +843,64 @@ async function updateCollection(form) {
   const startMinutes = timeToMinutes(record.start);
   if (endMinutes < 0 || startMinutes < 0 || endMinutes <= startMinutes) throw new Error("Use a valid time such as 6:00 AM, and make sure the end time is later.");
   if (!record.wasteType || !record.start || !record.end) throw new Error("Complete the service, collection time, and waste type.");
+  const statusNote = String(form.get("statusNote") || "").trim();
+  if (!existing && status === "Rescheduled") throw new Error("Save this collection first, then reschedule it to a replacement pickup.");
+  const historyEntry = scheduleStatusEntry(existing, {
+    status,
+    note: statusNote,
+    date: record.date,
+    start: record.start,
+    end: record.end,
+    actorName: currentUser.name,
+    actorRole: currentUser.role,
+  });
+  const statusChanged = !existing || existing.status !== status;
+  const statusSummary = statusChanged
+    ? status === "Rescheduled"
+      ? `Move this ${record.wasteType} pickup from ${dateLabel(existing.date)} to ${dateLabel(record.date)}, ${record.start}–${record.end}?`
+      : `Mark this ${record.wasteType} pickup as ${status.toLowerCase()}${statusNote ? `: ${statusNote}` : ""}?`
+    : "";
+  const occurrenceDates = existing ? [] : scheduleOccurrenceDates(date, frequency, record.recurrenceEnd);
   const confirmed = await confirmAction({
     title: existing ? "Save schedule?" : "Add schedule?",
     message: existing
-      ? `Save changes to this ${record.wasteType} collection schedule for ${record.area}? Residents will be notified.`
-      : `Add this ${record.wasteType} collection schedule for ${record.area}? Residents will be notified.`,
+      ? `${statusSummary ? `${statusSummary} ` : ""}${existing.seriesId
+        ? `The other pickups in this recurring series stay unchanged.`
+        : `Residents will be notified about this change.`}`
+      : occurrenceDates.length > 1
+        ? `Add ${occurrenceDates.length} ${record.wasteType} pickups for ${record.area}, from ${dateLabel(occurrenceDates[0])} to ${dateLabel(occurrenceDates.at(-1))}? Residents will be notified about the new schedule.`
+        : `Add this ${record.wasteType} collection schedule for ${record.area}? Residents will be notified.`,
     confirmLabel: existing ? "Save schedule" : "Add schedule",
   });
   if (!confirmed) return;
-  if (existing) Object.assign(existing, record);
-  else data.schedules.push(record);
-  addActivity(existing ? "Updated a collection schedule" : "Added a collection schedule", `${record.id} · ${record.area} · ${status}`);
+  if (existing) {
+    if (historyEntry) existing.history = [...(existing.history || []), historyEntry];
+    Object.assign(existing, record);
+    addActivity(statusChanged ? "Changed a collection status" : "Updated a collection schedule",
+      `${record.id} · ${record.area} · ${existing.status}${statusNote ? ` · ${statusNote}` : ""}`);
+  } else {
+    const seriesId = occurrenceDates.length > 1 ? nextScheduleId(occurrenceDates[0]) : null;
+    const creationEntry = scheduleStatusEntry(null, {
+      status,
+      note: statusNote,
+      date: record.date,
+      start: record.start,
+      end: record.end,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+    });
+    const records = occurrenceDates.map((occurrenceDate, index) => ({
+      ...record,
+      id: nextScheduleId(occurrenceDate, index),
+      date: occurrenceDate,
+      seriesId,
+      history: [{ ...creationEntry }],
+    }));
+    data.schedules.push(...records);
+    addActivity("Added a collection schedule", records.length > 1
+      ? `${records[0].id} · ${record.area} · ${records.length} recurring pickups`
+      : `${records[0].id} · ${record.area} · ${status}`);
+  }
   if (!await localSave()) return;
   modalState = null;
   render();
@@ -897,11 +1067,7 @@ async function decideAnnouncement(id, status, reason = "") {
 }
 
 async function saveCalendarEvent(form) {
-  const body = {
-    title: String(form.get("title") || "").trim(),
-    detail: String(form.get("detail") || "").trim(),
-    date: String(form.get("date") || ""),
-  };
+  const body = calendarEventFromForm(form);
   if (!body.title || !body.date) throw new Error("Enter an event title and date.");
   if (body.date < todayISO()) throw new Error("Events cannot be scheduled before today.");
   const isAdmin = currentUser.role === "administrator";
@@ -962,19 +1128,7 @@ function calendarEventsForDate(dateStr) {
   const schedules = isResident
     ? sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area)
     : sortedSchedules(data.schedules);
-  const calendarEvents = (data.calendarEvents || []).map((item) => ({
-    id: String(item.id),
-    date: item.date,
-    title: item.title,
-    detail: item.detail || "",
-    kind: "Event",
-    status: item.approvalStatus || "approved",
-    declineReason: item.declineReason || "",
-    createdBy: item.createdBy || "",
-    createdByName: item.createdByName || "",
-    latitude: item.latitude ?? null,
-    longitude: item.longitude ?? null,
-  }));
+  const calendarEvents = (data.calendarEvents || []).map(calendarEventFromRecord);
   const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
   const events = [
     ...data.announcements
@@ -996,13 +1150,13 @@ function calendarEventsForDate(dateStr) {
   return events.filter((event) => event.date === dateStr);
 }
 
-function nextScheduleId(date) {
+function nextScheduleId(date, offset = 0) {
   const year = asDate(date).getFullYear();
   const largest = data.schedules.reduce((value, schedule) => {
     const match = schedule.id.match(/-(\d+)$/);
     return match ? Math.max(value, Number(match[1])) : value;
   }, 0);
-  return `GCS-${year}-${String(largest + 1).padStart(3, "0")}`;
+  return `GCS-${year}-${String(largest + 1 + offset).padStart(3, "0")}`;
 }
 
 function timeToMinutes(value) {
@@ -1142,7 +1296,7 @@ async function createResident(form) {
   const password = String(form.get("password") || "");
   const confirm = String(form.get("confirmPassword") || "");
   const area = String(form.get("area") || "").trim();
-  if (!AREAS.includes(area)) throw new Error("Choose a valid purok or area.");
+  if (!isResidentArea(area)) throw new Error("Choose a valid purok or area.");
   if (name.length < 2) throw new Error("Enter your full name.");
   if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The passwords do not match.");
@@ -1846,6 +2000,13 @@ async function handleAction(button, clickEvent) {
     openReport(button.dataset.id);
   } else if (action === "claim-report" || action === "release-report") {
     await updateReportAssignment(button.dataset.id, action === "claim-report");
+  } else if (action === "confirm-report") {
+    await confirmReport(button.dataset.id, "");
+  } else if (action === "reopen-report") {
+    const reason = window.prompt(`Explain why this concern should be reopened:`);
+    if (reason === null) return;
+    if (!reason.trim()) throw new Error("Enter a reason before reopening the concern.");
+    await reopenReport(button.dataset.id, reason.trim());
   } else if (action === "back-list") {
     selectedReportId = null;
     render();
@@ -1894,6 +2055,8 @@ async function handleAction(button, clickEvent) {
     }
   } else if (action === "add-schedule") {
     showModal("schedule");
+  } else if (action === "view-schedule") {
+    showModal("schedule-detail", button.dataset.id);
   } else if (action === "edit-schedule") {
     showModal("schedule", button.dataset.id);
   } else if (action === "delete-schedule") {
@@ -2005,13 +2168,13 @@ async function handleAction(button, clickEvent) {
     const { role } = button.dataset;
     if (!Object.hasOwn(data.permissions, role)) throw new Error("This role could not be found.");
     rememberOpenPermissionGroups();
+    permissionDrafts[role] ||= { ...data.permissions[role] };
     selectedPermissionRole = role;
     render();
     app.querySelector(`[data-action="select-permission-role"][data-role="${role}"]`)?.focus();
   } else if (action === "toggle-permission") {
     const permission = button.dataset.permission;
     const role = selectedPermissionRole;
-    if (role !== "official") throw new Error("Only the Barangay official role can have permission changes.");
     if (!Object.hasOwn(data.permissions, role) || !Object.hasOwn(data.permissions[role], permission)) throw new Error("This permission could not be found.");
     permissionDrafts[role] ||= { ...data.permissions[role] };
     permissionDrafts[role][permission] = !permissionDrafts[role][permission];
@@ -2041,6 +2204,31 @@ async function handleAction(button, clickEvent) {
     if (await localSave()) {
       render();
       toast("Barangay official permissions saved.", "success");
+    }
+  } else if (action === "reset-account-permission") {
+    const email = button.dataset.email;
+    const permission = button.dataset.permission;
+    const account = (data.users || []).find((user) => user.email === email);
+    if (account?.role !== "official") throw new Error("Only Barangay official accounts can have permission overrides.");
+    const existingOverrides = data.accountOverrides?.[email] || {};
+    if (!Object.hasOwn(existingOverrides, permission)) {
+      toast("No override to clear.", "success");
+      return;
+    }
+    const confirmed = await confirmAction({
+      title: "Clear override?",
+      message: `Remove the ${permission} override for ${account.name} and fall back to the role default?`,
+      confirmLabel: "Clear override",
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    delete data.accountOverrides[email][permission];
+    if (Object.keys(data.accountOverrides[email]).length === 0) {
+      delete data.accountOverrides[email];
+    }
+    if (await localSave()) {
+      render();
+      toast(`Override cleared for ${account.name}.`, "success");
     }
   } else if (action === "reset-account-permissions") {
     const email = button.dataset.email;
@@ -2078,11 +2266,6 @@ async function handleAction(button, clickEvent) {
   } else if (action === "save-permission-draft") {
     rememberOpenPermissionGroups();
     const role = selectedPermissionRole;
-    if (role !== "official") {
-      delete permissionDrafts[role];
-      render();
-      return;
-    }
     const draft = permissionDrafts[role];
     if (!draft) throw new Error("There are no role permission changes to save.");
     for (const permission of ["manageUsers", "manageRoles"]) {
@@ -2244,23 +2427,9 @@ async function handleSubmit(formEvent) {
     } else if (formId === "register-form") {
       await createResident(fields);
     } else if (formId === "report-draft-form") {
-      const readOptionalCoordinate = (value) => {
-        const text = String(value || "").trim();
-        return text ? Number(text) : null;
-      };
-      const draft = {
-        category: String(fields.get("category") || ""),
-        barangay: "Palsara",
-        area: String(fields.get("area") || ""),
-        locationDetail: String(fields.get("locationDetail") || "").trim(),
-        latitude: readOptionalCoordinate(fields.get("latitude")),
-        longitude: readOptionalCoordinate(fields.get("longitude")),
-        description: String(fields.get("description") || "").trim(),
-        urgent: Boolean(fields.get("urgent")),
-        step: "review",
-      };
+      const draft = reportDraftFromForm(fields);
       if (!CATEGORIES.includes(draft.category) ||
-          !data.locations.some((location) => location.area === draft.area && location.barangay === "Palsara")) {
+          !isResidentArea(draft.area)) {
         throw new Error("Choose a valid area within Palsara barangay.");
       }
       if (!draft.locationDetail || draft.locationDetail.length > 250) throw new Error("Enter a street or nearby landmark no longer than 250 characters.");
@@ -2478,6 +2647,7 @@ app.addEventListener("change", (changeEvent) => {
   const target = changeEvent.target;
   if (target.matches("#report-photos")) handlePhotoSelection(target);
   else if (target.matches("#profile-photo")) handleProfilePhotoSelection(target);
+  else if (target.id === "status" && target.form?.getAttribute("id") === "schedule-form") syncScheduleStatusFields(target.form);
   else if (target.matches("#announcement-is-event")) {
     announcementMapExpanded = target.checked;
     const region = app.querySelector("#announcement-map-region");
@@ -2497,6 +2667,28 @@ app.addEventListener("change", (changeEvent) => {
       if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
       announcementMapMarker = null;
       const status = app.querySelector("#announcement-map-status");
+      if (status) status.textContent = "No pin selected.";
+    }
+  }
+  else if (target.matches("#calendar-event-has-location")) {
+    calendarEventMapExpanded = target.checked;
+    const region = app.querySelector("#calendar-event-map-region");
+    if (region) region.hidden = !target.checked;
+    if (target.checked) {
+      initializeCalendarEventMap();
+      const status = app.querySelector("#calendar-event-map-status");
+      if (status && !calendarEventMapSelection) status.textContent = "Click the map to place the event location pin.";
+    } else {
+      calendarEventMapSelection = null;
+      const latitudeField = app.querySelector("#calendar-event-latitude");
+      const longitudeField = app.querySelector("#calendar-event-longitude");
+      if (latitudeField) latitudeField.value = "";
+      if (longitudeField) longitudeField.value = "";
+      const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
+      if (clearButton) clearButton.hidden = true;
+      if (calendarEventMapMarker && calendarEventMap) calendarEventMap.removeLayer(calendarEventMapMarker);
+      calendarEventMapMarker = null;
+      const status = app.querySelector("#calendar-event-map-status");
       if (status) status.textContent = "No pin selected.";
     }
   }

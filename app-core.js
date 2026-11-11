@@ -7,6 +7,13 @@ const ROLES = {
 };
 const ROLE_THEME = { resident: "resident", official: "official", administrator: "admin" };
 const STATUSES = ["Submitted", "Under Review", "In Progress", "Resolved"];
+const REPORT_TRANSITIONS = {
+  Submitted: ["Under Review"],
+  "Under Review": ["In Progress"],
+  "In Progress": ["Resolved"],
+  Resolved: [],
+};
+const RESPONSE_DEADLINE_DAYS = { High: 1, Medium: 3, Low: 7 };
 const COLLECTION_STATUSES = [
   "Scheduled",
   "On the way",
@@ -57,10 +64,32 @@ function areasInBarangay(barangay) {
   return (data?.locations || []).filter((location) => location.barangay === barangay).map((location) => location.area);
 }
 function locationAreaLabels() {
-  return Object.fromEntries((data?.locations || []).map((location) => [
-    location.area,
+  return Object.fromEntries((data?.locations || []).map((location) => [    location.area,
     `${location.barangay} · ${location.purok}${location.street ? ` · ${location.street}` : ""}`,
   ]));
+}
+function residentAreaOptions(barangay = "Palsara") {
+  const areas = [...new Set((data?.locations || [])
+    .filter((location) => location?.barangay === barangay && location.area)
+    .map((location) => location.area))];
+  return areas.length ? areas : AREAS;
+}
+function isResidentArea(area, barangay = "Palsara") {
+  return residentAreaOptions(barangay).includes(area);
+}
+
+function effectivePermissions(user, dataContext = null) {
+  const effectiveData = dataContext || data;
+  if (!user || !effectiveData) return {};
+  const roleDefaults = effectiveData?.permissions?.[user.role] || {};
+  const overrides = effectiveData?.accountOverrides?.[user.email] || {};
+  const effective = {};
+  for (const id of Object.keys(roleDefaults)) {
+    effective[id] = Object.hasOwn(overrides, id)
+      ? Boolean(overrides[id])
+      : Boolean(roleDefaults[id]);
+  }
+  return effective;
 }
 const DEFAULT_PERMISSIONS = {
   resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageAnnouncements: false, manageUsers: false, manageRoles: false, viewAudit: false },
@@ -469,6 +498,107 @@ function sortedSchedules(schedules = data.schedules) {
   return [...schedules].sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
 }
 
+const SCHEDULE_FREQUENCIES = ["Weekly", "Bi-weekly", "Monthly", "One-time"];
+const RECURRENCE_DEFAULT_MONTHS = 12;
+const MAX_RECURRENCE_OCCURRENCES = 260;
+
+function scheduleDateValue(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) throw new Error("Choose a valid collection date.");
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    throw new Error("Choose a valid collection date.");
+  }
+  return parsed;
+}
+
+function addMonthsUtc(date, months) {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth() + months;
+  const day = date.getUTCDate();
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(day, lastDay)));
+}
+
+const SCHEDULE_REASON_STATUSES = ["Delayed", "Cancelled"];
+
+function scheduleClockMinutes(value) {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return -1;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours < 1 || hours > 12 || minutes > 59) return -1;
+  return (hours % 12) * 60 + minutes + (match[3].toUpperCase() === "PM" ? 720 : 0);
+}
+
+function scheduleStatusEntry(previous, { status, note = "", date, start, end, at = new Date().toISOString(), actorName = "", actorRole = "" } = {}) {
+  if (!COLLECTION_STATUSES.includes(status)) throw new Error("Choose a valid collection status.");
+  if (previous && previous.status === status) return null;
+  const reason = String(note || "").trim();
+  if (SCHEDULE_REASON_STATUSES.includes(status) && !reason) {
+    throw new Error(`${status} collections need an explanation residents can read.`);
+  }
+  let replacement = { date: null, start: null, end: null };
+  if (status === "Rescheduled") {
+    const replacementDate = String(date || "").trim();
+    const replacementStart = String(start || "").trim();
+    const replacementEnd = String(end || "").trim();
+    if (!replacementDate) throw new Error("Enter the replacement pickup date.");
+    scheduleDateValue(replacementDate);
+    const startMinutes = scheduleClockMinutes(replacementStart);
+    const endMinutes = scheduleClockMinutes(replacementEnd);
+    if (startMinutes < 0 || endMinutes < 0 || endMinutes <= startMinutes) {
+      throw new Error("Enter a valid replacement pickup time such as 6:00 AM, with the end time later.");
+    }
+    if (previous && replacementDate === previous.date &&
+        replacementStart === previous.start && replacementEnd === previous.end) {
+      throw new Error("Change the pickup date or time so residents can see the replacement.");
+    }
+    replacement = { date: replacementDate, start: replacementStart, end: replacementEnd };
+  }
+  return {
+    previousStatus: previous?.status || null,
+    status,
+    at,
+    actorName,
+    actorRole,
+    note: reason || (previous ? `Collection marked ${status.toLowerCase()}.` : "Collection scheduled."),
+    previousDate: previous?.date || null,
+    previousStart: previous?.start || null,
+    previousEnd: previous?.end || null,
+    replacementDate: replacement.date,
+    replacementStart: replacement.start,
+    replacementEnd: replacement.end,
+  };
+}
+
+function scheduleOccurrenceDates(startDate, frequency, endDate = null) {
+  if (!SCHEDULE_FREQUENCIES.includes(frequency)) throw new Error("Choose a valid collection frequency.");
+  const start = scheduleDateValue(startDate);
+  if (frequency === "One-time") return [startDate];
+  let end;
+  if (endDate) {
+    end = scheduleDateValue(endDate);
+    if (end < start) throw new Error("The repeat-until date must be on or after the first collection date.");
+  } else {
+    end = new Date(addMonthsUtc(start, RECURRENCE_DEFAULT_MONTHS).getTime() - 86400000);
+  }
+  const stepDays = frequency === "Weekly" ? 7 : frequency === "Bi-weekly" ? 14 : 0;
+  const dates = [];
+  for (let index = 0; ; index += 1) {
+    const candidate = stepDays
+      ? new Date(start.getTime() + index * stepDays * 86400000)
+      : addMonthsUtc(start, index);
+    if (candidate > end) break;
+    if (dates.length >= MAX_RECURRENCE_OCCURRENCES) throw new Error("Choose a repeat-until date within five years.");
+    dates.push(candidate.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
 function sortedNotifications(items = data.notifications || []) {
   return [...items].sort((a, b) => asDate(b.createdAt) - asDate(a.createdAt));
 }
@@ -505,4 +635,62 @@ function selectField(label, name, items, selected, options = {}) {
   const labelMap = options.labels || {};
   const required = options.required ? "required" : "";
   return `<div class="form-field"><label for="${esc(name)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(name)}" name="${esc(name)}" ${required}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select></div>`;
+}
+
+function reportDraftFromForm(fields) {
+  const readOptionalCoordinate = (value) => {
+    const text = String(value || "").trim();
+    return text ? Number(text) : null;
+  };
+  const priority = String(fields.get("priority") || "").trim();
+  if (!REPORT_PRIORITIES.includes(priority)) throw new Error("Choose a valid concern priority.");
+  return {
+    category: String(fields.get("category") || ""),
+    barangay: "Palsara",
+    area: String(fields.get("area") || ""),
+    locationDetail: String(fields.get("locationDetail") || "").trim(),
+    latitude: readOptionalCoordinate(fields.get("latitude")),
+    longitude: readOptionalCoordinate(fields.get("longitude")),
+    description: String(fields.get("description") || "").trim(),
+    priority,
+    urgent: priority === "High",
+    step: "review",
+  };
+}
+
+function calendarEventFromForm(fields) {
+  const readOptionalCoordinate = (value) => {
+    const text = String(value || "").trim();
+    return text ? Number(text) : null;
+  };
+  const latitude = readOptionalCoordinate(fields.get("latitude"));
+  const longitude = readOptionalCoordinate(fields.get("longitude"));
+  if ((latitude === null) !== (longitude === null) ||
+      (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180))) {
+    throw new Error("Choose a valid map location or clear the pin before continuing.");
+  }
+  return {
+    title: String(fields.get("title") || "").trim(),
+    detail: String(fields.get("detail") || "").trim(),
+    date: String(fields.get("date") || ""),
+    latitude,
+    longitude,
+  };
+}
+
+function calendarEventFromRecord(item) {
+  return {
+    id: String(item.id),
+    date: item.date,
+    title: item.title,
+    detail: item.detail || "",
+    kind: "Event",
+    status: item.approvalStatus || "approved",
+    declineReason: item.declineReason || "",
+    createdBy: item.createdBy || "",
+    createdByName: item.createdByName || "",
+    latitude: item.latitude ?? null,
+    longitude: item.longitude ?? null,
+  };
 }

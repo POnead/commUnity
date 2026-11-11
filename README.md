@@ -81,7 +81,7 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 | `SMTP_SETTINGS_KEY` | Required to save SMTP settings from the administrator UI; use a long random secret and keep it stable so saved credentials can be decrypted |
 
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
-The `/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
+The `/api/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
 
 Schema setup is applied at startup. The database uses separate tables for accounts and password hashes, reports and status history, report photos, schedules and reminder deduplication, notifications, role permissions, activity, announcements, community locations, and recycling listings, with foreign keys, checks, and indexes. Sessions are stored as hashes in PostgreSQL. Configure the provider's automated backups and test restore procedures before using real information.
 
@@ -96,7 +96,7 @@ Schema setup is applied at startup. The database uses separate tables for accoun
 - Login limits include both a per-account failure bucket and a per-client request bucket. Forwarded client addresses are used only when the immediate proxy is explicitly trusted.
 - PostgreSQL is accessed only by the server; row-level security is not currently enabled. Add database policies before allowing browser or other untrusted clients to connect directly.
 - Email is optional and best-effort. If SMTP is missing or unavailable, in-app notifications still work and the server logs the delivery error.
-- The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Use `/healthz` for provider readiness checks and forward the server's structured error logs to an operational logging service.
+- The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Use `/api/healthz` for provider readiness checks and forward the server's structured error logs to an operational logging service.
 - Security headers include a restrictive Content Security Policy. The local server refuses non-loopback binds unless it is configured with a managed database and HTTPS origin.
 - The report map uses OpenStreetMap's public tile service without an API key; follow its attribution and usage policy.
 - Resident sign-up is not email-verified, and password recovery is not configured. Do not treat an email address as a verified identity. Set up an email verification/recovery provider before relying on those workflows.

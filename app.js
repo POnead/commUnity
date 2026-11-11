@@ -14,8 +14,13 @@ let announcementMapSelection = null;
 let announcementMap = null;
 let announcementMapElement = null;
 let announcementMapMarker = null;
-let announcementDetailMap = null;
-let announcementDetailMapElement = null;
+let announcementDetailMaps = [];
+let announcementDetailMapElements = [];
+let calendarEventMapExpanded = false;
+let calendarEventMapSelection = null;
+let calendarEventMap = null;
+let calendarEventMapElement = null;
+let calendarEventMapMarker = null;
 let profilePhotoFile = null;
 let profilePhotoPreview = null;
 let lastCalendarClick = { date: "", at: 0 };
@@ -50,7 +55,7 @@ function routeState() {
   const pages = {
     resident: ["dashboard", "calendar", "collection", "report", "reports", "history", "notifications", "profile"],
     official: ["dashboard", "calendar", "concerns", "collection", "history", "announcements", "notifications", "profile"],
-    administrator: ["dashboard", "calendar", "reports", "approvals", "analytics", "monitoring", "notifications", "users", "locations", "announcements", "roles", "activity", "audit", "settings", "email", "profile"],
+    administrator: ["dashboard", "calendar", "reports", "approvals", "analytics", "notifications", "users", "locations", "announcements", "roles", "activity", "settings", "email", "profile"],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
   if (!canOpenPage(currentUser, resolvedPage)) {
@@ -81,10 +86,18 @@ function render() {
     announcementMapElement = null;
     announcementMapMarker = null;
   }
+  if (modalState?.kind !== "calendar-event") {
+    calendarEventMapExpanded = false;
+    calendarEventMapSelection = null;
+    calendarEventMap?.remove();
+    calendarEventMap = null;
+    calendarEventMapElement = null;
+    calendarEventMapMarker = null;
+  }
   if (modalState?.kind !== "announcement-location" && modalState?.kind !== "calendar-event-detail") {
-    announcementDetailMap?.remove();
-    announcementDetailMap = null;
-    announcementDetailMapElement = null;
+    announcementDetailMaps?.forEach((map) => map?.remove());
+    announcementDetailMaps = [];
+    announcementDetailMapElements = [];
   }
   if (currentUser && route.type === "app") {
     if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) modalState = { kind: "forced-password" };
@@ -130,6 +143,7 @@ function render() {
     updatePagination();
     if (route.role === "resident" && route.page === "report" && reportMapExpanded) initializeReportMap();
     if (modalState?.kind === "announcement" && announcementMapExpanded) initializeAnnouncementMap();
+    if (modalState?.kind === "calendar-event" && calendarEventMapExpanded) initializeCalendarEventMap();
     if (modalState) {
       const input = app.querySelector(".modal input:not([type=hidden]), .modal select");
       if (input) requestAnimationFrame(() => input.focus());
@@ -223,6 +237,7 @@ function modalMarkup() {
   }
   if (modalState.kind === "announcement") {
     const item = data.announcements.find((record) => record.id === modalState.id);
+    const needsApproval = currentUser.role === "official";
     const body = `<form id="announcement-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
       <div class="modal-form-fields"><div class="form-grid">${inputField("Title", "title", item?.title || "", { required: true, maxLength: 120 })}${inputField("Publish date", "date", item?.date || todayISO(), { type: "date", required: true })}<div class="form-field span-all"><label for="announcement-detail">Message *</label><textarea class="textarea" id="announcement-detail" name="detail" required maxlength="1000">${esc(item?.detail || "")}</textarea></div>
         <div class="form-field span-all announcement-map-picker">
@@ -237,7 +252,7 @@ function modalMarkup() {
           </div>
         </div>
       </div></div>
-      <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save changes" : "Publish announcement"}</button></div></form>`;
+      <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? needsApproval ? "Save and send for approval" : "Save changes" : needsApproval ? "Send for approval" : "Publish announcement"}</button></div></form>`;
     return makeModal(item ? "Edit announcement" : "New announcement", body);
   }
   if (modalState.kind === "announcement-location") {
@@ -246,19 +261,37 @@ function modalMarkup() {
       modalState = null;
       return "";
     }
+    const isEvent = Boolean(item.isEvent);
+    const statusVariant = item.approvalStatus === "pending" ? "pending" : item.approvalStatus === "declined" ? "declined" : "approved";
+    const statusLabel = item.approvalStatus === "pending" ? "Pending" : item.approvalStatus === "declined" ? "Declined" : "Approved";
+    const accent = statusVariant === "approved" ? "var(--success)" : statusVariant === "pending" ? "var(--warning)" : "var(--danger)";
+    const lat = item.latitude.toFixed(5);
+    const lng = item.longitude.toFixed(5);
+    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${item.latitude},${item.longitude}`)}`;
     const body = `<div class="content-stack">
-      <div class="notice-bar"><span>Event</span><strong>${esc(item.title)}</strong></div>
-      <div id="announcement-detail-map" class="report-map-canvas report-detail-map" data-latitude="${item.latitude}" data-longitude="${item.longitude}" role="region" aria-label="Map centered on this event's location"></div>
-      <p class="map-status" id="announcement-detail-map-status" role="status" aria-live="polite">Map pin at ${item.latitude.toFixed(6)}, ${item.longitude.toFixed(6)}.</p>
-      <div class="form-actions"><a class="button secondary" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${item.latitude},${item.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a><button class="button secondary" type="button" data-action="close-modal">Close</button></div>
+      <div class="event-detail-card" style="--card-accent: ${accent};">
+        <div class="event-card-top">
+          <span class="event-card-category">${isEvent ? "Event" : "Announcement"}</span>
+          <span class="event-card-status event-card-status--${statusVariant}">${esc(statusLabel)}</span>
+        </div>
+        <h4 class="event-card-title">${esc(item.title)}</h4>
+        <div class="event-card-meta">
+          <span class="event-card-location">${icon("pin", "event-card-icon")}${lat}, ${lng}</span>
+        </div>
+        <div class="event-card-map-panel">
+          <div id="announcement-detail-map" class="report-map-canvas report-detail-map" data-latitude="${item.latitude}" data-longitude="${item.longitude}" role="region" aria-label="Map centered on this event's location"></div>
+          <p class="map-status" id="announcement-detail-map-status" role="status" aria-live="polite">Pin at ${lat}, ${lng}.</p>
+        </div>
+      </div>
+      <div class="form-actions"><a class="button secondary" href="${mapsUrl}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a><button class="button secondary" type="button" data-action="close-modal">Close</button></div>
     </div>`;
-    return makeModal("Event location", body);
+    return makeModal("Event location", body, "modal--event-details");
   }
   if (modalState.kind === "calendar-event") {
     const date = modalState.date || todayISO();
     const isAdmin = currentUser?.role === "administrator";
     const body = `<form id="calendar-event-form" class="modal-form"><input type="hidden" name="date" value="${esc(date)}">
-      <div class="modal-form-fields"><p class="field-help"><strong>${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</strong> · ${isAdmin ? "This event is added to the calendar right away." : "Your request is sent to the administrator for approval."}</p><div class="form-grid">${inputField("Event title", "title", "", { required: true, maxLength: 120 })}</div><div class="form-field span-all"><label for="calendar-event-detail">Details *</label><textarea class="textarea" id="calendar-event-detail" name="detail" required maxlength="1000" placeholder="What happens, where, and at what time?"></textarea></div></div>
+      <div class="modal-form-fields"><p class="field-help"><strong>${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</strong> · ${isAdmin ? "This event is added to the calendar right away." : "Your request is sent to the administrator for approval."}</p><div class="form-grid">${inputField("Event title", "title", "", { required: true, maxLength: 120 })}</div><div class="form-field span-all"><label for="calendar-event-detail">Details *</label><textarea class="textarea" id="calendar-event-detail" name="detail" required maxlength="1000" placeholder="What happens, where, and at what time?"></textarea></div><div class="form-field span-all calendar-event-map-picker"><label class="checkbox-field"><input type="checkbox" id="calendar-event-has-location" name="hasLocation" ${calendarEventMapExpanded ? "checked" : ""}><span><strong>Add event location</strong><span class="muted small">Place a map pin so people know where it will be held.</span></span></label><input type="hidden" id="calendar-event-latitude" name="latitude" value="${esc(calendarEventMapSelection?.latitude ?? "")}"><input type="hidden" id="calendar-event-longitude" name="longitude" value="${esc(calendarEventMapSelection?.longitude ?? "")}"><div class="form-field span-all calendar-event-map-region" id="calendar-event-map-region" ${calendarEventMapExpanded ? "" : "hidden"}><div class="button-row"><button class="button secondary" type="button" data-action="clear-calendar-event-map-pin" ${calendarEventMapSelection ? "" : "hidden"}>Clear pin</button></div><p class="visually-hidden" id="calendar-event-map-status" role="status" aria-live="polite"></p><div class="report-map-canvas" id="calendar-event-map" role="application" aria-label="OpenStreetMap. Click to place the event location pin, or drag the pin to adjust it."></div><p class="field-help">Click the map to place the pin, or drag it to adjust.</p></div></div></div>
       <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${isAdmin ? "Add event" : "Submit for approval"}</button></div></form>`;
     return makeModal(isAdmin ? "Add calendar event" : "Request a calendar event", body);
   }
@@ -267,7 +300,7 @@ function modalMarkup() {
     const events = calendarEventsForDate(date);
     const eventList = events.length
       ? events.map((event) => {
-        const hasMap = event.kind === "Announcement" && event.isEvent &&
+        const hasMap = (event.kind === "Announcement" && event.isEvent || event.kind === "Event") &&
           Number.isFinite(event.latitude) && Number.isFinite(event.longitude);
         let badgeLabel = "";
         let badgeVariant = "approved";
@@ -300,7 +333,7 @@ function modalMarkup() {
             ${locationPart ? `<span class="event-card-location">${icon("pin", "event-card-icon")}${esc(locationPart)}</span>` : ""}
           </div>
           ${!timePart && !locationPart && detailText ? `<p class="event-card-body">${esc(detailText)}</p>` : ""}
-          ${hasMap ? `<div class="event-card-map-panel"><div id="announcement-detail-map" class="report-map-canvas report-detail-map" data-latitude="${event.latitude}" data-longitude="${event.longitude}" role="region" aria-label="Map centered on this event's location"></div><p class="map-status" id="announcement-detail-map-status" role="status" aria-live="polite">Map pin at ${event.latitude.toFixed(6)}, ${event.longitude.toFixed(6)}.</p><a class="button secondary small" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${event.latitude},${event.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
+          ${hasMap ? `<div class="event-card-map-panel"><div id="announcement-detail-map-${event.id}" class="report-map-canvas report-detail-map" data-latitude="${event.latitude}" data-longitude="${event.longitude}" role="region" aria-label="Map centered on this event's location"></div><p class="map-status" id="announcement-detail-map-status-${event.id}" role="status" aria-live="polite">Map pin at ${event.latitude.toFixed(6)}, ${event.longitude.toFixed(6)}.</p><a class="button secondary small" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${event.latitude},${event.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
         </div>`;
       }).join("")
       : `<div class="event-detail-empty"><strong>No events</strong><p>Nothing is scheduled on ${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}.</p></div>`;
@@ -474,9 +507,10 @@ async function compressPhoto(file) {
 }
 
 function nextReportId() {
-  // Generate a globally unique identifier so a new report never collides with an
-  // existing report id (ids are unique across all residents, not just the current user's view).
-  return `R${Date.now()}`;
+  const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const randomBytes = crypto.getRandomValues(new Uint8Array(10));
+  const suffix = Array.from(randomBytes, (value) => alphabet[value % alphabet.length]).join("");
+  return `R-${suffix}`;
 }
 
 async function submitReportDraft() {
@@ -798,12 +832,20 @@ async function saveAnnouncement(form) {
     longitude,
   };
   if (!body.title || !body.date || !body.detail) throw new Error("Enter an announcement title, date, and message.");
+  if (body.date < todayISO()) throw new Error("Announcements cannot be published before today.");
+  const needsApproval = currentUser.role === "official";
   const confirmed = await confirmAction({
-    title: id ? "Save announcement?" : "Publish announcement?",
+    title: id
+      ? needsApproval ? "Resubmit announcement for approval?" : "Save announcement?"
+      : needsApproval ? "Send announcement for approval?" : "Publish announcement?",
     message: id
-      ? "Save changes to this announcement?"
-      : "Publish this announcement? It will be visible to residents.",
-    confirmLabel: id ? "Save changes" : "Publish announcement",
+      ? needsApproval
+        ? "Save these changes and send the announcement to an administrator for approval. Residents will see it after it is approved."
+        : "Save changes to this announcement?"
+      : needsApproval
+        ? "Send this announcement to an administrator for approval. Residents will see it after it is approved."
+        : "Publish this announcement? It will be visible to residents.",
+    confirmLabel: needsApproval ? "Send for approval" : id ? "Save changes" : "Publish announcement",
   });
   if (!confirmed) return;
   const response = await fetch("/api/announcements", {
@@ -821,7 +863,12 @@ async function saveAnnouncement(form) {
   announcementMapMarker = null;
   modalState = null;
   render();
-  toast(id ? "Announcement updated." : "Announcement published.", "success");
+  toast(
+    needsApproval
+      ? id ? "Announcement updated and sent for approval." : "Announcement sent for approval."
+      : id ? "Announcement updated." : "Announcement published.",
+    "success",
+  );
 }
 
 async function decideAnnouncement(id, status, reason = "") {
@@ -925,20 +972,24 @@ function calendarEventsForDate(dateStr) {
     declineReason: item.declineReason || "",
     createdBy: item.createdBy || "",
     createdByName: item.createdByName || "",
+    latitude: item.latitude ?? null,
+    longitude: item.longitude ?? null,
   }));
   const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
   const events = [
-    ...data.announcements.map((item) => ({
-      id: String(item.id),
-      date: item.date,
-      title: item.title,
-      detail: item.detail,
-      kind: "Announcement",
-      status: "approved",
-      isEvent: Boolean(item.isEvent),
-      latitude: item.latitude ?? null,
-      longitude: item.longitude ?? null,
-    })),
+    ...data.announcements
+      .filter((item) => item.approvalStatus === "approved")
+      .map((item) => ({
+        id: String(item.id),
+        date: item.date,
+        title: item.title,
+        detail: item.detail,
+        kind: "Announcement",
+        status: item.approvalStatus,
+        isEvent: Boolean(item.isEvent),
+        latitude: item.latitude ?? null,
+        longitude: item.longitude ?? null,
+      })),
     ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
     ...activeEvents,
   ];
@@ -1090,7 +1141,8 @@ async function createResident(form) {
   const email = String(form.get("email") || "").trim().toLowerCase();
   const password = String(form.get("password") || "");
   const confirm = String(form.get("confirmPassword") || "");
-  const area = locationAreas()[0] || "Purok 1";
+  const area = String(form.get("area") || "").trim();
+  if (!AREAS.includes(area)) throw new Error("Choose a valid purok or area.");
   if (name.length < 2) throw new Error("Enter your full name.");
   if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
   if (password !== confirm) throw new Error("The passwords do not match.");
@@ -1488,6 +1540,13 @@ function clearMapButton() {
   return app.querySelector('[data-action="clear-report-map-pin"]');
 }
 
+function createTileLayer(map) {
+  return window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+  }).addTo(map);
+}
+
 function initializeReportMap() {
   const mapElement = app.querySelector("#report-map");
   if (!reportMapExpanded || !mapElement?.isConnected || !window.L) return;
@@ -1501,10 +1560,7 @@ function initializeReportMap() {
     );
     reportMap.setMaxBounds(PALSARA_BOUNDS);
     reportMap.options.maxBoundsViscosity = 1.0;
-    const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-    }).addTo(reportMap);
+    const tileLayer = createTileLayer(reportMap);
     tileLayer.on("tileerror", () => {
       const status = app.querySelector("#report-map-status");
       if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still submit without a pin.";
@@ -1564,10 +1620,7 @@ function initializeReportDetailMap() {
   }
 
   reportDetailMap = window.L.map(mapElement).setView([latitude, longitude], 17);
-  const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-  }).addTo(reportDetailMap);
+  const tileLayer = createTileLayer(reportDetailMap);
   const statusElement = app.querySelector("#report-detail-map-status");
   window.L.marker([latitude, longitude], {
     title: "Exact concern location",
@@ -1613,10 +1666,7 @@ function initializeAnnouncementMap() {
       announcementMapSelection ? [announcementMapSelection.latitude, announcementMapSelection.longitude] : [14.01799, 121.09465],
       announcementMapSelection ? 17 : 13,
     );
-    const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-    }).addTo(announcementMap);
+    const tileLayer = createTileLayer(announcementMap);
     tileLayer.on("tileerror", () => {
       const status = app.querySelector("#announcement-map-status");
       if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
@@ -1628,48 +1678,105 @@ function initializeAnnouncementMap() {
   if (announcementMapSelection) setAnnouncementMapPin(announcementMapSelection);
 }
 
+function setCalendarEventMapPin(position) {
+  const { lat: latitude, lng: longitude } = position;
+  calendarEventMapSelection = { latitude, longitude };
+  const latitudeField = app.querySelector("#calendar-event-latitude");
+  const longitudeField = app.querySelector("#calendar-event-longitude");
+  const status = app.querySelector("#calendar-event-map-status");
+  const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
+  if (latitudeField) latitudeField.value = String(latitude);
+  if (longitudeField) longitudeField.value = String(longitude);
+  if (clearButton) clearButton.hidden = false;
+  if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
+  if (!calendarEventMap) return;
+  if (!calendarEventMapMarker) {
+    calendarEventMapMarker = window.L.marker([latitude, longitude], {
+      draggable: true,
+      title: "Event location",
+    }).addTo(calendarEventMap);
+    calendarEventMapMarker.on("dragend", (event) => setCalendarEventMapPin(event.target.getLatLng()));
+  } else {
+    calendarEventMapMarker.setLatLng([latitude, longitude]);
+  }
+  calendarEventMap.panTo([latitude, longitude]);
+}
+
+function initializeCalendarEventMap() {
+  const mapElement = app.querySelector("#calendar-event-map");
+  if (!calendarEventMapExpanded || !mapElement?.isConnected || !window.L) return;
+  if (calendarEventMapElement !== mapElement) {
+    calendarEventMap?.remove();
+    calendarEventMapElement = mapElement;
+    calendarEventMapMarker = null;
+    calendarEventMap = window.L.map(mapElement).setView(
+      calendarEventMapSelection ? [calendarEventMapSelection.latitude, calendarEventMapSelection.longitude] : [14.01799, 121.09465],
+      calendarEventMapSelection ? 17 : 13,
+    );
+    const tileLayer = createTileLayer(calendarEventMap);
+    tileLayer.on("tileerror", () => {
+      const status = app.querySelector("#calendar-event-map-status");
+      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
+    });
+    calendarEventMap.on("click", (event) => setCalendarEventMapPin(event.latlng));
+  } else {
+    calendarEventMap.invalidateSize();
+  }
+  if (calendarEventMapSelection) setCalendarEventMapPin(calendarEventMapSelection);
+}
+
 function initializeAnnouncementDetailMap() {
-  const mapElement = app.querySelector("#announcement-detail-map");
-  if (!mapElement || !window.L) {
-    announcementDetailMap?.remove();
-    announcementDetailMap = null;
-    announcementDetailMapElement = null;
-    if (mapElement) {
-      const status = app.querySelector("#announcement-detail-map-status");
-      if (status) status.textContent = "The interactive map is unavailable. Use the Google Maps link to open this location.";
+  const mapElements = app.querySelectorAll('.report-detail-map[id^="announcement-detail-map"]');
+  if (!mapElements.length || !window.L) {
+    announcementDetailMaps.forEach((map) => map?.remove());
+    announcementDetailMaps = [];
+    announcementDetailMapElements = [];
+    const statuses = app.querySelectorAll('[id^="announcement-detail-map-status"]');
+    statuses.forEach((status) => {
+      status.textContent = "The interactive map is unavailable. Use the Google Maps link to open this location.";
+    });
+    return;
+  }
+
+  // Drop maps whose elements are no longer in the DOM
+  announcementDetailMaps = announcementDetailMaps.filter((map, i) => {
+    const el = announcementDetailMapElements[i];
+    if (!el || !el.isConnected) {
+      map?.remove();
+      return false;
     }
-    return;
-  }
-  if (announcementDetailMapElement === mapElement) {
-    announcementDetailMap.invalidateSize();
-    return;
-  }
+    return true;
+  });
+  announcementDetailMapElements = announcementDetailMapElements.filter(
+    (_, i) => announcementDetailMaps[i] !== undefined
+  );
 
-  announcementDetailMap?.remove();
-  announcementDetailMap = null;
-  announcementDetailMapElement = mapElement;
-  const latitude = Number(mapElement.dataset.latitude);
-  const longitude = Number(mapElement.dataset.longitude);
-  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-      !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
-    const status = app.querySelector("#announcement-detail-map-status");
-    if (status) status.textContent = "This event's saved map coordinates are invalid.";
-    announcementDetailMapElement = null;
-    return;
-  }
-
-  announcementDetailMap = window.L.map(mapElement).setView([latitude, longitude], 17);
-  const tileLayer = window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-  }).addTo(announcementDetailMap);
-  const statusElement = app.querySelector("#announcement-detail-map-status");
-  window.L.marker([latitude, longitude], {
-    title: "Event location",
-    alt: "Event location",
-  }).addTo(announcementDetailMap);
-  tileLayer.on("tileerror", () => {
-    if (statusElement) statusElement.textContent = "Map tiles could not be loaded. Check your internet connection; the saved pin and Google Maps link are still available.";
+  mapElements.forEach((el) => {
+    const already = announcementDetailMapElements.indexOf(el);
+    if (already !== -1) {
+      announcementDetailMaps[already]?.invalidateSize();
+      return;
+    }
+    const latitude = Number(el.dataset.latitude);
+    const longitude = Number(el.dataset.longitude);
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      const status = el.parentElement?.querySelector('[id^="announcement-detail-map-status"]');
+      if (status) status.textContent = "This event's saved map coordinates are invalid.";
+      return;
+    }
+    const map = window.L.map(el).setView([latitude, longitude], 17);
+    const tileLayer = createTileLayer(map);
+    const status = el.parentElement?.querySelector('[id^="announcement-detail-map-status"]');
+    window.L.marker([latitude, longitude], {
+      title: "Event location",
+      alt: "Event location",
+    }).addTo(map);
+    tileLayer.on("tileerror", () => {
+      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; the saved pin and Google Maps link are still available.";
+    });
+    announcementDetailMaps.push(map);
+    announcementDetailMapElements.push(el);
   });
 }
 
@@ -2090,6 +2197,23 @@ async function handleAction(button, clickEvent) {
     if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
     announcementMapMarker = null;
     const status = app.querySelector("#announcement-map-status");
+    if (status) status.textContent = "No pin selected. Click the map to place the event location.";
+  } else if (action === "toggle-calendar-event-map") {
+    calendarEventMapExpanded = !calendarEventMapExpanded;
+    const region = app.querySelector("#calendar-event-map-region");
+    region.hidden = !calendarEventMapExpanded;
+    if (calendarEventMapExpanded) initializeCalendarEventMap();
+  } else if (action === "clear-calendar-event-map-pin") {
+    calendarEventMapSelection = null;
+    const latitudeField = app.querySelector("#calendar-event-latitude");
+    const longitudeField = app.querySelector("#calendar-event-longitude");
+    if (latitudeField) latitudeField.value = "";
+    if (longitudeField) longitudeField.value = "";
+    const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
+    if (clearButton) clearButton.hidden = true;
+    if (calendarEventMapMarker && calendarEventMap) calendarEventMap.removeLayer(calendarEventMapMarker);
+    calendarEventMapMarker = null;
+    const status = app.querySelector("#calendar-event-map-status");
     if (status) status.textContent = "No pin selected. Click the map to place the event location.";
   } else if (action === "view-announcement-location") {
     modalState = { kind: "announcement-location", id: button.dataset.id };

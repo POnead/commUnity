@@ -1,21 +1,31 @@
 "use strict";
 
 function displayReportId(id) {
-  const match = String(id || "").match(/^R(?:PT-\d{4}-)?(\d+)$/i);
+  const value = String(id || "");
+  const timestampId = value.match(/^R(\d{13})(?:-([a-z0-9]{6}))?$/i);
+  if (timestampId) {
+    const suffix = timestampId[2] ? `-${timestampId[2].toUpperCase()}` : "";
+    return `R-${Number(timestampId[1]).toString(36).toUpperCase()}${suffix}`;
+  }
+  const match = value.match(/^R(?:PT-\d{4}-)?(\d+)$/i);
   return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
 }
 
 function navGroups(role) {
+  const openConcernCount = data.reports.filter((report) => report.status !== "Resolved").length;
+  const pendingApprovalCount =
+    (data.calendarEvents || []).filter((event) => event.approvalStatus === "pending").length +
+    (data.announcements || []).filter((item) => item.approvalStatus === "pending").length;
   const groups = role === "resident" ? [
     { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["collection", "Garbage collection", "calendar"], ["report", "Report a concern", "flag"]] },
     { title: "Your activity", links: [["reports", "My reports", "clipboard"], ["history", "Report history", "clock"], ["notifications", "Notifications", "bell", unreadCount()]] },
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : role === "official" ? [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["concerns", "Concern queue", "clipboard"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["concerns", "Concern queue", "clipboard", openConcernCount, "open concerns"]] },
     { title: "Services", links: [["collection", "Garbage collection", "calendar"], ["history", "Report history", "clock"], ["announcements", "Announcements", "activity"], ["notifications", "Notifications", "bell", unreadCount()]] },
     { title: "Account", links: [["profile", "Profile", "user"]] },
   ] : [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["reports", "Community reports", "clipboard"], ["approvals", "Approval queue", "check"]] },
+    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["reports", "Community reports", "clipboard"], ["approvals", "Approval queue", "check", pendingApprovalCount, "pending requests"]] },
     { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"], ["activity", "Activity Log", "activity"]] },
   ];
   return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage({ role, email: currentUser?.email }, key)) }));
@@ -70,9 +80,9 @@ function navMarkup(role, page) {
     <div class="nav-group">
       <p class="nav-group-label">${esc(group.title)}</p>
       <nav class="nav-list" aria-label="${esc(group.title)}">
-        ${group.links.map(([key, label, iconName, count]) => `
-          <a class="nav-link ${key === page ? "active" : ""}" href="${routeUrl(role, key)}" ${key === page ? 'aria-current="page"' : ""}>
-            ${icon(iconName)}<span>${esc(label)}</span>${count ? `<span class="nav-count" aria-label="${count} unread">${count}</span>` : ""}
+        ${group.links.map(([key, label, iconName, count, countLabel = "unread"]) => `
+          <a class="nav-link ${key === page ? "active" : ""}" href="${routeUrl(role, key)}" ${key === page ? 'aria-current="page"' : ""} ${count ? `aria-label="${esc(`${label}, ${count} ${countLabel}`)}"` : ""}>
+            ${icon(iconName)}<span>${esc(label)}</span>${count ? `<span class="nav-count" aria-hidden="true">${count}</span>` : ""}
           </a>`).join("")}
       </nav>
     </div>`).join("");
@@ -353,7 +363,7 @@ function dashboardResident() {
   const body = `
     <div class="grid-main-side">
       <div class="content-stack">
-        ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon("clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div>${statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
+        ${panel("Your latest reports", `<div class="quick-list">${latest.map((report) => `<div class="report-item"><span class="item-mark">${icon("clipboard")}</span><div class="item-copy"><strong class="truncate">${esc(report.title)}</strong><span>${esc(report.id)} · ${esc(dateLabel(report.updatedAt))}</span></div><div class="item-actions">${statusPill(report.status)}<button class="icon-button" type="button" data-action="view-report" data-id="${esc(report.id)}" aria-label="View ${esc(report.id)}">${icon("arrow")}</button></div></div>`).join("") || `<div class="empty-state"><strong>No reports yet</strong>When you share a concern, its updates will appear here.</div>`}</div><div class="form-actions">${linkButton("View all reports", routeUrl("resident", "reports"), "secondary", "small")}</div>`)}
         ${panel("Next collection", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(dateLabel(next.date, { weekday: "long", month: "long", day: "numeric" }))}</strong><span>${esc(next.wasteType)} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.area)} · ${esc(next.zone)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}<span class="muted small">${esc(next.team)}</span></div><div class="form-actions">${linkButton("View collection schedule", routeUrl("resident", "collection"), "secondary", "small")}</div>` : `<div class="empty-state"><strong>No upcoming pickup posted</strong>Check back for a schedule update from your barangay.</div>`)}
         ${panel("Official working hours", `<ul class="plain-list">${communityOfficialHours.map((official) => `<li><span>${esc(official.name)}</span><strong>${esc(official.workingHours || "Monday-Friday, 8:00 AM-5:00 PM")}</strong></li>`).join("") || "<li><span>No hours posted</span></li>"}`, { subtitle: "Barangay service desk hours" })}
       </div>
@@ -399,17 +409,19 @@ function calendarPage() {
   }));
   const activeEvents = calendarEvents.filter((event) => event.status !== "declined");
   const events = [
-    ...data.announcements.map((item) => ({
-      id: String(item.id),
-      date: item.date,
-      title: item.title,
-      detail: item.detail,
-      kind: "Announcement",
-      status: "approved",
-      isEvent: Boolean(item.isEvent),
-      latitude: item.latitude ?? null,
-      longitude: item.longitude ?? null,
-    })),
+    ...data.announcements
+      .filter((item) => item.approvalStatus === "approved")
+      .map((item) => ({
+        id: String(item.id),
+        date: item.date,
+        title: item.title,
+        detail: item.detail,
+        kind: "Announcement",
+        status: item.approvalStatus,
+        isEvent: Boolean(item.isEvent),
+        latitude: item.latitude ?? null,
+        longitude: item.longitude ?? null,
+      })),
     ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
     ...activeEvents,
   ];
@@ -468,17 +480,19 @@ function calendarPage() {
     : `<div class="calendar-details"><p class="muted small">Select a date to see event details.${canManage ? " Use Add event there to request an event." : ""}</p></div>`;
 
   const upcoming = activeEvents.concat(
-    data.announcements.map((item) => ({
-      id: String(item.id),
-      date: item.date,
-      title: item.title,
-      detail: item.detail,
-      kind: "Announcement",
-      status: "approved",
-      isEvent: Boolean(item.isEvent),
-      latitude: item.latitude ?? null,
-      longitude: item.longitude ?? null,
-    })),
+    data.announcements
+      .filter((item) => item.approvalStatus === "approved")
+      .map((item) => ({
+        id: String(item.id),
+        date: item.date,
+        title: item.title,
+        detail: item.detail,
+        kind: "Announcement",
+        status: item.approvalStatus,
+        isEvent: Boolean(item.isEvent),
+        latitude: item.latitude ?? null,
+        longitude: item.longitude ?? null,
+      })),
     schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area}`, kind: "Collection", status: "approved" })),
   ).filter((event) => event.date && event.date >= today).sort((a, b) => asDate(a.date) - asDate(b.date)).slice(0, 10);
   const upcomingList = upcoming.length
@@ -1069,7 +1083,7 @@ function registerMarkup() {
       <section class="login-pane" aria-labelledby="register-title"><div class="register-box">
         <h1 id="register-title">Create a resident account</h1>
         <form class="form-stack" id="register-form">
-          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
+          <div class="form-grid">${inputField("Full name", "name", "", { required: true, autocomplete: "name" })}${inputField("Email address", "email", "", { required: true, type: "email", autocomplete: "email" })}${inputField("Contact number", "phone", "", { type: "tel", autocomplete: "tel" })}${selectField("Purok or area", "area", AREAS, "", { required: true })}${inputField("Password", "password", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div>
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Create account</button></div>
         </form>
       </div></section>

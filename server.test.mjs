@@ -185,6 +185,55 @@ test("renders community-wide official hours on the resident dashboard", async ()
   assert.doesNotMatch(dashboard, /No hours posted/);
 });
 
+test("renders latest reports with status pill and view button on resident dashboard", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {
+    currentUser: { role: "resident", area: "Purok 1", email: "resident@example.test" },
+    communityOfficialHours: [],
+    data: { announcements: [], reports: [], schedules: [], users: [] },
+    EMERGENCY_HOTLINES: [],
+    esc: (value) => String(value ?? ""),
+    asDate: (value) => new Date(value),
+    dateLabel: (value) => String(value),
+    userReports: () => [{
+      id: "RPT-2026-001",
+      title: "Blocked drainage",
+      status: "Submitted",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+    }],
+    sortedReports: (reports = []) => [...reports],
+    sortedSchedules: () => [],
+    upcomingSchedule: () => null,
+    statusPill: (status) => `<span class="status">${esc(status)}</span>`,
+    icon: () => "",
+    panel: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
+    linkButton: () => "",
+    routeUrl: () => "",
+    page: (_role, _pageName, body) => body,
+  };
+  runInNewContext(views, context);
+  context.page = (_role, _pageName, body) => body;
+
+  const dashboard = context.dashboardResident();
+  assert.match(dashboard, /Your latest reports/);
+  assert.match(dashboard, /Blocked drainage/);
+  assert.match(dashboard, /RPT-2026-001/);
+  assert.match(dashboard, /class="item-actions"/);
+  assert.match(dashboard, /data-action="view-report"/);
+  assert.match(dashboard, /aria-label="View RPT-2026-001"/);
+});
+
+test("displays timestamp-based concern IDs in a compact format", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const context = {};
+  runInNewContext(views, context);
+
+  assert.equal(context.displayReportId("R1794145468286"), "R-MW7VVZB2");
+  assert.equal(context.displayReportId("R1794145468286-7wnokm"), "R-MW7VVZB2-7WNOKM");
+  assert.equal(context.displayReportId("R-4J8K2M9W7Q"), "R-4J8K2M9W7Q");
+  assert.equal(context.displayReportId("R-MJ9F3F4A-7WNOKM"), "R-MJ9F3F4A-7WNOKM");
+});
+
 test("renders an event location action only for event announcements", async () => {
   const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
   const context = {
@@ -569,6 +618,64 @@ test("registers residents, scopes their data, and rejects privilege escalation",
     assert.equal((await api(app, "/api/session", { cookie: residentCookie }).then((response) => response.json())).user, null);
     assert.equal((await signIn(app, "resident@example.test", "A-unique-resident-password!")).response.status, 401);
     assert.equal((await signIn(app, "resident@example.test", "A-reset-resident-password!")).response.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("submits a concern when an existing timestamp-based report ID exceeds integer range", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-report-timestamp-id-"));
+  const app = await startServer(dataDir);
+  try {
+    const resident = await registerResident(app, "timestamp-report@example.test", "Timestamp Resident");
+    const now = new Date().toISOString();
+    const legacyReportId = "R1794145468286";
+    await app.db.query(`
+      INSERT INTO reports
+        (id,user_email,name,category,title,area,barangay,location_detail,description,urgent,priority,status,submitted_at,updated_at)
+      VALUES ($1,$2,$3,'Streetlight','Damaged streetlight','Purok 1','Palsara','Near the school',
+        'The streetlight is not working near the school.',false,'Medium','Submitted',$4,$4)
+    `, [legacyReportId, resident.email, resident.name, now]);
+    await app.db.query(
+      "INSERT INTO report_history (report_id,position,status,at,note) VALUES ($1,0,'Submitted',$2,'Report received.')",
+      [legacyReportId, now],
+    );
+
+    const state = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    const reportId = "R1794305160000-new-report";
+    state.data.reports.unshift({
+      id: reportId,
+      userEmail: resident.email,
+      name: resident.name,
+      category: "Streetlight",
+      title: "Damaged streetlight · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the community hall",
+      latitude: 14.012869,
+      longitude: 121.097122,
+      description: "The streetlight is not working near the community hall.",
+      urgent: false,
+      priority: "Medium",
+      assignedTo: null,
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
+    });
+
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    const responseBody = await submitted.text();
+    assert.equal(submitted.status, 200, responseBody);
+    const result = JSON.parse(responseBody);
+    assert.equal(result.data.reports.length, 2);
+    assert.ok(result.data.reports.some((report) => report.id === reportId));
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });

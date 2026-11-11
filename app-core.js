@@ -62,11 +62,6 @@ function locationAreaLabels() {
     `${location.barangay} · ${location.purok}${location.street ? ` · ${location.street}` : ""}`,
   ]));
 }
-const DEMO_USERS = [
-  { email: "juan.delacruz@community.demo", role: "resident", name: "Juan Dela Cruz", area: "Purok 3" },
-  { email: "maria.santos@community.demo", role: "official", name: "Maria Santos", area: "Palsara" },
-  { email: "admin@gmail.com", role: "administrator", name: "Community administrator", area: "Palsara" },
-];
 const DEFAULT_PERMISSIONS = {
   resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageAnnouncements: false, manageUsers: false, manageRoles: false, viewAudit: false },
   official: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: false, manageRoles: false, viewAudit: false },
@@ -200,170 +195,6 @@ function initials(name = "") {
 
 function idFor(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-}
-
-function seedData() {
-  const residents = [
-    { email: DEMO_USERS[0].email, name: DEMO_USERS[0].name, area: "Purok 3", phone: "0917 000 0042", role: "resident", status: "Active", joinedAt: "2026-10-01" },
-    { email: "ana.reyes@community.demo", name: "Ana Reyes", area: "Purok 5", phone: "0917 000 0043", role: "resident", status: "Active", joinedAt: "2026-10-03" },
-    { email: "pedro.ramos@community.demo", name: "Pedro Ramos", area: "Purok 2", phone: "0917 000 0044", role: "resident", status: "Active", joinedAt: "2026-10-05" },
-    { email: "carla.mendoza@community.demo", name: "Carla Mendoza", area: "Purok 2", phone: "0917 000 0045", role: "resident", status: "Active", joinedAt: "2026-10-06" },
-    { email: "rosa.villanueva@community.demo", name: "Rosa Villanueva", area: "Purok 4", phone: "0917 000 0046", role: "resident", status: "Active", joinedAt: "2026-10-08" },
-    { email: "jose.garcia@community.demo", name: "Jose Garcia", area: "Purok 1", phone: "0917 000 0047", role: "resident", status: "Active", joinedAt: "2026-10-11" },
-    { email: DEMO_USERS[1].email, name: DEMO_USERS[1].name, area: "Palsara", phone: "0917 000 0010", role: "official", status: "Active", joinedAt: "2026-09-12" },
-    { email: "liza.cruz@community.demo", name: "Liza Cruz", area: "Palsara", phone: "0917 000 0011", role: "official", status: "Active", joinedAt: "2026-09-19" },
-    { email: DEMO_USERS[2].email, name: DEMO_USERS[2].name, area: "Palsara", phone: "", role: "administrator", status: "Active", joinedAt: "2026-09-01" },
-  ];
-
-  const reports = [
-    {
-      id: "RPT-2026-048", userEmail: DEMO_USERS[0].email, name: "Juan Dela Cruz",
-      category: "Flooding", title: "Flooding on Mabini Street", area: "Purok 3",
-      description: "Rainwater is pooling near the pedestrian crossing on Mabini Street. The road remains passable, but the drain appears blocked.",
-      urgent: true, status: "Submitted", submittedAt: "2026-10-30T08:42:00",
-      updatedAt: "2026-10-30T08:42:00", photos: [],
-      history: [{ status: "Submitted", at: "2026-10-30T08:42:00", note: "Report received." }],
-    },
-    {
-      id: "RPT-2026-047", userEmail: "ana.reyes@community.demo", name: "Ana Reyes",
-      category: "Illegal dumping", title: "Illegal waste disposal", area: "Purok 5",
-      description: "Household waste was left beside the community road this morning.",
-      urgent: false, status: "Submitted", submittedAt: "2026-10-30T08:10:00",
-      updatedAt: "2026-10-30T08:10:00", photos: [],
-      history: [{ status: "Submitted", at: "2026-10-30T08:10:00", note: "Report received." }],
-    },
-    {
-      id: "RPT-2026-046", userEmail: "pedro.ramos@community.demo", name: "Pedro Ramos",
-      category: "Road damage", title: "Road obstruction on Rizal Street", area: "Purok 2",
-      description: "A fallen branch is narrowing the road. Please check access for passing vehicles.",
-      urgent: true, status: "Under Review", submittedAt: "2026-10-29T13:22:00",
-      updatedAt: "2026-10-30T07:30:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-10-29T13:22:00", note: "Report received." },
-        { status: "Under Review", at: "2026-10-30T07:30:00", note: "A barangay official is reviewing the reported hazard." },
-      ],
-    },
-    {
-      id: "RPT-2026-045", userEmail: DEMO_USERS[0].email, name: "Juan Dela Cruz",
-      category: "Broken streetlight", title: "Streetlight out near Purok 3", area: "Purok 3",
-      description: "The streetlight beside the basketball court has not turned on for two evenings.",
-      urgent: false, status: "In Progress", submittedAt: "2026-10-27T16:08:00",
-      updatedAt: "2026-10-29T10:15:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-10-27T16:08:00", note: "Report received." },
-        { status: "Under Review", at: "2026-10-28T08:40:00", note: "The location and report details are being checked." },
-        { status: "In Progress", at: "2026-10-29T10:15:00", note: "The maintenance team is checking the streetlight." },
-      ],
-    },
-    {
-      id: "RPT-2026-044", userEmail: "carla.mendoza@community.demo", name: "Carla Mendoza",
-      category: "Other community concern", title: "Noise complaint", area: "Purok 2",
-      description: "A resident reported recurring late-evening noise near the main road.",
-      urgent: false, status: "Resolved", submittedAt: "2026-10-24T11:40:00",
-      updatedAt: "2026-10-28T15:20:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-10-24T11:40:00", note: "Report received." },
-        { status: "Under Review", at: "2026-10-25T09:10:00", note: "The concern is being reviewed." },
-        { status: "In Progress", at: "2026-10-26T14:30:00", note: "An official followed up with the parties involved." },
-        { status: "Resolved", at: "2026-10-28T15:20:00", note: "The concern was addressed." },
-      ],
-    },
-    {
-      id: "RPT-2026-043", userEmail: "rosa.villanueva@community.demo", name: "Rosa Villanueva",
-      category: "Drainage problem", title: "Blocked drainage canal", area: "Purok 4",
-      description: "Leaves and debris are blocking part of the canal along the residential lane.",
-      urgent: false, status: "Under Review", submittedAt: "2026-10-26T09:05:00",
-      updatedAt: "2026-10-29T11:00:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-10-26T09:05:00", note: "Report received." },
-        { status: "Under Review", at: "2026-10-29T11:00:00", note: "The reported location is being checked." },
-      ],
-    },
-    {
-      id: "RPT-2026-042", userEmail: "jose.garcia@community.demo", name: "Jose Garcia",
-      category: "Other community concern", title: "Stray animals near the school", area: "Purok 1",
-      description: "Several stray animals were seen near the school entrance during dismissal time.",
-      urgent: false, status: "Resolved", submittedAt: "2026-10-25T07:55:00",
-      updatedAt: "2026-10-28T14:10:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-10-25T07:55:00", note: "Report received." },
-        { status: "Under Review", at: "2026-10-26T08:30:00", note: "The location is being checked." },
-        { status: "Resolved", at: "2026-10-28T14:10:00", note: "The concern was referred to the appropriate local service." },
-      ],
-    },
-    {
-      id: "RPT-2026-041", userEmail: DEMO_USERS[0].email, name: "Juan Dela Cruz",
-      category: "Missed garbage collection", title: "Missed recyclable collection", area: "Purok 3",
-      description: "The scheduled recyclable collection did not pass through our lane on the posted date.",
-      urgent: false, status: "In Progress", submittedAt: "2026-10-23T09:18:00",
-      updatedAt: "2026-10-28T07:45:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-10-23T09:18:00", note: "Report received." },
-        { status: "Under Review", at: "2026-10-24T08:20:00", note: "The route schedule is being checked." },
-        { status: "In Progress", at: "2026-10-28T07:45:00", note: "The collection team is reviewing the missed stop." },
-      ],
-    },
-    {
-      id: "RPT-2026-019", userEmail: DEMO_USERS[0].email, name: "Juan Dela Cruz",
-      category: "Road damage", title: "Road repair follow-up", area: "Purok 3",
-      description: "A small damaged section of the residential road was reported and repaired.",
-      urgent: false, status: "Resolved", submittedAt: "2026-09-24T08:00:00",
-      updatedAt: "2026-10-03T13:10:00", photos: [],
-      history: [
-        { status: "Submitted", at: "2026-09-24T08:00:00", note: "Report received." },
-        { status: "Under Review", at: "2026-09-26T10:00:00", note: "The road condition was checked." },
-        { status: "In Progress", at: "2026-09-29T09:30:00", note: "The repair was scheduled." },
-        { status: "Resolved", at: "2026-10-03T13:10:00", note: "The reported road section was repaired." },
-      ],
-    },
-  ];
-
-  const schedules = [
-    { id: "GCS-2026-014", area: "Purok 3", zone: "Zone A", date: "2026-10-30", wasteType: "Recyclables", start: "6:00 AM", end: "9:00 AM", frequency: "Weekly", team: "Team A · Truck 01", status: "On the way" },
-    { id: "GCS-2026-013", area: "Purok 2", zone: "Zone B", date: "2026-10-31", wasteType: "Special waste", start: "8:00 AM", end: "12:00 PM", frequency: "Monthly", team: "Team B · Truck 02", status: "Scheduled" },
-    { id: "GCS-2026-012", area: "Purok 1", zone: "Zone C", date: "2026-11-02", wasteType: "Biodegradable", start: "6:00 AM", end: "9:00 AM", frequency: "Weekly", team: "Team C · Truck 03", status: "Scheduled" },
-    { id: "GCS-2026-011", area: "Purok 4", zone: "Zone D", date: "2026-11-04", wasteType: "Non-biodegradable", start: "6:00 AM", end: "9:00 AM", frequency: "Weekly", team: "Team D · Truck 04", status: "Scheduled" },
-    { id: "GCS-2026-010", area: "Purok 5", zone: "Zone E", date: "2026-11-06", wasteType: "Recyclables", start: "7:00 AM", end: "10:00 AM", frequency: "Bi-weekly", team: "Team A · Truck 05", status: "Scheduled" },
-    { id: "GCS-2026-009", area: "Main Road", zone: "Zone F", date: "2026-11-07", wasteType: "Special waste", start: "8:00 AM", end: "12:00 PM", frequency: "Monthly", team: "Team B · Truck 06", status: "Scheduled" },
-  ];
-
-  const notifications = [
-    { id: idFor("N"), targetEmail: DEMO_USERS[0].email, title: "Collection is on the way", body: "The collection team has started the Zone A route for Purok 3.", createdAt: "2026-10-30T08:30:00", read: false },
-    { id: idFor("N"), targetEmail: DEMO_USERS[0].email, reportId: "RPT-2026-048", title: "Concern received", body: "Your report about flooding on Mabini Street is now on file.", createdAt: "2026-10-30T08:42:00", read: false },
-    { id: idFor("N"), targetEmail: DEMO_USERS[0].email, reportId: "RPT-2026-045", title: "Report in progress", body: "The maintenance team is checking the streetlight near Purok 3.", createdAt: "2026-10-29T10:15:00", read: true },
-    { id: idFor("N"), targetEmail: DEMO_USERS[1].email, title: "Urgent concern: Flooding on Mabini Street", body: "A resident submitted an urgent hazard report for Purok 3.", createdAt: "2026-10-30T08:42:00", read: false, reportId: "RPT-2026-048" },
-    { id: idFor("N"), targetEmail: DEMO_USERS[1].email, title: "New concern reported", body: "Illegal waste disposal was reported in Purok 5.", createdAt: "2026-10-30T08:10:00", read: false, reportId: "RPT-2026-047" },
-    { id: idFor("N"), targetEmail: DEMO_USERS[2].email, title: "Resident account registered", body: "There are six resident and two official accounts in this workspace.", createdAt: "2026-10-30T07:00:00", read: false },
-  ];
-
-  const activities = [
-    { id: idFor("A"), actor: "Maria Santos", role: "official", action: "Reviewed urgent concern", detail: "RPT-2026-046 · Road obstruction on Rizal Street", at: "2026-10-30T07:30:00", result: "Success" },
-    { id: idFor("A"), actor: "Maria Santos", role: "official", action: "Updated collection status", detail: "GCS-2026-014 · Purok 3", at: "2026-10-30T06:35:00", result: "Success" },
-    { id: idFor("A"), actor: "Community administrator", role: "administrator", action: "Signed in", detail: "Administrator workspace", at: "2026-10-30T06:10:00", result: "Success" },
-    { id: idFor("A"), actor: "Ana Reyes", role: "resident", action: "Submitted a concern", detail: "RPT-2026-047 · Illegal waste disposal", at: "2026-10-30T08:10:00", result: "Success" },
-  ];
-
-  const permissions = {
-    resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageUsers: false, manageRoles: false, viewAudit: false },
-    official: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageUsers: false, manageRoles: false, viewAudit: false },
-    administrator: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageUsers: true, manageRoles: true, viewAudit: true },
-  };
-
-  return {
-    version: 1,
-    users: residents,
-    reports,
-    schedules,
-    notifications,
-    activities,
-    permissions,
-    accountOverrides: {},
-    announcements: [
-      { title: "Barangay clean-up drive", detail: "Saturday, October 31 · 7:00 AM · Barangay covered court", date: "2026-10-31" },
-      { title: "Free medical consultation", detail: "November 3 · 8:00 AM–12:00 PM · Health center", date: "2026-11-03" },
-    ],
-    calendarEvents: [],
-  };
 }
 
 function emptyState() {
@@ -579,7 +410,13 @@ function unreadCount(user = currentUser) {
   return data.notifications.filter((item) => item.targetEmail === user.email && !item.read).length;
 }
 function displayReportId(id) {
-  const match = String(id || "").match(/^R(?:PT-\d{4}-)?(\d+)$/i);
+  const value = String(id || "");
+  const timestampId = value.match(/^R(\d{13})(?:-([a-z0-9]{6}))?$/i);
+  if (timestampId) {
+    const suffix = timestampId[2] ? `-${timestampId[2].toUpperCase()}` : "";
+    return `R-${Number(timestampId[1]).toString(36).toUpperCase()}${suffix}`;
+  }
+  const match = value.match(/^R(?:PT-\d{4}-)?(\d+)$/i);
   return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
 }
 

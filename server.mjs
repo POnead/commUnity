@@ -491,6 +491,7 @@ async function migrate(db) {
       id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL DEFAULT '', date date NOT NULL,
       approval_status text NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'declined')),
       decline_reason text NOT NULL DEFAULT '',
+      latitude double precision, longitude double precision,
       created_by text REFERENCES users(id) ON DELETE SET NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     );
@@ -558,6 +559,8 @@ async function migrate(db) {
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS latitude double precision;
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS longitude double precision;
     ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by text REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS latitude double precision;
+    ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS longitude double precision;
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
     ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
     ALTER TABLE report_photos ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
@@ -733,6 +736,7 @@ async function readFullState(db, user = null) {
   const calendarEvents = await db.query(`
     SELECT e.id, e.title, e.detail, to_char(e.date, 'YYYY-MM-DD') AS date,
       e.approval_status AS "approvalStatus", e.decline_reason AS "declineReason",
+      e.latitude, e.longitude,
       e.created_by AS "createdBy", u.name AS "createdByName", e.created_at AS "createdAt"
     FROM calendar_events e LEFT JOIN users u ON u.id = e.created_by
     ${user && user.role === "administrator" ? "" : user ? "WHERE e.approval_status='approved' OR e.created_by=$1" : "WHERE e.approval_status='approved'"}
@@ -885,7 +889,7 @@ async function insertReport(db, report) {
   const requestedId = report.id;
   const generatedId = /^RPT-/i.test(requestedId)
     ? requestedId
-    : `R${String((await db.query("SELECT COALESCE(MAX((substring(id from 2))::integer), 0) + 1 AS next_id FROM reports WHERE id ~ '^R[0-9]+$'")).rows[0].next_id).padStart(2, "0")}`;
+    : `R${String((await db.query("SELECT COALESCE(MAX((substring(id from 2))::numeric), 0) + 1 AS next_id FROM reports WHERE id ~ '^R[0-9]+$'")).rows[0].next_id).padStart(2, "0")}`;
   report.photos = (report.photos || []).map((photo) => ({
     ...photo,
     photoUrl: String(photo.photoUrl || "").replace(`/api/reports/${encodeURIComponent(requestedId)}/`, `/api/reports/${encodeURIComponent(generatedId)}/`),
@@ -1500,6 +1504,7 @@ async function handleAuth(request, response, db, options, user) {
   }
   if (url.pathname === "/api/auth/password-reset-request" && request.method === "POST") {
     requireJsonBody(request);
+    await recordAttempt(db, hash(`password-reset-request:${requestClientAddress(request, trustedProxyAddresses)}`));
     const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
     const account = await db.query("SELECT id, email FROM users WHERE email=$1 AND status='Active'", [email]);
     if (account.rows[0]) {
@@ -1928,6 +1933,15 @@ function validateCalendarEvent(body) {
     throw new HttpError(400, "Enter a title, details, and a valid event date.");
   }
   if (body.date < localToday()) throw new HttpError(400, "Events cannot be scheduled before today.");
+  const latitude = Number(body.latitude);
+  const longitude = Number(body.longitude);
+  if ((body.latitude !== undefined && body.latitude !== null && body.latitude !== "") ||
+      (body.longitude !== undefined && body.longitude !== null && body.longitude !== "")) {
+    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+      throw new HttpError(400, "Enter valid event location coordinates.");
+    }
+  }
 }
 
 async function handleCalendar(request, response, db, options, user) {
@@ -1943,9 +1957,11 @@ async function handleCalendar(request, response, db, options, user) {
       const db = transaction;
       const title = request.body.title.trim();
       const detail = String(request.body.detail || "").trim();
+      const latitude = Number(request.body.latitude) || null;
+      const longitude = Number(request.body.longitude) || null;
       await db.query(
-        "INSERT INTO calendar_events (title,detail,date,approval_status,created_by) VALUES ($1,$2,$3,$4,$5)",
-        [title, detail, request.body.date, approvalStatus, user.id],
+        "INSERT INTO calendar_events (title,detail,date,approval_status,created_by,latitude,longitude) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [title, detail, request.body.date, approvalStatus, user.id, latitude, longitude],
       );
       await insertActivity(db, user,
         approvalStatus === "pending" ? "Requested a calendar event" : "Created a calendar event",
@@ -2253,6 +2269,8 @@ export async function createCommunityServer({
   const reminderTimer = setInterval(() => {
     runScheduleReminders(db, { mailer: mailerState.mailer, smtpFrom: mailerState.settings.from, appOrigin }).catch((error) => logError("CommUnity could not create collection reminders.", error));
     pruneExpiredAuthState(db).catch((error) => logError("CommUnity could not prune expired authentication data.", error));
+    db.query("DELETE FROM notifications WHERE created_at < now() - interval '90 days'").catch((error) => logError("CommUnity could not prune old notifications.", error));
+    db.query("DELETE FROM activities WHERE at < now() - interval '90 days'").catch((error) => logError("CommUnity could not prune old activity records.", error));
   }, 15 * 60 * 1000);
   reminderTimer.unref();
   const secure = production || Boolean(databaseUrl);

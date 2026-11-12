@@ -1,5 +1,9 @@
 "use strict";
 
+// Every calendar day shown or validated in the interface is the barangay's day,
+// not the day of whatever time zone the browser happens to be in.
+const APP_TIME_ZONE = "Asia/Manila";
+
 const ROLES = {
   resident: "Resident",
   official: "Barangay official",
@@ -124,14 +128,19 @@ let smtpSettings = { host: "", port: "", user: "", from: "", configured: false }
 let reportDraft = null;
 let modalState = null;
 let forcedPasswordDismissed = false;
-let calendarMonth = new Date().getMonth();
-let calendarYear = new Date().getFullYear();
+const calendarToday = appDateParts();
+let calendarMonth = Number(calendarToday.month) - 1;
+let calendarYear = Number(calendarToday.year);
 let calendarSelectedDate = "";
 let selectedPermissionRole = "resident";
 let permissionDrafts = {};
 let permissionOpenGroups = {};
 let toastTimer;
 let lastPersistedSnapshot = "";
+// The activity log is browsed from the server, so its page and filters live outside the shared state.
+let activityLogState = { activities: [], total: 0, page: 1, pageSize: 25, pageCount: 1, summary: {} };
+let activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
+let activityLogLoadedKey = "";
 
 const icons = {
   home: '<path d="m3.5 10 8.5-7 8.5 7"></path><path d="M5.5 9v11h13V9"></path><path d="M9 20v-6h6v6"></path>',
@@ -185,14 +194,28 @@ function asDate(value) {
   return parsed;
 }
 
+function appDateParts(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) throw new Error("A saved CommUnity date is invalid.");
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type) => parts.find((item) => item.type === type)?.value || "";
+  return { year: part("year"), month: part("month"), day: part("day") };
+}
+
 function dateLabel(value, options = { day: "numeric", month: "short", year: "numeric" }) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en-PH", options).format(asDate(value));
+  return new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, ...options }).format(asDate(value));
 }
 
 function dateTimeLabel(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-PH", {
+    timeZone: APP_TIME_ZONE,
     day: "numeric",
     month: "short",
     hour: "numeric",
@@ -201,13 +224,25 @@ function dateTimeLabel(value) {
 }
 
 function dateInputValue(value = new Date()) {
-  const date = asDate(value);
-  const offset = date.getTimezoneOffset() * 60000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const { year, month, day } = appDateParts(value);
+  return `${year}-${month}-${day}`;
 }
 
 function todayISO() {
   return dateInputValue(new Date());
+}
+
+// A month bucket key in the barangay's time zone, matching the report trend table.
+function monthKey(value = new Date()) {
+  const { year, month } = appDateParts(value);
+  return `${year}-${month}`;
+}
+
+function monthKeyOffset(offset, from = new Date()) {
+  const { year, month } = appDateParts(from);
+  const shifted = new Date(Date.UTC(Number(year), Number(month) - 1 + offset, 1));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function normalizeStatus(value) {
@@ -216,6 +251,11 @@ function normalizeStatus(value) {
 
 function statusPill(value, label = value) {
   return `<span class="status" data-status="${esc(normalizeStatus(value))}">${esc(label)}</span>`;
+}
+
+// "system" is an audit role, not an account role, so it is not part of ROLES.
+function roleLabel(role) {
+  return role === "system" ? "System" : (ROLES[role] || role);
 }
 
 function initials(name = "") {
@@ -628,7 +668,9 @@ function inputField(label, name, value = "", options = {}) {
   const type = options.type || "text";
   const required = options.required ? "required" : "";
   const readonly = options.readonly ? "readonly" : "";
-  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}></div>`;
+  const placeholder = options.placeholder ? `placeholder="${esc(options.placeholder)}"` : "";
+  const help = options.help ? `<p class="field-help">${esc(options.help)}</p>` : "";
+  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${placeholder} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}>${help}</div>`;
 }
 
 function selectField(label, name, items, selected, options = {}) {

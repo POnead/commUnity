@@ -3689,6 +3689,40 @@ a:hover {
   min-width: 0;
 }
 
+.activity-detail-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.activity-detail-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 170px) 1fr;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.activity-detail-row > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.activity-detail-row > strong {
+  color: var(--ink);
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .activity-detail-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
 .event-detail-card {
   display: flex;
   min-width: 0;

@@ -1,28 +1,37 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import net from "node:net";
 import { test } from "node:test";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext, runInNewContext } from "node:vm";
 import {
+  archiveOldActivities,
   createCommunityServer,
   pruneExpiredAuthState,
   requestClientAddress,
   runScheduleReminders,
+  sweepOrphanUploads,
   withTransaction,
 } from "./server.mjs";
 
 const ADMIN_EMAIL = "admin@example.test";
 const ADMIN_PASSWORD = "LocalTestPassword-2026!";
+// A 1x1 JPEG, enough for the upload endpoints to recognise the file signature.
+const TEST_JPEG = Buffer.from(
+  "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==",
+  "base64",
+);
 
-async function startServer(dataDir) {
+async function startServer(dataDir, smtp = {}, options = {}) {
   const instance = await createCommunityServer({
     dataDir,
-    uploadsDir: path.join(path.dirname(dataDir), "uploads"),
+    uploadsDir: options.uploadsDir || path.join(path.dirname(dataDir), "uploads"),
     port: 0,
     initialAdminEmail: ADMIN_EMAIL,
     initialAdminPassword: ADMIN_PASSWORD,
+    ...smtp,
   });
   await new Promise((resolve, reject) => {
     instance.server.once("error", reject);
@@ -30,6 +39,51 @@ async function startServer(dataDir) {
   });
   const address = instance.server.address();
   return { ...instance, origin: `http://127.0.0.1:${address.port}` };
+}
+
+// Minimal SMTP sink that accepts any mail and replies OK, so tests can confirm
+// delivery without a real SMTP provider. Captured messages land in server.messages.
+async function startSmtpSink() {
+  return new Promise((resolve, reject) => {
+    const messages = [];
+    const server = net.createServer((socket) => {
+      let expectingData = false;
+      let buffer = "";
+      socket.write("220 smtp.local ESMTP ready\r\n");
+      socket.on("data", (data) => {
+        const chunk = data.toString();
+        if (expectingData) {
+          buffer += chunk;
+          const end = buffer.indexOf("\r\n.\r\n");
+          if (end === -1) return;
+          messages.push(buffer.slice(0, end));
+          buffer = "";
+          expectingData = false;
+          socket.write("250 OK\r\n");
+          return;
+        }
+        const line = chunk.trim();
+        if (line.startsWith("DATA")) {
+          expectingData = true;
+          socket.write("354 End data with <CR><LF>.<CR><LF>\r\n");
+        } else if (line === "QUIT") {
+          socket.write("221 Bye\r\n");
+          socket.end();
+        } else {
+          socket.write("250 OK\r\n");
+        }
+      });
+      socket.on("error", () => {});
+    });
+    server.messages = messages;
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+}
+
+// Undo quoted-printable soft line breaks and escaped "=" so links can be read back.
+function mailText(message) {
+  return String(message || "").replace(/=\r\n/g, "").replace(/=3[Dd]/g, "=");
 }
 
 async function api(app, endpoint, options = {}) {
@@ -41,6 +95,16 @@ async function api(app, endpoint, options = {}) {
     ...options,
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+}
+
+async function uploadPhoto(app, endpoint, cookie, data, name = "photo.jpg", type = "image/jpeg") {
+  const form = new FormData();
+  form.append("photos", new Blob([data], { type }), name);
+  return fetch(`${app.origin}${endpoint}`, {
+    method: "POST",
+    headers: { Origin: app.origin, Cookie: cookie },
+    body: form,
   });
 }
 
@@ -357,6 +421,7 @@ test("roles page renders role defaults, individual overrides, and effective perm
       ],
     },
     ROLES: { resident: "Resident", official: "Barangay official", administrator: "Administrator" },
+    APP_TIME_ZONE: "Asia/Manila",
     PERMISSION_DEFS: [
       { id: "submitReports", label: "Submit and track concerns", group: "Community services", description: "Create concerns and view their updates." },
       { id: "viewSchedules", label: "View collection schedules", group: "Community services", description: "See posted collection dates and service updates." },
@@ -1620,6 +1685,252 @@ test("flags concerns past their response deadline as overdue", async () => {
   }
 });
 
+async function advanceReport(app, cookie, state, reportId, status, note) {
+  const next = structuredClone(state.data);
+  const report = next.reports.find((item) => item.id === reportId);
+  report.status = status;
+  report.updatedAt = new Date().toISOString();
+  report.history.push({ status, at: report.updatedAt, note });
+  const response = await api(app, "/api/state", {
+    method: "PUT",
+    cookie,
+    body: { revision: state.revision, data: next },
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
+test("judges the first response and the resolution target separately", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-two-targets-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Target Resident",
+        email: "target-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+
+    // Submitted 20 days ago, so the 3-day response target and the 14-day resolution
+    // target have both passed.
+    const old = new Date(Date.now() - 20 * 86400000).toISOString();
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-target-01",
+      userEmail: "target-resident@example.test",
+      name: "Target Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the hall",
+      description: "A large pothole near the barangay hall needs patching.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt: old,
+      updatedAt: old,
+      photos: [],
+      history: [{ status: "Submitted", at: old, note: "Report received." }],
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+    state = await submitted.json();
+    let report = state.data.reports.find((item) => item.id === "RPT-2026-target-01");
+    assert.ok(report.responseDeadline, "a first-response deadline is computed");
+    assert.ok(report.resolutionDeadline, "a resolution deadline is computed");
+    assert.equal(report.responseOverdue, true, "no staff response has arrived yet");
+    assert.equal(report.resolutionOverdue, true, "the concern is still unresolved");
+    assert.equal(report.overdue, true);
+
+    // Once an official answers, the concern is no longer awaiting a first response.
+    const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    state = await advanceReport(app, officialCookie, officialState, "RPT-2026-target-01", "Under Review", "A barangay official is reviewing this report.");
+    report = state.data.reports.find((item) => item.id === "RPT-2026-target-01");
+    assert.ok(report.respondedAt, "the first response is recorded");
+    assert.equal(report.responseOverdue, false, "an answered concern is not awaiting a first response");
+    assert.equal(report.resolutionOverdue, true, "the concern is still past its resolution target");
+    assert.equal(report.overdue, true);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("changing the priority before the first response recomputes the deadline", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-priority-deadline-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Priority Resident",
+        email: "priority-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+
+    // Submitted two days ago as a Medium concern: the response target is three days.
+    const submittedAt = new Date(Date.now() - 2 * 86400000).toISOString();
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-priority-01",
+      userEmail: "priority-resident@example.test",
+      name: "Priority Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the hall",
+      description: "A large pothole near the barangay hall needs patching.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt,
+      updatedAt: submittedAt,
+      photos: [],
+      history: [{ status: "Submitted", at: submittedAt, note: "Report received." }],
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+    state = await submitted.json();
+    let report = state.data.reports.find((item) => item.id === "RPT-2026-priority-01");
+    const originalResponseDeadline = report.responseDeadline;
+    assert.equal(report.responseOverdue, false);
+
+    // Raising the priority to High tightens the target to one day, which has passed.
+    const raised = await api(app, "/api/community/report-priority", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { reportId: "RPT-2026-priority-01", priority: "High" },
+    });
+    assert.equal(raised.status, 200);
+    state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    report = state.data.reports.find((item) => item.id === "RPT-2026-priority-01");
+    assert.notEqual(report.responseDeadline, originalResponseDeadline, "the response deadline follows the new priority");
+    assert.equal(report.responseDeadline, new Date(new Date(submittedAt).getTime() + 86400000).toISOString());
+    assert.equal(report.resolutionDeadline, new Date(new Date(submittedAt).getTime() + 7 * 86400000).toISOString());
+    assert.equal(report.responseOverdue, true, "the tightened target has already passed");
+
+    // After the first response the recorded target can no longer move.
+    const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    state = await advanceReport(app, officialCookie, officialState, "RPT-2026-priority-01", "Under Review", "A barangay official is reviewing this report.");
+    const answeredDeadline = state.data.reports.find((item) => item.id === "RPT-2026-priority-01").responseDeadline;
+
+    const lowered = await api(app, "/api/community/report-priority", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { reportId: "RPT-2026-priority-01", priority: "Low" },
+    });
+    assert.equal(lowered.status, 200);
+    state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    report = state.data.reports.find((item) => item.id === "RPT-2026-priority-01");
+    assert.equal(report.responseDeadline, answeredDeadline, "a recorded first response keeps its original target");
+    assert.equal(report.responseOverdue, false, "an answered concern is not awaiting a first response");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("reopening a concern resets the first response and restarts both service targets", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reopen-targets-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Reopen Resident",
+        email: "reopen-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+
+    const submittedAt = new Date().toISOString();
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-reopen-01",
+      userEmail: "reopen-resident@example.test",
+      name: "Reopen Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the hall",
+      description: "A large pothole near the barangay hall needs patching.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt,
+      updatedAt: submittedAt,
+      photos: [],
+      history: [{ status: "Submitted", at: submittedAt, note: "Report received." }],
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+
+    let officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    officialState = await advanceReport(app, officialCookie, officialState, "RPT-2026-reopen-01", "Under Review", "A barangay official is reviewing this report.");
+    officialState = await advanceReport(app, officialCookie, officialState, "RPT-2026-reopen-01", "In Progress", "The crew is scheduled to patch the road.");
+    officialState = await advanceReport(app, officialCookie, officialState, "RPT-2026-reopen-01", "Resolved", "The road has been patched.");
+    const resolved = officialState.data.reports.find((item) => item.id === "RPT-2026-reopen-01");
+    assert.ok(resolved.respondedAt, "the concern was answered");
+    assert.ok(resolved.resolvedAt, "the resolution is recorded");
+
+    const reopened = await api(app, "/api/community/report-reopen", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-2026-reopen-01", reason: "The patch did not hold after the rain." },
+    });
+    assert.equal(reopened.status, 200);
+
+    const after = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const report = after.data.reports.find((item) => item.id === "RPT-2026-reopen-01");
+    assert.equal(report.status, "Submitted");
+    assert.equal(report.respondedAt, null, "the earlier first response no longer counts");
+    assert.equal(report.resolvedAt, null, "the earlier resolution no longer counts");
+    assert.equal(report.responseOverdue, false, "the reopened concern is waiting on a new first response");
+    assert.equal(report.resolutionOverdue, false);
+    const expectedResponse = Date.now() + 3 * 86400000;
+    assert.ok(Math.abs(new Date(report.responseDeadline).getTime() - expectedResponse) < 60000, "the response target restarts from the reopen");
+    const expectedResolution = Date.now() + 14 * 86400000;
+    assert.ok(Math.abs(new Date(report.resolutionDeadline).getTime() - expectedResolution) < 60000, "the resolution target restarts from the reopen");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("manages locations and announcements and sends idempotent collection reminders", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-directory-"));
   const app = await startServer(dataDir);
@@ -1819,7 +2130,7 @@ test("manages locations and announcements and sends idempotent collection remind
     assert.equal(forbiddenAnnouncement.status, 403);
 
     const officialState = await api(app, "/api/state", { cookie: official.cookie }).then((response) => response.json());
-    const tomorrow = await app.db.query("SELECT to_char(CURRENT_DATE + 1, 'YYYY-MM-DD') AS date");
+    const tomorrow = await app.db.query("SELECT to_char((now() AT TIME ZONE 'Asia/Manila')::date + 1, 'YYYY-MM-DD') AS date");
     officialState.data.schedules.push({
       id: "GCS-reminder-test",
       area: "Purok 1",
@@ -2142,6 +2453,86 @@ test("keeps database sessions valid across server restarts and rejects public bi
     createCommunityServer({ dataDir: ":memory:", poolMax: 0 }),
     /PG_POOL_MAX/,
   );
+  await assert.rejects(
+    createCommunityServer({ dataDir: ":memory:", timeZone: "Mars/Olympus_Mons" }),
+    /APP_TIME_ZONE/,
+  );
+});
+
+function manilaDate(offsetDays = 0) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(Date.now() + offsetDays * 86400000));
+  const part = (type) => parts.find((item) => item.type === type).value;
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+test("uses the barangay time zone for calendar days, new accounts and collection reminders", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-timezone-"));
+  const app = await startServer(dataDir);
+  try {
+    // The PostgreSQL session is pinned, so CURRENT_DATE is the barangay's date.
+    const zone = await app.db.query("SELECT current_setting('TimeZone') AS tz");
+    assert.equal(zone.rows[0].tz, "Asia/Manila");
+
+    const admin = await signIn(app);
+    const session = await api(app, "/api/session", { cookie: admin.cookie }).then((response) => response.json());
+    assert.equal(session.user.joinedAt, manilaDate(0), "a new account joins on the barangay's day");
+
+    // Date validation uses the barangay's day, not the host's.
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const past = await api(app, "/api/calendar/events", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { title: "Past event", detail: "This should be refused.", date: manilaDate(-1) },
+    });
+    assert.equal(past.status, 400);
+    const today = await api(app, "/api/calendar/events", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { title: "Today event", detail: "This is allowed today.", date: manilaDate(0) },
+    });
+    assert.equal(today.status, 200);
+
+    // A collection scheduled for the barangay's tomorrow is the one that reminds.
+    const resident = await registerResident(app, "timezone-resident@example.test", "Timezone Resident");
+    const state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    state.data.schedules.push({
+      id: "GCS-tz-reminder",
+      area: "Purok 2",
+      zone: "Zone A",
+      date: manilaDate(1),
+      wasteType: "Recyclables",
+      start: "6:00 AM",
+      end: "9:00 AM",
+      frequency: "Weekly",
+      team: "Team A",
+      status: "Scheduled",
+    });
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(await runScheduleReminders(app.db), 1, "the reminder matches the barangay's tomorrow");
+
+    const after = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    const reminder = after.data.notifications.find((item) => item.title === "Collection reminder");
+    assert.ok(reminder, "the resident is reminded about tomorrow's collection");
+    const expectedDay = new Intl.DateTimeFormat("en-PH", {
+      timeZone: "Asia/Manila",
+      month: "long",
+      day: "numeric",
+    }).format(new Date(`${manilaDate(1)}T00:00:00Z`));
+    assert.ok(reminder.body.includes(expectedDay), `the reminder names ${expectedDay}: ${reminder.body}`);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 async function registerResident(app, email, name) {
@@ -2954,6 +3345,7 @@ test("analytics page shows report metrics and trends", async () => {
       schedules: [],
     },
     ROLES: { resident: "Resident", official: "Barangay official", administrator: "Administrator" },
+    APP_TIME_ZONE: "Asia/Manila",
     PERMISSION_DEFS: [],
     esc: (value) => String(value ?? ""),
     page: (_role, _view, body) => body,
@@ -2983,11 +3375,10 @@ test("analytics page shows report metrics and trends", async () => {
   assert.match(html, /Drainage problem/);
 });
 
-test("authorization denials are logged as security events even without a session", async () => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-authz-audit-"));
+test("an unauthenticated request is refused and is not written as a security event", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-authz-anonymous-"));
   const app = await startServer(dataDir);
   try {
-    // No session cookie -> unauthenticated 403 on a protected endpoint
     const denied = await api(app, "/api/state", {
       method: "PUT",
       body: { revision: 0, data: { version: 1, users: [], reports: [], schedules: [], notifications: [], activities: [], announcements: [], locations: [], recyclingLocations: [], permissions: {} } },
@@ -2995,19 +3386,80 @@ test("authorization denials are logged as security events even without a session
     assert.equal(denied.status, 401);
 
     const admin = await signIn(app);
-    // Resident (not admin) hitting admin-only endpoint -> 403 with user
-    const residentCookie = await (() => {
-      return api(app, "/api/auth/register", {
-        method: "POST",
-        body: {
-          name: "Audit Resident",
-          email: "audit-resident@example.test",
-          area: "Purok 1",
-          password: "A-unique-resident-password!",
-          confirmPassword: "A-unique-resident-password!",
-        },
-      }).then((r) => r.headers.get("set-cookie")?.split(";")[0] || "");
-    })();
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const denials = state.data.activities.filter((item) => item.action === "Authorization denied");
+    assert.equal(denials.length, 0, "A missing session is refused but is not an authorization denial");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a rejected cross-site request is logged as a security event with a system actor", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-authz-origin-"));
+  const app = await startServer(dataDir);
+  try {
+    const rejected = await api(app, "/api/state", { method: "GET", origin: "http://evil.example" });
+    assert.equal(rejected.status, 403);
+    const rejectedAgain = await api(app, "/api/state", { method: "GET", origin: "http://evil.example" });
+    assert.equal(rejectedAgain.status, 403, "A flood of refusals still answers 403");
+
+    const admin = await signIn(app);
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const denials = state.data.activities.filter(
+      (item) => item.action === "Authorization denied" && item.result === "Failed",
+    );
+    assert.equal(denials.length, 1, "A rejected cross-site request should be recorded");
+    const event = denials[0];
+    assert.equal(event.actor, "system", "A request with no session is attributed to the system actor");
+    assert.equal(event.role, "system");
+    assert.ok(event.clientIp, "The client address should be recorded");
+    assert.match(event.resultReason, /did not come from the CommUnity website/);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an existing database is upgraded to accept the system actor", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-authz-upgrade-"));
+  const first = await startServer(dataDir);
+  try {
+    // Restore the older restrictive constraint to stand in for a live deployment.
+    await first.db.query("ALTER TABLE activities DROP CONSTRAINT activities_role_check");
+    await first.db.query("ALTER TABLE activities ADD CONSTRAINT activities_role_check CHECK (role IN ('resident', 'official', 'administrator'))");
+  } finally {
+    await first.close();
+  }
+  const second = await startServer(dataDir);
+  try {
+    await second.db.query(
+      "INSERT INTO activities (id, actor, role, action, detail, at, result) VALUES ($1, $2, $3, $4, $5, now(), $6)",
+      ["UPGRADE-SYSTEM", "system", "system", "Probe", "probe detail", "Success"],
+    );
+    const stored = await second.db.query("SELECT role FROM activities WHERE id='UPGRADE-SYSTEM'");
+    assert.equal(stored.rows[0].role, "system", "The upgrade should let the audit table store a system actor");
+  } finally {
+    await second.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an authenticated permission denial is logged against the account that was refused", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-authz-audit-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const residentCookie = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Audit Resident",
+        email: "audit-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    }).then((r) => r.headers.get("set-cookie")?.split(";")[0] || "");
 
     const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
     const tampered = structuredClone(state.data);
@@ -3025,6 +3477,8 @@ test("authorization denials are logged as security events even without a session
     );
     assert.ok(denialEvents.length >= 1, "Authorization denial should be logged as a security event");
     const event = denialEvents[0];
+    assert.equal(event.actor, "Audit Resident", "The refusal is attributed to the signed-in account");
+    assert.equal(event.role, "resident");
     assert.ok(event.resultReason);
     assert.ok(event.clientIp);
   } finally {
@@ -3033,36 +3487,749 @@ test("authorization denials are logged as security events even without a session
   }
 });
 
-test("activity archive endpoint returns archived records", async () => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-archive-"));
+test("the activity log pages through every retained record including archived ones", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-activity-log-"));
   const app = await startServer(dataDir);
   try {
     const admin = await signIn(app);
 
-    // Insert an activity older than 90 days directly, then run the archive query
+    for (let index = 0; index < 30; index += 1) {
+      await app.db.query(
+        "INSERT INTO activities (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+        [`LOG-${index}`, index % 2 ? "system" : "Portal administrator", index % 2 ? "system" : "administrator",
+          index % 3 === 0 ? "Authorization denied" : "Updated account profile", `detail ${index}`,
+          new Date(Date.now() - index * 60000).toISOString(), index % 5 === 0 ? "Failed" : "Success",
+          index % 5 === 0 ? "refused" : "", `R-${index}`, "203.0.113.9"],
+      );
+    }
     const oldDate = new Date(Date.now() - 100 * 86400000).toISOString();
-    await app.db.query(
-      "INSERT INTO activities (id, actor, role, action, detail, at, result) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-      ["ARCH-OLD-1", "Archived Actor", "administrator", "Archived action", "Archived detail", oldDate, "Success"],
-    );
+    for (let index = 0; index < 5; index += 1) {
+      await app.db.query(
+        "INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())",
+        [`OLD-${index}`, "Portal administrator", "administrator", "Archived action", `archived detail ${index}`, oldDate, "Success", "", `R-old-${index}`, "198.51.100.4"],
+      );
+    }
 
-    await app.db.query(
-      "INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at) SELECT id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, now() FROM activities WHERE at < now() - interval '90 days'",
-    );
-    await app.db.query("DELETE FROM activities WHERE at < now() - interval '90 days'");
+    const first = await api(app, "/api/community/activity?pageSize=10", { cookie: admin.cookie });
+    assert.equal(first.status, 200);
+    const firstBody = await first.json();
+    // 30 seeded current records, 5 archived records, and the sign-in that opened this session.
+    assert.equal(firstBody.total, 36, "Every current and archived record should be counted");
+    assert.equal(firstBody.pageCount, 4);
+    assert.equal(firstBody.activities.length, 10);
+    assert.equal(firstBody.summary.current, 31);
+    assert.equal(firstBody.summary.archived, 5);
+    assert.equal(firstBody.summary.failed, 6);
 
-    const archive = await api(app, "/api/community/activity-archive", { cookie: admin.cookie });
-    assert.equal(archive.status, 200);
-    const body = await archive.json();
-    assert.ok(Array.isArray(body.activities));
-    assert.ok(body.activities.some((item) => item.id === "ARCH-OLD-1"), "Archived record should be readable via endpoint");
-    assert.ok(body.activities.some((item) => item.archivedAt), "Archived record should have archivedAt timestamp");
+    const second = await api(app, "/api/community/activity?pageSize=10&page=2", { cookie: admin.cookie });
+    const secondBody = await second.json();
+    assert.equal(secondBody.activities.length, 10);
+    const firstIds = firstBody.activities.map((item) => item.id);
+    assert.ok(!secondBody.activities.some((item) => firstIds.includes(item.id)), "Pages should not repeat records");
 
-    // Current activities should not include the archived one
-    const currentState = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
-    assert.ok(!currentState.data.activities.some((item) => item.id === "ARCH-OLD-1"), "Archived record should not appear in current activities");
+    const archived = await api(app, "/api/community/activity?source=archived", { cookie: admin.cookie });
+    const archivedBody = await archived.json();
+    assert.equal(archivedBody.total, 5);
+    assert.ok(archivedBody.activities.every((item) => item.source === "archived"));
+    assert.ok(archivedBody.activities.every((item) => item.archivedAt));
+
+    const failed = await api(app, "/api/community/activity?result=Failed", { cookie: admin.cookie });
+    assert.ok((await failed.json()).activities.every((item) => item.result === "Failed"));
+    const actor = await api(app, "/api/community/activity?actor=system", { cookie: admin.cookie });
+    assert.ok((await actor.json()).activities.every((item) => item.actor === "system"));
+    const affected = await api(app, "/api/community/activity?affectedId=R-old-1", { cookie: admin.cookie });
+    assert.equal((await affected.json()).total, 1);
+    const action = await api(app, "/api/community/activity?action=authorization", { cookie: admin.cookie });
+    assert.ok((await action.json()).activities.every((item) => item.action === "Authorization denied"));
+
+    const everything = await api(app, "/api/community/activity?from=2000-01-01&to=2999-12-31", { cookie: admin.cookie });
+    assert.equal((await everything.json()).total, 36);
+    const nothing = await api(app, "/api/community/activity?from=1990-01-01&to=1990-01-02", { cookie: admin.cookie });
+    assert.equal((await nothing.json()).total, 0);
+
+    const badDate = await api(app, "/api/community/activity?from=notadate", { cookie: admin.cookie });
+    assert.equal(badDate.status, 400);
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("the activity log export includes archived records and security metadata", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-activity-export-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    await app.db.query(
+      "INSERT INTO activities (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip) VALUES ($1,$2,$3,$4,$5,now(),$6,$7,$8,$9)",
+      ["EXPORT-CURRENT", "system", "system", "Authorization denied", "current detail", "Failed", "denied", "R-42", "203.0.113.9"],
+    );
+    await app.db.query(
+      "INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now())",
+      ["EXPORT-ARCHIVED", "Portal administrator", "administrator", "Archived action", "archived detail",
+        new Date(Date.now() - 100 * 86400000).toISOString(), "Failed", "refused earlier", "R-99", "198.51.100.4"],
+    );
+
+    const exported = await api(app, "/api/community/activity/export", { cookie: admin.cookie });
+    assert.equal(exported.status, 200);
+    const body = await exported.json();
+    // Two seeded records plus the sign-in that opened this session.
+    assert.equal(body.total, 3);
+    assert.equal(body.truncated, false);
+
+    const current = body.activities.find((item) => item.source === "current");
+    assert.ok(current, "The export should include current records");
+    assert.equal(current.actor, "system");
+    assert.equal(current.resultReason, "denied");
+    assert.equal(current.affectedId, "R-42");
+    assert.equal(current.clientIp, "203.0.113.9");
+
+    const archived = body.activities.find((item) => item.source === "archived");
+    assert.ok(archived, "The export should include archived records");
+    assert.equal(archived.resultReason, "refused earlier");
+    assert.equal(archived.affectedId, "R-99");
+    assert.equal(archived.clientIp, "198.51.100.4");
+    assert.ok(archived.archivedAt, "Archived records should carry the archived timestamp");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("the activity log is only available to administrators", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-activity-role-"));
+  const app = await startServer(dataDir);
+  try {
+    const residentCookie = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Activity Resident",
+        email: "activity-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    }).then((r) => r.headers.get("set-cookie")?.split(";")[0] || "");
+
+    const browse = await api(app, "/api/community/activity", { cookie: residentCookie });
+    assert.equal(browse.status, 403);
+    const exported = await api(app, "/api/community/activity/export", { cookie: residentCookie });
+    assert.equal(exported.status, 403);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("the activity log page browses the server page with filters and a detail action", async () => {
+  const views = await readFile(new URL("./app-views.js", import.meta.url), "utf8");
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const context = createContext({
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    console,
+  });
+  runInContext(core, context);
+  runInContext(views, context);
+  context.__user = { id: "admin", name: "Admin User", email: "admin@example.test", role: "administrator", area: "Palsara" };
+  context.__filters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
+  context.__state = {
+    activities: [{
+      id: "LOG-1", actor: "system", role: "system", action: "Authorization denied", detail: "Request refused",
+      at: "2026-11-12T09:00:00.000Z", result: "Failed", resultReason: "Your account cannot perform this action.",
+      affectedId: "R-42", clientIp: "203.0.113.9", source: "current", archivedAt: null,
+    }],
+    total: 36, page: 2, pageSize: 25, pageCount: 2,
+    summary: { total: 36, current: 31, archived: 5, failed: 6, accounts: 20, reports: 0, services: 0 },
+  };
+  runInContext("currentUser = __user; activityFilters = __filters; activityLogState = __state; data = { permissions: {}, notifications: [], reports: [], users: [], schedules: [] };", context);
+
+  const html = runInContext("activityLogPage()", context);
+  assert.match(html, /Activity Log/);
+  assert.match(html, /From date/);
+  assert.match(html, /To date/);
+  assert.match(html, /Affected record/);
+  assert.match(html, /Archived only/);
+  assert.match(html, /Apply filters/);
+  assert.match(html, /Export CSV/);
+  assert.match(html, /Matching records/);
+  assert.match(html, /Failed events/);
+  assert.match(html, /Authorization denied/);
+  assert.match(html, /system/);
+  assert.match(html, /Page 2 of 2/);
+  assert.match(html, /36 records/);
+  assert.match(html, /data-action="view-activity"/);
+  assert.match(html, /data-action="activity-page"/);
+});
+
+test("administrator password reset rejects before changing the password when SMTP is not configured", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-pwreset-nosmtp-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Reset Target",
+        email: "reset-target@example.test",
+        area: "Purok 1",
+        password: "A-unique-target-password!",
+        confirmPassword: "A-unique-target-password!",
+      },
+    });
+
+    const beforeHash = await app.db.query(
+      "SELECT password_hash FROM user_credentials WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reset-target@example.test"],
+    );
+    const beforeSessions = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reset-target@example.test"],
+    );
+
+    const reset = await api(app, "/api/users/password-reset", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "reset-target@example.test" },
+    });
+    assert.equal(reset.status, 503, "Password reset must fail when email service is not configured");
+    const body = await reset.json();
+    assert.match(body.error, /Email service/);
+
+    // Password and sessions must be untouched: no lockout when email cannot be delivered
+    const afterHash = await app.db.query(
+      "SELECT password_hash FROM user_credentials WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reset-target@example.test"],
+    );
+    assert.equal(afterHash.rows[0].password_hash, beforeHash.rows[0].password_hash);
+    const afterSessions = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reset-target@example.test"],
+    );
+    assert.equal(afterSessions.rows[0].count, beforeSessions.rows[0].count);
+
+    // Resident can still sign in with the old password
+    const oldSignIn = await signIn(app, "reset-target@example.test", "A-unique-target-password!");
+    assert.equal(oldSignIn.response.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("forgot-password rejects before issuing a reset link when SMTP is not configured", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forgot-nosmtp-"));
+  const app = await startServer(dataDir);
+  try {
+    const forgot = await api(app, "/api/auth/forgot-password", {
+      method: "POST",
+      body: { recoveryEmail: "someone@example.test" },
+    });
+    assert.equal(forgot.status, 503, "Forgot password must fail when email service is not configured");
+    const body = await forgot.json();
+    assert.match(body.error, /Email service/);
+
+    // No reset token should have been issued
+    const tokens = await app.db.query("SELECT count(*)::integer AS count FROM password_reset_tokens");
+    assert.equal(tokens.rows[0].count, 0);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("administrator password reset succeeds and delivers the temporary password when SMTP is configured", async () => {
+  const smtpServer = await startSmtpSink();
+  const port = smtpServer.address().port;
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-pwreset-smtp-"));
+  const app = await startServer(dataDir, {
+    smtpHost: "127.0.0.1",
+    smtpPort: String(port),
+    smtpUser: "smtp-user",
+    smtpPass: "smtp-pass",
+    smtpFrom: "CommUnity <noreply@example.test>",
+  });
+  try {
+    const admin = await signIn(app);
+
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Reset Target",
+        email: "reset-target@example.test",
+        area: "Purok 1",
+        password: "A-unique-target-password!",
+        confirmPassword: "A-unique-target-password!",
+      },
+    });
+
+    const reset = await api(app, "/api/users/password-reset", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "reset-target@example.test" },
+    });
+    assert.equal(reset.status, 200, "Password reset must succeed when email service delivers");
+    assert.equal((await reset.json()).ok, true);
+
+    // Resident's sessions are closed
+    const sessions = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reset-target@example.test"],
+    );
+    assert.equal(sessions.rows[0].count, 0);
+
+    // Resident must change password on next sign-in
+    const resident = await app.db.query(
+      "SELECT requires_password_change FROM users WHERE email=$1",
+      ["reset-target@example.test"],
+    );
+    assert.equal(resident.rows[0].requires_password_change, true);
+
+    // Old password no longer works
+    const oldSignIn = await signIn(app, "reset-target@example.test", "A-unique-target-password!");
+    assert.equal(oldSignIn.response.status, 401);
+  } finally {
+    await app.close();
+    smtpServer.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+async function setupVerifiedRecovery(app, smtpServer, accountEmail, recoveryEmail) {
+  await api(app, "/api/auth/register", {
+    method: "POST",
+    body: {
+      name: "Recovery Resident",
+      email: accountEmail,
+      area: "Purok 1",
+      password: "A-unique-recovery-password!",
+      confirmPassword: "A-unique-recovery-password!",
+    },
+  });
+  const resident = await signIn(app, accountEmail, "A-unique-recovery-password!");
+  await api(app, "/api/profile", {
+    method: "PUT",
+    cookie: resident.cookie,
+    body: { name: "Recovery Resident", area: "Purok 1", phone: "", recoveryEmail },
+  });
+  const message = smtpServer.messages.find((item) => item.includes("verify-recovery"));
+  assert.ok(message, "A recovery verification link should have been emailed");
+  const token = mailText(message).match(/token=([A-Za-z0-9_-]{20,})/);
+  assert.ok(token, "The verification email should carry a token");
+  const verified = await api(app, "/api/auth/verify-recovery", { method: "POST", body: { token: token[1] } });
+  assert.equal(verified.status, 200, "The recovery address should verify");
+  return resident;
+}
+
+test("a recovery email only authorizes a reset once the owner has confirmed it", async () => {
+  const smtpServer = await startSmtpSink();
+  const port = smtpServer.address().port;
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-recovery-verify-"));
+  const app = await startServer(dataDir, {
+    smtpHost: "127.0.0.1",
+    smtpPort: String(port),
+    smtpUser: "smtp-user",
+    smtpPass: "smtp-pass",
+    smtpFrom: "CommUnity <noreply@example.test>",
+  });
+  try {
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Recovery Resident",
+        email: "recovery-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-recovery-password!",
+        confirmPassword: "A-unique-recovery-password!",
+      },
+    });
+    const resident = await signIn(app, "recovery-resident@example.test", "A-unique-recovery-password!");
+
+    // Saving a recovery email starts it as unverified
+    const saved = await api(app, "/api/profile", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { name: "Recovery Resident", area: "Purok 1", phone: "", recoveryEmail: "recovery-box@example.test" },
+    });
+    assert.equal(saved.status, 200);
+    const savedBody = await saved.json();
+    assert.equal(savedBody.recoveryEmail.verified, false);
+    assert.equal(savedBody.recoveryEmail.verificationSent, true);
+    assert.equal(savedBody.user.recoveryEmailVerified, false);
+
+    // An unverified address must not authorize a reset
+    const unverified = await api(app, "/api/auth/forgot-password", {
+      method: "POST",
+      body: { recoveryEmail: "recovery-box@example.test" },
+    });
+    assert.equal(unverified.status, 200);
+    const tokens = await app.db.query("SELECT count(*)::integer AS count FROM password_reset_tokens");
+    assert.equal(tokens.rows[0].count, 0, "An unverified recovery email must not produce a reset token");
+
+    // Confirm the address, then it can authorize a reset
+    const message = smtpServer.messages.find((item) => item.includes("verify-recovery"));
+    const token = mailText(message).match(/token=([A-Za-z0-9_-]{20,})/);
+    const verified = await api(app, "/api/auth/verify-recovery", { method: "POST", body: { token: token[1] } });
+    assert.equal(verified.status, 200);
+
+    await app.db.query("DELETE FROM recovery_email_requests WHERE recovery_email=$1", ["recovery-box@example.test"]);
+    const reset = await api(app, "/api/auth/forgot-password", {
+      method: "POST",
+      body: { recoveryEmail: "recovery-box@example.test" },
+    });
+    assert.equal(reset.status, 200);
+    const tokensAfter = await app.db.query("SELECT count(*)::integer AS count FROM password_reset_tokens");
+    assert.equal(tokensAfter.rows[0].count, 1, "A confirmed recovery email should produce a reset token");
+  } finally {
+    await app.close();
+    smtpServer.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("forgot-password refuses repeat requests with a cooldown and an attempt limit", async () => {
+  const smtpServer = await startSmtpSink();
+  const port = smtpServer.address().port;
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forgot-limits-"));
+  const app = await startServer(dataDir, {
+    smtpHost: "127.0.0.1",
+    smtpPort: String(port),
+    smtpUser: "smtp-user",
+    smtpPass: "smtp-pass",
+    smtpFrom: "CommUnity <noreply@example.test>",
+  });
+  try {
+    const first = await api(app, "/api/auth/forgot-password", {
+      method: "POST",
+      body: { recoveryEmail: "limits@example.test" },
+    });
+    assert.equal(first.status, 200);
+
+    // A second request to the same address is held back by the resend cooldown
+    const second = await api(app, "/api/auth/forgot-password", {
+      method: "POST",
+      body: { recoveryEmail: "limits@example.test" },
+    });
+    assert.equal(second.status, 429);
+    assert.match((await second.json()).error, /already sent/);
+
+    // Many different addresses from one client eventually hit the attempt limit
+    let limited = null;
+    for (let index = 0; index < 15; index += 1) {
+      const response = await api(app, "/api/auth/forgot-password", {
+        method: "POST",
+        body: { recoveryEmail: `probe-${index}@example.test` },
+      });
+      if (response.status === 429) {
+        limited = response;
+        break;
+      }
+    }
+    assert.ok(limited, "Repeated requests from one client should be rate limited");
+    assert.match((await limited.json()).error, /Too many attempts/);
+  } finally {
+    await app.close();
+    smtpServer.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a repeat reset request leaves the link already sent usable", async () => {
+  const smtpServer = await startSmtpSink();
+  const port = smtpServer.address().port;
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reset-tokens-"));
+  const app = await startServer(dataDir, {
+    smtpHost: "127.0.0.1",
+    smtpPort: String(port),
+    smtpUser: "smtp-user",
+    smtpPass: "smtp-pass",
+    smtpFrom: "CommUnity <noreply@example.test>",
+  });
+  try {
+    await setupVerifiedRecovery(app, smtpServer, "repeat@example.test", "repeat-box@example.test");
+
+    await api(app, "/api/auth/forgot-password", { method: "POST", body: { recoveryEmail: "repeat-box@example.test" } });
+    const afterFirst = await app.db.query("SELECT id FROM password_reset_tokens ORDER BY id");
+    assert.equal(afterFirst.rows.length, 1);
+
+    // Clear the cooldown so a second request goes through
+    await app.db.query("DELETE FROM recovery_email_requests WHERE recovery_email=$1", ["repeat-box@example.test"]);
+    await api(app, "/api/auth/forgot-password", { method: "POST", body: { recoveryEmail: "repeat-box@example.test" } });
+    const afterSecond = await app.db.query("SELECT id FROM password_reset_tokens ORDER BY id");
+    assert.equal(afterSecond.rows.length, 2, "A second request must not cancel the earlier link");
+
+    // The earlier link still works
+    const resetMessages = smtpServer.messages.filter((item) => item.includes("reset-password"));
+    assert.equal(resetMessages.length, 2);
+    const firstToken = mailText(resetMessages[0]).match(/token=([A-Za-z0-9_-]{20,})/);
+    const used = await api(app, "/api/auth/reset-password", {
+      method: "POST",
+      body: { token: firstToken[1], newPassword: "A-new-recovery-password!" },
+    });
+    assert.equal(used.status, 200, "The earlier reset link should still be usable");
+
+    // Using a link clears every outstanding token for that account
+    const remaining = await app.db.query("SELECT count(*)::integer AS count FROM password_reset_tokens");
+    assert.equal(remaining.rows[0].count, 0);
+  } finally {
+    await app.close();
+    smtpServer.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("report photos survive the state save under the report's own id", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-report-photo-"));
+  const app = await startServer(dataDir);
+  try {
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Photo Tester",
+        email: "photo-tester@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const cookie = registered.headers.get("set-cookie")?.split(";")[0] || "";
+    const stateResponse = await api(app, "/api/state", { cookie });
+    const state = await stateResponse.json();
+    const reportId = "R-PHOTOTEST1";
+
+    const upload = await uploadPhoto(app, `/api/report-photos?reportId=${reportId}`, cookie, TEST_JPEG);
+    assert.equal(upload.status, 201);
+    const photos = (await upload.json()).photos;
+    assert.equal(photos.length, 1);
+    assert.ok(photos[0].photoUrl.startsWith(`/api/reports/${reportId}/photos/`));
+
+    const spoofed = await uploadPhoto(app, `/api/report-photos?reportId=${reportId}`, cookie, Buffer.from("<html>not an image</html>"));
+    assert.equal(spoofed.status, 400, "A file renamed to .jpg must be rejected");
+
+    const now = new Date().toISOString();
+    const data = structuredClone(state.data);
+    data.reports.unshift({
+      id: reportId,
+      userEmail: "photo-tester@example.test",
+      name: "Photo Tester",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the covered court",
+      latitude: null,
+      longitude: null,
+      description: "A large pothole is holding water after every rain.",
+      urgent: false,
+      priority: "Medium",
+      assignedTo: null,
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos,
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
+    });
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie,
+      body: { revision: state.revision, data },
+    });
+    assert.equal(saved.status, 200);
+    const savedBody = await saved.json();
+    assert.deepEqual(savedBody.data.reports[0].photos, photos);
+
+    const image = await fetch(`${app.origin}${photos[0].photoUrl}`, { headers: { Cookie: cookie } });
+    assert.equal(image.status, 200, "The stored photo must still be reachable");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a second profile photo replaces the first instead of deleting it", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-profile-photo-"));
+  const app = await startServer(dataDir);
+  try {
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Profile Tester",
+        email: "profile-tester@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const user = (await registered.json()).user;
+    const cookie = registered.headers.get("set-cookie")?.split(";")[0] || "";
+
+    const first = await uploadPhoto(app, "/api/profile-photo", cookie, TEST_JPEG);
+    assert.equal(first.status, 201);
+    const second = await uploadPhoto(app, "/api/profile-photo", cookie, TEST_JPEG);
+    assert.equal(second.status, 201, "Changing a profile photo must work");
+    const photoUrl = (await second.json()).photoUrl;
+
+    const image = await fetch(`${app.origin}${photoUrl}`, { headers: { Cookie: cookie } });
+    assert.equal(image.status, 200, "The replaced photo must still be served");
+    const files = await readdir(path.join(path.dirname(dataDir), "uploads", "profiles"));
+    assert.ok(files.includes(`${user.id}.jpg`));
+    assert.equal(files.some((file) => file.endsWith(".tmp")), false, "The temporary file must be renamed");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an unchanged administrator save survives a new activity row", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-save-after-activity-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+
+    const failed = await api(app, "/api/auth/login", {
+      method: "POST",
+      body: { email: ADMIN_EMAIL, password: "wrong-password" },
+    });
+    assert.equal(failed.status, 401);
+
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(saved.status, 200, "A server-written activity must not look like a client edit");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("archiving old activity is safe to run twice and after a partial failure", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-archive-retry-"));
+  const app = await startServer(dataDir);
+  try {
+    await app.db.query(`
+      INSERT INTO activities (id, actor, role, action, detail, at, result)
+      VALUES ('OLD-ACT', 'system', 'system', 'Old event', 'old', now() - interval '100 days', 'Success')
+    `);
+    // Stand in for a crash after the archive insert but before the delete.
+    await app.db.query(`
+      INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at)
+      SELECT id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, now()
+      FROM activities WHERE id='OLD-ACT'
+    `);
+
+    await archiveOldActivities(app.db);
+    await archiveOldActivities(app.db);
+
+    const archived = await app.db.query("SELECT count(*)::integer AS count FROM activity_archive WHERE id='OLD-ACT'");
+    assert.equal(archived.rows[0].count, 1, "The archived row must not be duplicated");
+    const live = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id='OLD-ACT'");
+    assert.equal(live.rows[0].count, 0, "A retry must still remove the live row");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("abandoned photo uploads are removed but report photos are kept", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-orphan-uploads-"));
+  const uploadsDir = path.join(dataDir, "uploads");
+  const app = await startServer(dataDir, {}, { uploadsDir });
+  try {
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    await mkdir(path.join(uploadsDir, "R-ORPHAN1"), { recursive: true });
+    await writeFile(path.join(uploadsDir, "R-ORPHAN1", "old.jpg"), TEST_JPEG);
+    await utimes(path.join(uploadsDir, "R-ORPHAN1", "old.jpg"), old, old);
+
+    await app.db.query(`
+      INSERT INTO reports (id,user_email,name,category,title,area,description,status,submitted_at,updated_at)
+      VALUES ('R-KEEP1',$1,'Test resident','Road damage','Test report','Purok 1','A kept report','Submitted',now(),now())
+    `, [ADMIN_EMAIL]);
+    await mkdir(path.join(uploadsDir, "R-KEEP1"), { recursive: true });
+    await writeFile(path.join(uploadsDir, "R-KEEP1", "keep.jpg"), TEST_JPEG);
+    await utimes(path.join(uploadsDir, "R-KEEP1", "keep.jpg"), old, old);
+
+    const removed = await sweepOrphanUploads(app.db, uploadsDir);
+    assert.equal(removed, 1);
+    assert.equal(await readFile(path.join(uploadsDir, "R-ORPHAN1", "old.jpg")).catch(() => null), null);
+    assert.deepEqual(await readFile(path.join(uploadsDir, "R-KEEP1", "keep.jpg")), TEST_JPEG);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("confirming a resolved concern twice is refused", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-confirm-once-"));
+  const app = await startServer(dataDir);
+  try {
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Confirm Tester",
+        email: "confirm-tester@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const cookie = registered.headers.get("set-cookie")?.split(";")[0] || "";
+    await app.db.query(`
+      INSERT INTO reports (id, user_email, name, category, title, area, description, status, submitted_at, updated_at)
+      VALUES ('R-CONFIRM1', 'confirm-tester@example.test', 'Confirm Tester', 'Road damage',
+        'Road damage · Purok 1', 'Purok 1', 'A pothole that was already repaired.', 'Resolved', now(), now())
+    `);
+
+    const first = await api(app, "/api/community/report-confirm", {
+      method: "POST",
+      cookie,
+      body: { reportId: "R-CONFIRM1", note: "Fixed." },
+    });
+    assert.equal(first.status, 200);
+    const second = await api(app, "/api/community/report-confirm", {
+      method: "POST",
+      cookie,
+      body: { reportId: "R-CONFIRM1", note: "Fixed again." },
+    });
+    assert.equal(second.status, 409);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("admin reset requests are rate limited so notifications cannot be flooded", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-reset-limits-"));
+  const app = await startServer(dataDir);
+  try {
+    const first = await api(app, "/api/auth/request-admin-reset", {
+      method: "POST",
+      body: { email: "reset-target@example.test" },
+    });
+    assert.equal(first.status, 200);
+
+    let limited = null;
+    for (let index = 0; index < 15; index += 1) {
+      const response = await api(app, "/api/auth/request-admin-reset", {
+        method: "POST",
+        body: { email: `probe-${index}@example.test` },
+      });
+      if (response.status === 429) {
+        limited = response;
+        break;
+      }
+    }
+    assert.ok(limited, "Repeated admin reset requests should be rate limited");
+    assert.match((await limited.json()).error, /Too many attempts/);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+

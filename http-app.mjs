@@ -13,6 +13,8 @@ const PUBLIC_FILES = new Set([
   "node_modules/leaflet/dist/images/marker-shadow.png",
 ]);
 
+export const MAX_STATE_BYTES = 32 * 1024 * 1024;
+
 export const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -51,6 +53,7 @@ export function createExpressApp({
   handleApi,
   HttpError,
   logError,
+  timeZone = "Asia/Manila",
   createRequestId,
 }) {
   const app = express();
@@ -108,7 +111,13 @@ export function createExpressApp({
     response.on("finish", () => {
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
       const duration = durationMs < 1 ? "<1ms" : `${Math.round(durationMs)}ms`;
-      const time = new Date().toTimeString().slice(0, 8);
+      const time = new Intl.DateTimeFormat("en-GB", {
+        timeZone,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(new Date());
       const method = request.method.padEnd(6, " ");
       const path = request.url?.split("?")[0] || "/";
       const status = response.statusCode;
@@ -118,7 +127,7 @@ export function createExpressApp({
     });
     next();
   });
-  app.use(express.json({ limit: "8mb" }));
+  app.use(express.json({ limit: MAX_STATE_BYTES + 1024 * 1024 }));
   app.use((request, response, next) => {
     if (["POST", "PUT", "DELETE"].includes(request.method) && Array.isArray(request.body)) {
       next(new HttpError(400, "Request body must be valid JSON."));

@@ -42,6 +42,8 @@ function haversineDistanceM(lat1, lon1, lat2, lon2) {
 
 function routeState() {
   const path = currentPath();
+  // Reachable whether or not the visitor is signed in: the emailed link proves the address.
+  if (path[0] === "verify-recovery") return { type: "verify-recovery" };
   if (!currentUser) {
     if (path[0] === "register") return { type: "register" };
     if (path[0] === "forgot-password") return { type: "forgot-password" };
@@ -140,6 +142,9 @@ function render() {
     }
     app.innerHTML = markup;
     if (route.role === "administrator" && (route.page === "settings" || route.page === "email")) loadSmtpSettings();
+    if (route.role === "administrator" && route.page === "activity") {
+      loadActivityLog(activityLogState.page).catch((error) => toast(error.message, "error"));
+    }
     updatePagination();
     if (route.role === "resident" && route.page === "report" && reportMapExpanded) initializeReportMap();
     if (modalState?.kind === "announcement" && announcementMapExpanded) initializeAnnouncementMap();
@@ -155,6 +160,9 @@ function render() {
     else if (route.type === "reset-password") {
       const token = new URLSearchParams(window.location.hash.split("?")[1] || "").get("token") || "";
       app.innerHTML = resetPasswordMarkup(token);
+    } else if (route.type === "verify-recovery") {
+      const token = new URLSearchParams(window.location.hash.split("?")[1] || "").get("token") || "";
+      app.innerHTML = verifyRecoveryMarkup(token);
     } else app.innerHTML = loginMarkup();
     if (modalState) app.insertAdjacentHTML("beforeend", modalMarkup());
   }
@@ -198,6 +206,22 @@ function availableDayOptions(selectedDays = DEFAULT_OFFICIAL_DAYS) {
 }
 
 function modalMarkup() {
+  if (modalState.kind === "activity-detail") {
+    const item = modalState.event;
+    const body = `<div class="activity-detail-list">${[
+      ["Event", item.action],
+      ["Actor", `${item.actor} · ${roleLabel(item.role)}`],
+      ["When", dateTimeLabel(item.at)],
+      ["Result", item.result],
+      ["Reason", item.resultReason || "Not recorded"],
+      ["Affected record", item.affectedId || "Not recorded"],
+      ["Client address", item.clientIp || "Not recorded"],
+      ["Source", item.source === "archived" ? `Archived on ${dateTimeLabel(item.archivedAt)}` : "Current log"],
+      ["Event ID", item.id],
+      ["Details", item.detail],
+    ].map(([label, value]) => `<div class="activity-detail-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>`;
+    return makeModal("Activity event", body);
+  }
   if (modalState.kind === "forced-password") {
     const body = `<form id="forced-password-form" class="modal-form"><div class="modal-form-fields"><p class="field-help">Your administrator issued a temporary password. Change it before continuing.</p>${inputField("Temporary password", "currentPassword", "", { type: "password", required: true, autocomplete: "current-password" })}<div class="form-grid">${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}</div></div><div class="form-actions"><button class="button" type="submit">Change password</button></div></form>`;
     return makeModal("Change your password", body);
@@ -494,7 +518,7 @@ function safeCsvCell(value) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
-function exportCsv(filename, headers, rows) {
+function exportCsv(filename, headers, rows, note = "") {
   const contents = [headers, ...rows].map((row) => row.map(safeCsvCell).join(",")).join("\r\n");
   const blob = new Blob(["\uFEFF", contents], { type: "text/csv;charset=utf-8" });
   const link = document.createElement("a");
@@ -502,7 +526,7 @@ function exportCsv(filename, headers, rows) {
   link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-  toast("Your CSV export is ready.", "success");
+  toast(note || "Your CSV export is ready.", note ? "error" : "success");
 }
 
 function exportReports(history = false) {
@@ -522,6 +546,43 @@ function exportReports(history = false) {
       report.id, report.name, report.userEmail, report.category, report.title, report.barangay || "", report.area, report.locationDetail || "",
       report.latitude ?? "", report.longitude ?? "", report.description, report.urgent ? "Yes" : "No", report.priority || "Medium", report.status, report.assignedTo?.name || "", report.submittedAt, report.updatedAt,
     ]),
+  );
+}
+
+function activityQuery() {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(activityFilters)) {
+    if (value && value !== "all") params.set(key, value);
+  }
+  return params;
+}
+
+async function loadActivityLog(page = 1, force = false) {
+  const params = activityQuery();
+  params.set("page", String(page));
+  params.set("pageSize", String(activityLogState.pageSize || 25));
+  const key = params.toString();
+  if (!force && key === activityLogLoadedKey) return;
+  const response = await fetch(`/api/community/activity?${key}`);
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The activity log could not be loaded.");
+  activityLogState = result;
+  activityLogLoadedKey = key;
+  const region = app.querySelector("#activity-results");
+  if (region) region.innerHTML = activityResultsMarkup();
+}
+
+async function exportActivityLog() {
+  const response = await fetch(`/api/community/activity/export?${activityQuery()}`);
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The activity log could not be exported.");
+  exportCsv("community-activity-log.csv",
+    ["Event ID", "Date and time", "Actor", "Role", "Action", "Details", "Result", "Result reason", "Affected record", "Client address", "Source", "Archived at"],
+    result.activities.map((item) => [
+      item.id, item.at, item.actor, roleLabel(item.role), item.action, item.detail, item.result,
+      item.resultReason || "", item.affectedId || "", item.clientIp || "", item.source || "current", item.archivedAt || "",
+    ]),
+    result.truncated ? `Export limited to ${result.activities.length} of ${result.total} records. Narrow the date range to export the rest.` : "",
   );
 }
 
@@ -1151,7 +1212,8 @@ function calendarEventsForDate(dateStr) {
 }
 
 function nextScheduleId(date, offset = 0) {
-  const year = asDate(date).getFullYear();
+  const text = String(date || "");
+  const year = /^\d{4}-\d{2}-\d{2}$/.test(text) ? text.slice(0, 4) : String(appDateParts(date).year);
   const largest = data.schedules.reduce((value, schedule) => {
     const match = schedule.id.match(/-(\d+)$/);
     return match ? Math.max(value, Number(match[1])) : value;
@@ -1203,7 +1265,14 @@ async function updateProfile(form) {
   dataRevision = result.revision;
   lastPersistedSnapshot = JSON.stringify(data);
   render();
-  toast("Profile saved.", "success");
+  toast(profileSavedMessage(result.recoveryEmail), "success");
+}
+
+function profileSavedMessage(recovery = {}) {
+  if (recovery.verified) return "Profile saved. Recovery email verified.";
+  if (recovery.verificationSent) return "Profile saved. A verification link was sent to your recovery email.";
+  if (currentUser.recoveryEmail) return "Profile saved. The recovery email is not verified because the email service is not configured, so no verification link was sent.";
+  return "Profile saved.";
 }
 
 async function loadSmtpSettings() {
@@ -1422,6 +1491,26 @@ async function resetPassword(form) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The password could not be reset.");
   toast("Password reset. Sign in with your new password.", "success");
+  window.location.hash = "#/login";
+}
+
+async function verifyRecovery(form) {
+  const token = String(form.get("token") || "").trim();
+  if (!token) throw new Error("This verification link is missing its code.");
+  const confirmed = await confirmAction({
+    title: "Verify recovery email?",
+    message: "Confirm this address for password recovery?",
+    confirmLabel: "Verify email",
+  });
+  if (!confirmed) return;
+  const response = await fetch("/api/auth/verify-recovery", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "This verification link is invalid or expired.");
+  toast("Recovery email verified. Password reset links will be sent there.", "success");
   window.location.hash = "#/login";
 }
 
@@ -2298,7 +2387,19 @@ async function handleAction(button, clickEvent) {
       toast(`${ROLES[role]} permissions saved.`, "success");
     }
   } else if (action === "export-activity-log") {
-    exportCsv("community-activity-log.csv", ["Date and time", "Actor", "Role", "Action", "Details", "Result"], data.activities.map((item) => [item.at, item.actor, ROLES[item.role] || item.role, item.action, item.detail, item.result]));
+    await exportActivityLog();
+  } else if (action === "view-activity") {
+    const event = activityLogState.activities.find((item) => item.id === button.dataset.id);
+    if (event) {
+      modalState = { kind: "activity-detail", event };
+      render();
+    }
+  } else if (action === "activity-page") {
+    await loadActivityLog(activityLogState.page + Number(button.dataset.direction), true);
+  } else if (action === "clear-activity-filters") {
+    activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
+    await loadActivityLog(1, true);
+    render();
   } else if (action === "export-reports") {
     exportReports();
   } else if (action === "export-report-history") {
@@ -2474,6 +2575,20 @@ async function handleSubmit(formEvent) {
       await forgotPassword(form);
     } else if (formId === "reset-password-form") {
       await resetPassword(form);
+    } else if (formId === "verify-recovery-form") {
+      await verifyRecovery(form);
+    } else if (formId === "activity-filter-form") {
+      const fields = new FormData(form);
+      activityFilters = {
+        from: String(fields.get("from") || ""),
+        to: String(fields.get("to") || ""),
+        actor: String(fields.get("actor") || "").trim(),
+        action: String(fields.get("action") || "").trim(),
+        result: String(fields.get("result") || ""),
+        affectedId: String(fields.get("affectedId") || "").trim(),
+        source: String(fields.get("source") || "all"),
+      };
+      await loadActivityLog(1, true);
     } else if (formId === "location-form") {
       await saveLocation(fields);
     } else if (formId === "recycling-form") {
@@ -2610,14 +2725,6 @@ async function initialize() {
   watchSessionAcrossTabs();
   await loadLocalData();
   if (!data) return;
-  for (const role of Object.keys(ROLES)) {
-    data.permissions[role] ||= {};
-    for (const permission of PERMISSION_DEFS) {
-      if (typeof data.permissions[role][permission.id] !== "boolean") {
-        data.permissions[role][permission.id] = Boolean(DEFAULT_PERMISSIONS[role][permission.id]);
-      }
-    }
-  }
   checkDataConsistency();
   if (!window.location.hash) window.history.replaceState(null, "", currentUser ? routeUrl(currentUser.role, "dashboard") : "#/login");
   lastKnownHash = window.location.hash;

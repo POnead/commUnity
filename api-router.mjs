@@ -19,16 +19,8 @@ export function createApiRouter({ handleApi, context }) {
   const router = express.Router();
   const dispatch = createDomainDispatcher(handleApi, context);
 
-  router.use("/api/auth", dispatch);
-  router.use("/api/reports", dispatch);
-  router.use("/api/report-photos", dispatch);
-  router.use("/api/settings", dispatch);
-  router.use("/api/locations", dispatch);
-  router.use("/api/announcements", dispatch);
-  router.use("/api/profile", dispatch);
-  router.use("/api/session", dispatch);
-  router.use("/api/state", dispatch);
-  router.use("/api/users", dispatch);
+  // One dispatcher for every /api path. The domain handlers decide which endpoint
+  // they own and return 404 for the rest.
   router.use("/api", dispatch);
   return router;
 }

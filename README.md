@@ -46,6 +46,32 @@ Follow-up limits apply per report, counting all time:
 
 Existing follow-ups count retroactively. When a resident reaches the limit, the follow-up form is hidden and the server rejects further follow-ups. Resolved concerns no longer accept follow-ups; the follow-up form is hidden and the server returns a conflict if one is attempted. The report detail shows the remaining follow-ups so residents know how many are left.
 
+### Service targets
+
+Every concern carries two independent service targets, both measured from the moment it was submitted:
+
+| Priority | First response | Resolution |
+| --- | --- | --- |
+| High | 1 day | 7 days |
+| Medium | 3 days | 14 days |
+| Low | 7 days | 30 days |
+
+The two targets are judged separately. A concern that has been answered but is still unresolved is no longer flagged as awaiting a response; it is flagged only when it passes its resolution target. The concern list marks either kind as **Overdue**, and the concern detail shows both deadlines, the recorded first response, and the recorded resolution.
+
+Changing the priority recomputes the targets. The first-response target only moves while no response has been recorded, so an answered concern keeps the target it was measured against; the resolution target always follows the current priority. Reopening a resolved concern clears the recorded first response and the recorded resolution, and restarts both targets from the reopen, giving staff a fresh window.
+
+### Dates and time zone
+
+CommUnity serves one barangay, so calendar days are the barangay's days. The application uses **Asia/Manila** for every date decision, independent of the host and the browser:
+
+- PostgreSQL sessions are pinned to the same zone, so `CURRENT_DATE`, new-account join dates, and collection reminders resolve to the barangay's day even when a managed database runs in UTC.
+- Collection reminders compare schedules against the barangay's tomorrow, and the reminder text names that date.
+- Calendar events and announcements are validated against the barangay's today, not the server's or the viewer's.
+- The interface formats dates and timestamps in the barangay's zone, so a resident or official browsing from another time zone still sees the correct day.
+- Report deadlines, follow-up limits, and the analytics month buckets use the same zone.
+
+Set `APP_TIME_ZONE` to another IANA zone only if the deployment serves a different municipality.
+
 ## Included workflows
 
 - Residents can submit concerns with a barangay, managed purok/area, and street or landmark, optionally add a Google Maps pin, follow report status, and export report coordinates with their reports/history as CSV.
@@ -56,6 +82,7 @@ Existing follow-ups count retroactively. When a resident reaches the limit, the 
 - Upcoming collections generate an in-app notification and, when SMTP is configured, an email for active residents in the scheduled area on the day before pickup. Report submitters and status updates work the same way.
 - Residents can view active recycling/junkshop listings after staff add verified details. The directory starts empty; no real business locations are supplied.
 - Long report, account, schedule, location, and announcement tables are paginated.
+- Administrators browse the activity log from the server, not from a fixed page of loaded rows. The log covers the live table and the archive together and can be filtered by date range, actor, action, result, affected record, and whether the record is current or archived. Each event has a detail view showing its reason, affected record, and client address, and the CSV export includes archived records and those security fields.
 
 ## Deploy with managed PostgreSQL
 
@@ -67,6 +94,7 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 | `PORT` | Supplied by the host |
 | `DATABASE_URL` | PostgreSQL connection string with TLS enabled |
 | `APP_ORIGIN` | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash) |
+| `APP_TIME_ZONE` | Optional IANA time zone for calendar days, deadlines, reminders and log timestamps (default `Asia/Manila`) |
 | `INITIAL_ADMIN_EMAIL` | Email for the first administrator |
 | `INITIAL_ADMIN_PASSWORD` | Unique password of at least 8 characters |
 | `PG_POOL_MAX` | Optional PostgreSQL pool size per instance (default `10`, maximum `100`) |
@@ -91,16 +119,18 @@ Schema setup is applied at startup. The database uses separate tables for accoun
 
 - Passwords are hashed on the server with scrypt; browser storage does not contain passwords or session identifiers.
 - Session cookies are `HttpOnly`, `SameSite=Lax`, and `Secure` for shared HTTPS deployments. API writes require the exact configured website origin.
-- The server checks roles and ownership, validates request data, rate-limits sign-in, registration, and password-change attempts, and only returns data needed by the signed-in role.
+- The server checks roles and ownership, validates request data, rate-limits sign-in, registration, password-change, and photo-upload attempts, and only returns data needed by the signed-in role.
 - Sign-in limits are shared through the database across server instances, and expired sign-in limits and sessions are periodically pruned.
 - Login limits include both a per-account failure bucket and a per-client request bucket. Forwarded client addresses are used only when the immediate proxy is explicitly trusted.
+- The activity log records the actor, action, affected record, outcome, reason, and client address. A refused request is recorded as a security event: a signed-in refusal names that account, and a rejected cross-site request is recorded against the `system` actor, which the audit table accepts. Refusals are recorded once per client address per five-minute window so anonymous traffic cannot bury real events or grow the log without limit. A missing session on a protected endpoint is refused with 401 and is deliberately not recorded; failed sign-ins are recorded separately with their own limit buckets.
 - PostgreSQL is accessed only by the server; row-level security is not currently enabled. Add database policies before allowing browser or other untrusted clients to connect directly.
-- Email is optional and best-effort. If SMTP is missing or unavailable, in-app notifications still work and the server logs the delivery error.
+- Email is optional for in-app workflows such as collection reminders and status notices: if SMTP is missing or unavailable, those notices still appear in the app and the server logs the delivery error. Password recovery is the exception: it is refused with a clear error when SMTP is unavailable, so an account is never reset without a way to deliver the new credentials.
+- Password recovery uses 15-minute single-use reset tokens. A recovery email only authorizes a reset once the account owner has confirmed it through the emailed verification link; an unconfirmed address is never used to authorize recovery. Reset requests are limited per client address and per recovery address, held back by a short resend cooldown, and a repeat request never cancels a link that was already sent.
 - The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Use `/api/healthz` for provider readiness checks and forward the server's structured error logs to an operational logging service.
 - Security headers include a restrictive Content Security Policy. The local server refuses non-loopback binds unless it is configured with a managed database and HTTPS origin.
 - The report map uses OpenStreetMap's public tile service without an API key; follow its attribution and usage policy.
-- Resident sign-up is not email-verified, and password recovery is not configured. Do not treat an email address as a verified identity. Set up an email verification/recovery provider before relying on those workflows.
-- Report photos are stored as files under `UPLOADS_DIR`; the database stores only authenticated photo URLs. Back up the directory and use a persistent volume in deployment. A large public service should later move files to private object storage.
+- Resident sign-up is not email-verified. Do not treat an account email address as a verified identity. A recovery email becomes usable for password recovery only after the owner confirms it, and administrators can still issue a reset directly when a resident cannot receive mail.
+- Report photos are stored as files under `UPLOADS_DIR`; the database stores only authenticated photo URLs. Only JPEG and PNG files are accepted, checked by their file signature rather than the browser's declared type, and abandoned uploads older than a day are removed by the maintenance job. Back up the directory and use a persistent volume in deployment. A large public service should later move files to private object storage.
 - This is not a security certification. Before using real resident records, review privacy/legal obligations, account recovery, access retention, backup/restore, monitoring, and the hosting provider's TLS, database-network, and at-rest encryption settings.
 
 Run the API, authentication, role-access, and persistence checks with:

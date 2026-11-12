@@ -135,7 +135,7 @@ function pageTitle(role, page) {
 
 function shell(role, page, title, description, body, actions = "") {
   const roleLabel = ROLES[role];
-  const date = new Intl.DateTimeFormat("en-PH", { weekday: "short", month: "short", day: "numeric" }).format(new Date());
+  const date = new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "short", month: "short", day: "numeric" }).format(new Date());
   const account = `<div class="user-chip">${userAvatar(currentUser)}<div class="user-chip-copy"><strong>${esc(currentUser.name)}</strong><span>${esc(roleLabel)}</span></div></div>`;
   return `
     <div class="workspace">
@@ -217,7 +217,7 @@ function reportRows(reports, role) {
       ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
       : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
     const priorityCell = `<div class="record-meta" role="cell" data-label="Priority"><span class="status" data-status="${esc(normalizeStatus(priority))}">${esc(priority)}</span></div>`;
-    const overdueBadge = report.overdue ? `<span class="status-overdue" title="Response deadline passed without a staff response">Overdue</span>` : "";
+    const overdueBadge = report.overdue ? `<span class="status-overdue" title="${esc(report.responseOverdue ? "Past the first-response deadline with no staff response yet" : "Past the resolution deadline and still unresolved")}">Overdue</span>` : "";
     const statusCell = `<div role="cell" data-label="Status">${statusPill(report.status)}${overdueBadge}</div>`;
     const actionsCell = `<div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>`;
     const ordered = role === "resident" ? `${priorityCell}${second}${third}` : `${second}${priorityCell}${third}`;
@@ -320,7 +320,8 @@ function reportDetail(report, role) {
             <div class="notice-bar mt-16"><span>Street or landmark</span><strong>${esc(report.locationDetail || "Not provided")}</strong></div>
             ${role === "administrator" && hasMapPin ? `<div class="notice-bar mt-16"><span>Exact map location</span><a href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
             <div class="inline-between mt-16"><span class="muted small">Submitted ${esc(dateTimeLabel(report.submittedAt))}</span><span class="muted small">Updated ${esc(dateTimeLabel(report.updatedAt))}</span></div>
-            ${report.responseDeadline ? `<div class="notice-bar mt-16"><span>Response deadline</span><strong>${esc(dateLabel(report.responseDeadline))}</strong>${report.overdue ? `<span class="muted small"> · Overdue — no staff response yet</span>` : report.respondedAt ? `<span class="muted small"> · First response ${esc(dateTimeLabel(report.respondedAt))}</span>` : ""}</div>` : ""}
+            ${report.responseDeadline ? `<div class="notice-bar mt-16"><span>First response due</span><strong>${esc(dateLabel(report.responseDeadline))}</strong>${report.responseOverdue ? `<span class="muted small"> · Overdue — no staff response yet</span>` : report.respondedAt ? `<span class="muted small"> · First response ${esc(dateTimeLabel(report.respondedAt))}</span>` : ""}</div>` : ""}
+            ${report.resolutionDeadline ? `<div class="notice-bar mt-16"><span>Resolution due</span><strong>${esc(dateLabel(report.resolutionDeadline))}</strong>${report.resolutionOverdue ? `<span class="muted small"> · Overdue — still unresolved</span>` : report.resolvedAt ? `<span class="muted small"> · Resolved ${esc(dateTimeLabel(report.resolvedAt))}</span>` : ""}</div>` : ""}
           </div></section>
           ${reportLocation}
           ${panel("Attached photos", photos)}
@@ -374,7 +375,7 @@ function scheduleRows(schedules, canEdit = false) {
           : "";
       return `<div class="record-row schedule-record filter-item" role="row" data-search="${esc(`${schedule.id} ${schedule.area} ${schedule.zone} ${schedule.wasteType} ${schedule.status}`.toLowerCase())}">
       <div role="cell"><strong class="record-primary">${esc(schedule.wasteType)}</strong><span class="record-secondary">${esc(schedule.area)} · ${esc(schedule.zone)}</span></div>
-      <div class="record-date" role="cell" data-label="Collection date">${esc(dateLabel(schedule.date))}<span class="record-secondary">${esc(new Intl.DateTimeFormat("en-PH", { weekday: "long" }).format(asDate(schedule.date)))}</span></div>
+      <div class="record-date" role="cell" data-label="Collection date">${esc(dateLabel(schedule.date))}<span class="record-secondary">${esc(new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "long" }).format(asDate(schedule.date)))}</span></div>
       <div class="record-meta" role="cell" data-label="Collection window">${esc(schedule.start)} – ${esc(schedule.end)}<span class="record-secondary">${esc(schedule.team)}</span></div>
       <div role="cell" data-label="Status">${statusPill(schedule.status)}${statusDetail}</div>
       <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-schedule" data-id="${esc(schedule.id)}">Details</button>${canEdit ? `<button class="button secondary small" type="button" data-action="edit-schedule" data-id="${esc(schedule.id)}">Edit</button>` : `<span class="record-meta">${esc(schedule.frequency)}</span>`}</div>
@@ -697,9 +698,9 @@ function analyticsPage() {
   const totalReports = reports.length;
   const openReports = reports.filter((r) => r.status !== "Resolved").length;
   const resolvedReports = reports.filter((r) => r.status === "Resolved").length;
-  const overdueReports = reports.filter(
-    (r) => r.status !== "Resolved" && r.responseDeadline && new Date(r.responseDeadline) < now,
-  ).length;
+  const overdueReports = reports.filter((r) => r.overdue).length;
+  const awaitingResponse = reports.filter((r) => r.responseOverdue).length;
+  const pastResolution = reports.filter((r) => r.resolutionOverdue).length;
 
   let totalReviewDelayMinutes = 0;
   let reviewCount = 0;
@@ -763,12 +764,11 @@ function analyticsPage() {
 
   const months = [];
   for (let i = 5; i >= 0; i -= 1) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    months.push(monthKeyOffset(-i, now));
   }
   const monthly = {};
   for (const report of reports) {
-    const m = new Date(report.submittedAt).toISOString().slice(0, 7);
+    const m = monthKey(report.submittedAt);
     monthly[m] = (monthly[m] || 0) + 1;
   }
   const trendRows = months
@@ -780,7 +780,9 @@ function analyticsPage() {
       stat("Total reports", totalReports, "All submitted concerns"),
       stat("Open reports", openReports, "Awaiting or in progress"),
       stat("Resolved reports", resolvedReports, "Marked resolved"),
-      stat("Overdue concerns", overdueReports, "Past response deadline", overdueReports ? "warning" : ""),
+      stat("Overdue concerns", overdueReports, "Past a service target", overdueReports ? "warning" : ""),
+      stat("Awaiting first response", awaitingResponse, "Past the response deadline", awaitingResponse ? "warning" : ""),
+      stat("Past resolution target", pastResolution, "Unresolved past the target", pastResolution ? "warning" : ""),
       stat("Avg. first review", `${avgReviewDelay} min`, "Submitted to first status change"),
       stat("Avg. time to resolve", `${avgResolution} hrs`, "Submitted to resolved"),
     ])}
@@ -977,6 +979,13 @@ function approvalsPage() {
 }
 
 function profilePage(role) {
+  const recoveryEmail = currentUser.recoveryEmail || "";
+  const recoveryVerified = Boolean(currentUser.recoveryEmailVerified);
+  const recoveryHelp = !recoveryEmail
+    ? "Password reset links are sent here. You must confirm the address before links are sent."
+    : (recoveryVerified
+      ? "Verified. Password reset links are sent to this address."
+      : "Not verified. Save your profile to send a verification link to this address.");
   const body = `
     <div class="profile-layout">
       <div class="content-stack">
@@ -990,7 +999,7 @@ function profilePage(role) {
                 ${inputField("Email address", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
                 ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
                 ${role === "resident" ? selectField("Purok or area", "area", locationAreas().length ? locationAreas() : AREAS, currentUser.area || (locationAreas().length ? locationAreas()[0] : "Purok 1"), { required: true }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
-                ${role === "resident" ? inputField("Recovery email", "recoveryEmail", currentUser.recoveryEmail || "", { type: "email", placeholder: "Optional", autocomplete: "email", help: "Used to receive password reset links." }) : ""}
+                ${role === "resident" ? inputField("Recovery email", "recoveryEmail", recoveryEmail, { type: "email", placeholder: "Optional", autocomplete: "email", help: recoveryHelp }) : ""}
               </div>
               <input type="file" id="profile-photo" accept="image/jpeg,image/png" class="visually-hidden">
               <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
@@ -1010,7 +1019,7 @@ function profilePage(role) {
         </div></section>
       </div>
       <div class="content-stack">
-        ${panel("Your workspace", `<div class="account-summary">${userAvatar(currentUser)}<div><strong>${esc(ROLES[role])}</strong><span>${esc(currentUser.email)}</span></div></div><div class="notice-bar mt-16"><span>Account status</span>${statusPill(currentUser.status || "Active")}</div>`)}
+        ${panel("Your workspace", `<div class="account-summary">${userAvatar(currentUser)}<div><strong>${esc(ROLES[role])}</strong><span>${esc(currentUser.email)}</span></div></div><div class="notice-bar mt-16"><span>Account status</span>${statusPill(currentUser.status || "Active")}</div>${role === "resident" ? `<div class="notice-bar mt-16"><span>Recovery email</span>${recoveryEmail ? `${statusPill(recoveryVerified ? "active" : "pending", recoveryVerified ? "Verified" : "Not verified")}` : `<span class="record-meta">Not set</span>`}</div>` : ""}`)}
       </div>
     </div>`;
   return page(role, "profile", body);
@@ -1159,28 +1168,49 @@ function confirmLeaveWithUnsavedPermissions() {
   );
 }
 
+function activityResultsMarkup() {
+  const summary = activityLogState.summary || {};
+  const rows = activityLogState.activities || [];
+  const total = Number(activityLogState.total || 0);
+  const pageCount = Math.max(1, Number(activityLogState.pageCount || 1));
+  const page = Math.min(Math.max(1, Number(activityLogState.page || 1)), pageCount);
+  return `
+    ${statsStrip([
+      stat("Matching records", total, "Records matching the filters"),
+      stat("Current log", summary.current ?? 0, "Retained in the live log"),
+      stat("Archived", summary.archived ?? 0, "Older than 90 days"),
+      stat("Failed events", summary.failed ?? 0, "Refused or failed actions"),
+      stat("Account changes", summary.accounts ?? 0, "User and role updates"),
+      stat("Report activity", summary.reports ?? 0, "Concern workflows"),
+    ])}
+    <div class="records mt-16" role="table" aria-label="Activity log">
+      <div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Date and time</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>
+      ${rows.map((item) => `<div class="record-row activity-record" role="row">
+        <div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span>${item.source === "archived" ? `<span class="record-secondary">Archived ${esc(dateTimeLabel(item.archivedAt))}</span>` : ""}</div>
+        <div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div>
+        <div class="record-meta" role="cell" data-label="Workspace">${esc(roleLabel(item.role))}</div>
+        <div role="cell" data-label="Result">${statusPill(item.result === "Failed" ? "cancelled" : "active", item.result)}</div>
+        <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-activity" data-id="${esc(item.id)}">Details</button></div>
+      </div>`).join("") || `<div class="empty-state"><strong>No activity matches these filters</strong>Change or clear the filters to see more records.</div>`}
+    </div>
+    ${pageCount > 1 ? `<nav class="pagination" aria-label="Activity log pages"><button class="button secondary small" type="button" data-action="activity-page" data-direction="-1" ${page <= 1 ? "disabled" : ""}>Previous</button><span class="pagination-status" aria-live="polite">Page ${page} of ${pageCount} · ${total} records</span><button class="button secondary small" type="button" data-action="activity-page" data-direction="1" ${page >= pageCount ? "disabled" : ""}>Next</button></nav>` : ""}`;
+}
+
 function activityLogPage() {
-  const rows = [...data.activities].sort((a, b) => asDate(b.at) - asDate(a.at));
-  const archived = [...(data.archivedActivities || [])].sort((a, b) => asDate(b.archivedAt || b.at) - asDate(a.archivedAt || a.at));
-  let archivedPanel = "";
-  if (archived.length) {
-    const archivedRows = archived.map((item) => `<div class="record-row activity-record filter-item" role="row" data-search="${esc(`${item.actor} ${item.action} ${item.detail} ${item.role} ${item.result}`.toLowerCase())}"><div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span></div><div class="record-date" role="cell" data-label="Original date">${esc(dateTimeLabel(item.at))}</div><div class="record-meta" role="cell" data-label="Archived at">${esc(dateTimeLabel(item.archivedAt))}</div><div class="record-meta" role="cell" data-label="Workspace">${esc(ROLES[item.role] || item.role)}</div><div role="cell" data-label="Result">${statusPill("active", item.result)}</div><div role="cell" data-label=""></div></div>`).join("");
-    archivedPanel = panel("Archived activity (older than 90 days)", `<div class="records mt-16" data-page-size="10" role="table" aria-label="Archived activity log"><div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Original date</span><span role="columnheader">Archived at</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>${archivedRows || `<div class="empty-state"><strong>No archived activity</strong>Records older than 90 days are archived here.</div>`}</div>`, { subtitle: "Archived records are retained and cannot be silently deleted." });
-  }
+  const sources = [["all", "Current and archived"], ["current", "Current only"], ["archived", "Archived only"]];
   const body = `
     <div class="content-stack">
-      ${statsStrip([
-        stat("Recorded activity", rows.length, "Workspace activity"),
-        stat("Account changes", rows.filter((item) => /account|role|profile/i.test(item.action)).length, "User and role updates"),
-        stat("Report activity", rows.filter((item) => /report|concern/i.test(`${item.action} ${item.detail}`)).length, "Concern workflows"),
-        stat("Service activity", rows.filter((item) => /collection|schedule/i.test(`${item.action} ${item.detail}`)).length, "Collection workflows"),
-        stat("Archived records", archived.length, "Activity older than 90 days"),
-      ])}
-      ${panel("Activity Log", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search activity</span><input class="input" type="search" data-search-input autocomplete="off"></label><button class="button secondary small" type="button" data-action="export-activity-log">${icon("download")} Export CSV</button></div>
-      <div class="records mt-16" data-page-size="10" role="table" aria-label="Activity log"><div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Date and time</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>
-        ${rows.map((item) => `<div class="record-row activity-record filter-item" role="row" data-search="${esc(`${item.actor} ${item.action} ${item.detail} ${item.role} ${item.result}`.toLowerCase())}"><div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span></div><div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div><div class="record-meta" role="cell" data-label="Workspace">${esc(ROLES[item.role] || item.role)}</div><div role="cell" data-label="Result">${statusPill("active", item.result)}</div><div role="cell" data-label=""></div></div>`).join("") || `<div class="empty-state"><strong>No activity recorded</strong>Actions recorded in this workspace will appear here.</div>`}
-      </div>`, { subtitle: "Actions recorded in this workspace" })}
-      ${archivedPanel}
+      ${panel("Activity Log", `<form id="activity-filter-form" class="form-grid">
+        <div class="form-field"><label for="activity-from">From date</label><input class="input" id="activity-from" name="from" type="date" value="${esc(activityFilters.from)}"></div>
+        <div class="form-field"><label for="activity-to">To date</label><input class="input" id="activity-to" name="to" type="date" value="${esc(activityFilters.to)}"></div>
+        <div class="form-field"><label for="activity-actor">Actor</label><input class="input" id="activity-actor" name="actor" type="search" value="${esc(activityFilters.actor)}" placeholder="Name or system"></div>
+        <div class="form-field"><label for="activity-action">Action</label><input class="input" id="activity-action" name="action" type="search" value="${esc(activityFilters.action)}" placeholder="e.g. Authorization denied"></div>
+        <div class="form-field"><label for="activity-result">Result</label><select class="select" id="activity-result" name="result"><option value="">Any result</option><option value="Success"${activityFilters.result === "Success" ? " selected" : ""}>Success</option><option value="Failed"${activityFilters.result === "Failed" ? " selected" : ""}>Failed</option></select></div>
+        <div class="form-field"><label for="activity-affected">Affected record</label><input class="input" id="activity-affected" name="affectedId" type="search" value="${esc(activityFilters.affectedId)}" placeholder="Record identifier"></div>
+        <div class="form-field"><label for="activity-source">Records</label><select class="select" id="activity-source" name="source">${sources.map(([value, label]) => `<option value="${value}"${activityFilters.source === value ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>
+        <div class="form-field span-all"><div class="form-actions"><button class="button" type="submit">Apply filters</button><button class="button secondary" type="button" data-action="clear-activity-filters">Clear</button><button class="button secondary" type="button" data-action="export-activity-log">${icon("download")} Export CSV</button></div></div>
+      </form>
+      <div id="activity-results">${activityResultsMarkup()}</div>`, { subtitle: "Every retained action and security event" })}
     </div>`;
   return page("administrator", "activity", body);
 }
@@ -1220,7 +1250,7 @@ function forgotPasswordMarkup() {
       </section>
       <section class="login-pane" aria-labelledby="forgot-title"><div class="login-box">
         <h1 id="forgot-title">Forgot password</h1>
-        <p class="field-help">Enter the recovery email tied to your account. If an account uses that recovery email, a password reset link will be sent to it.</p>
+        <p class="field-help">Enter the recovery email tied to your account. If an account uses that recovery email and has confirmed it, a password reset link will be sent to it.</p>
         <form class="login-form" id="forgot-password-form">
           ${inputField("Recovery email", "recoveryEmail", "", { required: true, type: "email", autocomplete: "email" })}
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Send reset request</button></div>
@@ -1246,6 +1276,26 @@ function resetPasswordMarkup(token) {
           ${inputField("New password", "newPassword", "", { required: true, type: "password", minLength: 8, autocomplete: "new-password" })}
           ${inputField("Confirm new password", "confirmPassword", "", { required: true, type: "password", minLength: 8, autocomplete: "new-password" })}
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Reset password</button></div>
+        </form>
+      </div></section>
+    </main>`;
+}
+
+function verifyRecoveryMarkup(token) {
+  return `
+    <main class="login-page" id="main-content">
+      <section class="login-story" aria-label="About CommUnity">
+        <div class="auth-brand">
+          ${brandMark()}
+          <div class="auth-brand-copy"><strong>CommUnity</strong><span>Palsara community desk</span></div>
+        </div>
+      </section>
+      <section class="login-pane" aria-labelledby="verify-title"><div class="login-box">
+        <h1 id="verify-title">Verify recovery email</h1>
+        <p class="field-help">Confirm this email address so CommUnity can send password reset links to it.</p>
+        <form class="login-form" id="verify-recovery-form">
+          <input type="hidden" name="token" value="${esc(token)}">
+          <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Verify email</button></div>
         </form>
       </div></section>
     </main>`;

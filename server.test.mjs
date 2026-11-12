@@ -1381,13 +1381,14 @@ test("enforces official report and schedule permissions and sends resident notif
     assert.equal(reviewed.status, 200);
 
     officialState = await reviewed.json();
-    assert.deepEqual(officialState.data.reports[0].history.at(-1), {
-      status: "Under Review",
-      at: report.updatedAt,
-      note: "A barangay official is reviewing this report.",
-      actorName: officialSession.user.name,
-      actorRole: "official",
-    });
+    const recordedUpdate = officialState.data.reports[0].history.at(-1);
+    assert.equal(recordedUpdate.status, "Under Review");
+    assert.equal(recordedUpdate.note, "A barangay official is reviewing this report.");
+    assert.equal(recordedUpdate.actorName, officialSession.user.name);
+    assert.equal(recordedUpdate.actorRole, "official");
+    // The server stamps the update itself, so the browser's clock is never the record.
+    assert.ok(Math.abs(new Date(recordedUpdate.at).getTime() - Date.now()) < 60000,
+      "the status entry is stamped by the server");
     officialState.data.schedules.push({
       id: "GCS-2026-900",
       area: "Purok 4",
@@ -1650,32 +1651,22 @@ test("flags concerns past their response deadline as overdue", async () => {
     });
     assert.equal(registered.status, 201);
     const old = new Date(Date.now() - 10 * 86400000).toISOString();
+    const responseDeadline = new Date(Date.now() - 7 * 86400000).toISOString();
+    const resolutionDeadline = new Date(Date.now() + 4 * 86400000).toISOString();
+    // Insert directly so the recorded submission moment is backdated: the server
+    // normally stamps submittedAt on receipt, but this test needs a concern that
+    // was filed long ago to verify overdue detection.
+    const registeredJson = await registered.json();
+    await app.db.query(`
+      INSERT INTO reports (id,user_email,name,category,title,area,barangay,location_detail,description,urgent,priority,status,submitted_at,updated_at,response_deadline,resolution_deadline,service_cycle_started_at)
+      VALUES ($1,$2,'Overdue Resident','Drainage problem','Blocked drain · Purok 1','Purok 1','Palsara','Near the market','The drain near the market is blocked and flooding the street.',false,'Medium','Submitted',$3,$3,$4,$5,$3)
+    `, ["RPT-2026-overdue-01", registeredJson.user.email, old, responseDeadline, resolutionDeadline]);
+    await app.db.query(`
+      INSERT INTO report_history (report_id,position,status,at,note,actor_name,actor_role)
+      VALUES ($1,0,'Submitted',$2,'Report received.','Overdue Resident','resident')
+    `, ["RPT-2026-overdue-01", old]);
+    await app.db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     let state = await api(app, "/api/state", { cookie: adminCookie }).then((response) => response.json());
-    state.data.reports.push({
-      id: "RPT-2026-overdue-01",
-      userEmail: "overdue-resident@example.test",
-      name: "Overdue Resident",
-      category: "Drainage problem",
-      title: "Blocked drain · Purok 1",
-      area: "Purok 1",
-      barangay: "Palsara",
-      locationDetail: "Near the market",
-      description: "The drain near the market is blocked and flooding the street.",
-      urgent: false,
-      priority: "Medium",
-      status: "Submitted",
-      submittedAt: old,
-      updatedAt: old,
-      photos: [],
-      history: [{ status: "Submitted", at: old, note: "Report received." }],
-    });
-    const submitted = await api(app, "/api/state", {
-      method: "PUT",
-      cookie: adminCookie,
-      body: { revision: state.revision, data: state.data },
-    });
-    assert.equal(submitted.status, 200);
-    state = await api(app, "/api/state", { cookie: adminCookie }).then((response) => response.json());
     const report = state.data.reports.find((item) => item.id === "RPT-2026-overdue-01");
     assert.ok(report.responseDeadline);
     assert.ok(report.overdue, "a concern past its Medium-priority deadline is overdue");
@@ -1720,34 +1711,22 @@ test("judges the first response and the resolution target separately", async () 
     const residentCookie = registered.headers.get("set-cookie").split(";")[0];
 
     // Submitted 20 days ago, so the 3-day response target and the 14-day resolution
-    // target have both passed.
+    // target have both passed. The server normally stamps submittedAt on receipt,
+    // so this test inserts directly to backdate the record.
     const old = new Date(Date.now() - 20 * 86400000).toISOString();
+    const responseDeadline = new Date(Date.now() - 17 * 86400000).toISOString();
+    const resolutionDeadline = new Date(Date.now() - 6 * 86400000).toISOString();
+    const registeredJson = await registered.json();
+    await app.db.query(`
+      INSERT INTO reports (id,user_email,name,category,title,area,barangay,location_detail,description,urgent,priority,status,submitted_at,updated_at,response_deadline,resolution_deadline,service_cycle_started_at)
+      VALUES ($1,$2,'Target Resident','Road damage','Road damage · Purok 1','Purok 1','Palsara','Near the hall','A large pothole near the barangay hall needs patching.',false,'Medium','Submitted',$3,$3,$4,$5,$3)
+    `, ["RPT-2026-target-01", registeredJson.user.email, old, responseDeadline, resolutionDeadline]);
+    await app.db.query(`
+      INSERT INTO report_history (report_id,position,status,at,note,actor_name,actor_role)
+      VALUES ($1,0,'Submitted',$2,'Report received.','Target Resident','resident')
+    `, ["RPT-2026-target-01", old]);
+    await app.db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
-    state.data.reports.push({
-      id: "RPT-2026-target-01",
-      userEmail: "target-resident@example.test",
-      name: "Target Resident",
-      category: "Road damage",
-      title: "Road damage · Purok 1",
-      area: "Purok 1",
-      barangay: "Palsara",
-      locationDetail: "Near the hall",
-      description: "A large pothole near the barangay hall needs patching.",
-      urgent: false,
-      priority: "Medium",
-      status: "Submitted",
-      submittedAt: old,
-      updatedAt: old,
-      photos: [],
-      history: [{ status: "Submitted", at: old, note: "Report received." }],
-    });
-    const submitted = await api(app, "/api/state", {
-      method: "PUT",
-      cookie: residentCookie,
-      body: { revision: state.revision, data: state.data },
-    });
-    assert.equal(submitted.status, 200);
-    state = await submitted.json();
     let report = state.data.reports.find((item) => item.id === "RPT-2026-target-01");
     assert.ok(report.responseDeadline, "a first-response deadline is computed");
     assert.ok(report.resolutionDeadline, "a resolution deadline is computed");
@@ -1788,35 +1767,27 @@ test("changing the priority before the first response recomputes the deadline", 
     const residentCookie = registered.headers.get("set-cookie").split(";")[0];
 
     // Submitted two days ago as a Medium concern: the response target is three days.
-    const submittedAt = new Date(Date.now() - 2 * 86400000).toISOString();
+    // The server stamps submittedAt on receipt, so this test inserts directly to
+    // backdate the record and verify that deadline recomputation uses the stored
+    // submission moment, not the browser's clock.
+    const backdated = new Date(Date.now() - 2 * 86400000).toISOString();
+    const originalResponseDeadline = new Date(Date.now() + 1 * 86400000).toISOString();
+    const originalResolutionDeadline = new Date(Date.now() + 5 * 86400000).toISOString();
+    const registeredJson = await registered.json();
+    await app.db.query(`
+      INSERT INTO reports (id,user_email,name,category,title,area,barangay,location_detail,description,urgent,priority,status,submitted_at,updated_at,response_deadline,resolution_deadline,service_cycle_started_at)
+      VALUES ($1,$2,'Priority Resident','Road damage','Road damage · Purok 1','Purok 1','Palsara','Near the hall','A large pothole near the barangay hall needs patching.',false,'Medium','Submitted',$3,$3,$4,$5,$3)
+    `, ["RPT-2026-priority-01", registeredJson.user.email, backdated, originalResponseDeadline, originalResolutionDeadline]);
+    await app.db.query(`
+      INSERT INTO report_history (report_id,position,status,at,note,actor_name,actor_role)
+      VALUES ($1,0,'Submitted',$2,'Report received.','Priority Resident','resident')
+    `, ["RPT-2026-priority-01", backdated]);
+    await app.db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
-    state.data.reports.push({
-      id: "RPT-2026-priority-01",
-      userEmail: "priority-resident@example.test",
-      name: "Priority Resident",
-      category: "Road damage",
-      title: "Road damage · Purok 1",
-      area: "Purok 1",
-      barangay: "Palsara",
-      locationDetail: "Near the hall",
-      description: "A large pothole near the barangay hall needs patching.",
-      urgent: false,
-      priority: "Medium",
-      status: "Submitted",
-      submittedAt,
-      updatedAt: submittedAt,
-      photos: [],
-      history: [{ status: "Submitted", at: submittedAt, note: "Report received." }],
-    });
-    const submitted = await api(app, "/api/state", {
-      method: "PUT",
-      cookie: residentCookie,
-      body: { revision: state.revision, data: state.data },
-    });
-    assert.equal(submitted.status, 200);
-    state = await submitted.json();
     let report = state.data.reports.find((item) => item.id === "RPT-2026-priority-01");
-    const originalResponseDeadline = report.responseDeadline;
+    // The stored submission moment, not the browser's, is the deadline anchor.
+    assert.ok(Math.abs(new Date(report.submittedAt).getTime() - new Date(backdated).getTime()) < 60000,
+      "the stored submission moment is used");
     assert.equal(report.responseOverdue, false);
 
     // Raising the priority to High tightens the target to one day, which has passed.
@@ -1829,8 +1800,8 @@ test("changing the priority before the first response recomputes the deadline", 
     state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
     report = state.data.reports.find((item) => item.id === "RPT-2026-priority-01");
     assert.notEqual(report.responseDeadline, originalResponseDeadline, "the response deadline follows the new priority");
-    assert.equal(report.responseDeadline, new Date(new Date(submittedAt).getTime() + 86400000).toISOString());
-    assert.equal(report.resolutionDeadline, new Date(new Date(submittedAt).getTime() + 7 * 86400000).toISOString());
+    assert.equal(report.responseDeadline, new Date(new Date(backdated).getTime() + 86400000).toISOString());
+    assert.equal(report.resolutionDeadline, new Date(new Date(backdated).getTime() + 7 * 86400000).toISOString());
     assert.equal(report.responseOverdue, true, "the tightened target has already passed");
 
     // After the first response the recorded target can no longer move.
@@ -1925,6 +1896,229 @@ test("reopening a concern resets the first response and restarts both service ta
     assert.ok(Math.abs(new Date(report.responseDeadline).getTime() - expectedResponse) < 60000, "the response target restarts from the reopen");
     const expectedResolution = Date.now() + 14 * 86400000;
     assert.ok(Math.abs(new Date(report.resolutionDeadline).getTime() - expectedResolution) < 60000, "the resolution target restarts from the reopen");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("changing the priority after a reopen keeps both targets on the reopened service cycle", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reopen-priority-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Reopen Priority Resident",
+        email: "reopen-priority-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+
+    // Submitted forty days ago, so both Medium targets measured from the original
+    // submission date are already in the past.
+    const submittedAt = new Date(Date.now() - 40 * 86400000).toISOString();
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-reopen-priority-01",
+      userEmail: "reopen-priority-resident@example.test",
+      name: "Reopen Priority Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the hall",
+      description: "A large pothole near the barangay hall needs patching.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt,
+      updatedAt: submittedAt,
+      photos: [],
+      history: [{ status: "Submitted", at: submittedAt, note: "Report received." }],
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+
+    let officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    officialState = await advanceReport(app, officialCookie, officialState, "RPT-2026-reopen-priority-01", "Under Review", "A barangay official is reviewing this report.");
+    officialState = await advanceReport(app, officialCookie, officialState, "RPT-2026-reopen-priority-01", "In Progress", "The crew is scheduled to patch the road.");
+    officialState = await advanceReport(app, officialCookie, officialState, "RPT-2026-reopen-priority-01", "Resolved", "The road has been patched.");
+    const resolved = officialState.data.reports.find((item) => item.id === "RPT-2026-reopen-priority-01");
+    assert.ok(resolved.resolvedAt, "the concern was resolved before the reopen");
+
+    const reopenedAt = Date.now();
+    const reopened = await api(app, "/api/community/report-reopen", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-2026-reopen-priority-01", reason: "The patch did not hold after the rain." },
+    });
+    assert.equal(reopened.status, 200);
+
+    let report = (await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json()))
+      .data.reports.find((item) => item.id === "RPT-2026-reopen-priority-01");
+    assert.equal(report.status, "Submitted");
+    assert.equal(report.responseOverdue, false, "the reopen cleared the overdue flags");
+
+    // Changing the priority after the reopen must still measure both targets from
+    // the reopen, not from the original submission.
+    const changed = await api(app, "/api/community/report-priority", {
+      method: "POST",
+      cookie: officialCookie,
+      body: { reportId: "RPT-2026-reopen-priority-01", priority: "High" },
+    });
+    assert.equal(changed.status, 200);
+
+    report = (await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json()))
+      .data.reports.find((item) => item.id === "RPT-2026-reopen-priority-01");
+    assert.equal(report.priority, "High");
+    const expectedResponse = reopenedAt + 1 * 86400000;
+    assert.ok(Math.abs(new Date(report.responseDeadline).getTime() - expectedResponse) < 60000,
+      "the response target is measured from the reopen, not the original submission");
+    const expectedResolution = reopenedAt + 7 * 86400000;
+    assert.ok(Math.abs(new Date(report.resolutionDeadline).getTime() - expectedResolution) < 60000,
+      "the resolution target is measured from the reopen, not the original submission");
+    assert.equal(report.responseOverdue, false, "a reopened concern is not overdue the moment its priority changes");
+    assert.equal(report.resolutionOverdue, false);
+    assert.equal(report.overdue, false);
+    // The original submission date must not creep back into the calculation.
+    assert.notEqual(report.responseDeadline, new Date(new Date(submittedAt).getTime() + 1 * 86400000).toISOString());
+    assert.notEqual(report.resolutionDeadline, new Date(new Date(submittedAt).getTime() + 7 * 86400000).toISOString());
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an official status update is stamped by the server, not by the browser", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-server-clock-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Clock Resident",
+        email: "clock-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+
+    const submittedAt = new Date().toISOString();
+    let state = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    state.data.reports.push({
+      id: "RPT-2026-clock-01",
+      userEmail: "clock-resident@example.test",
+      name: "Clock Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the hall",
+      description: "A large pothole near the barangay hall needs patching.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt,
+      updatedAt: submittedAt,
+      // A concern cannot arrive already answered: the resident has no say in the
+      // recorded first response or the recorded resolution.
+      respondedAt: "2020-01-01T00:00:00.000Z",
+      resolvedAt: "2020-01-01T00:00:00.000Z",
+      photos: [],
+      history: [{ status: "Submitted", at: submittedAt, note: "Report received." }],
+    });
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: residentCookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(submitted.status, 200);
+    state = await submitted.json();
+    let report = state.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    assert.equal(report.respondedAt, null, "a newly filed concern is unanswered");
+    assert.equal(report.resolvedAt, null, "a newly filed concern is unresolved");
+
+    // The official backdates the update. The report timestamp and the status entry
+    // are moved into the past together, so the server's own consistency check
+    // cannot tell the difference.
+    const backdated = "2020-01-01T00:00:00.000Z";
+    let officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const target = officialState.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    target.status = "Under Review";
+    target.updatedAt = backdated;
+    target.history.push({ status: "Under Review", at: backdated, note: "A barangay official is reviewing this report." });
+    const reviewed = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: officialState.data },
+    });
+    assert.equal(reviewed.status, 200, "the backdated request is still accepted as an update");
+    officialState = await reviewed.json();
+    report = officialState.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    assert.notEqual(report.respondedAt, backdated, "the recorded first response is not the browser's timestamp");
+    assert.notEqual(report.updatedAt, backdated, "the update itself is not the browser's timestamp");
+    assert.notEqual(report.history.at(-1).at, backdated, "the status entry is not the browser's timestamp");
+    assert.ok(Math.abs(new Date(report.respondedAt).getTime() - Date.now()) < 60000,
+      "the recorded first response is stamped by the server");
+    assert.ok(Math.abs(new Date(report.updatedAt).getTime() - Date.now()) < 60000,
+      "the update is stamped by the server");
+    assert.ok(Math.abs(new Date(report.history.at(-1).at).getTime() - Date.now()) < 60000,
+      "the status entry is stamped by the server");
+    assert.equal(report.respondedAt, report.updatedAt, "the first response and the update share the server's clock");
+
+    // The resident reads the same server-generated time, not the forged one.
+    const residentView = await api(app, "/api/state", { cookie: residentCookie }).then((response) => response.json());
+    const residentReport = residentView.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    assert.equal(residentReport.respondedAt, report.respondedAt);
+    assert.equal(residentReport.history.at(-1).at, report.history.at(-1).at);
+
+    // Resolving the concern with a backdated timestamp is stamped the same way.
+    officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const resolvedTarget = officialState.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    resolvedTarget.status = "In Progress";
+    resolvedTarget.updatedAt = backdated;
+    resolvedTarget.history.push({ status: "In Progress", at: backdated, note: "The crew is scheduled to patch the road." });
+    await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: officialState.data },
+    });
+    officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const inProgress = officialState.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    assert.notEqual(inProgress.updatedAt, backdated);
+    assert.ok(Math.abs(new Date(inProgress.updatedAt).getTime() - Date.now()) < 60000);
+
+    officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const finalTarget = officialState.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    finalTarget.status = "Resolved";
+    finalTarget.updatedAt = backdated;
+    finalTarget.history.push({ status: "Resolved", at: backdated, note: "The road has been patched." });
+    const resolved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: officialState.data },
+    });
+    assert.equal(resolved.status, 200);
+    officialState = await resolved.json();
+    report = officialState.data.reports.find((item) => item.id === "RPT-2026-clock-01");
+    assert.notEqual(report.resolvedAt, backdated, "the recorded resolution is not the browser's timestamp");
+    assert.ok(Math.abs(new Date(report.resolvedAt).getTime() - Date.now()) < 60000,
+      "the recorded resolution is stamped by the server");
+    assert.equal(report.resolvedAt, report.updatedAt, "the resolution and the update share the server's clock");
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -3082,6 +3276,150 @@ test("admin state update cannot bypass priority/status guards or set an unmanage
     assert.equal(renameAttempt.status, 200);
   } finally {
     await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an existing database is upgraded to backfill the recorded resolution and first response", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-resolved-upgrade-"));
+  const first = await startServer(dataDir);
+  const moments = {
+    submitted: new Date("2026-01-02T08:00:00.000Z"),
+    underReview: new Date("2026-01-03T09:00:00.000Z"),
+    inProgress: new Date("2026-01-04T10:00:00.000Z"),
+    resolved: new Date("2026-01-05T11:00:00.000Z"),
+    confirmed: new Date("2026-01-06T12:00:00.000Z"),
+    reopened: new Date("2026-01-07T13:00:00.000Z"),
+    reviewedAgain: new Date("2026-01-08T14:00:00.000Z"),
+    resolvedAgain: new Date("2026-01-09T15:00:00.000Z"),
+    alreadyRecorded: new Date("2026-01-01T07:00:00.000Z"),
+  };
+  try {
+    const { email, name } = await registerResident(first, "legacy@example.test", "Legacy Resident");
+    // Concerns that were filed, answered and resolved before the resolved_at and
+    // responded_at columns existed: their status history still holds the moments.
+    const insertReport = async (id, status, resolvedAt = null, respondedAt = null, serviceCycleStartedAt = moments.submitted) => {
+      await first.db.query(`
+        INSERT INTO reports (id,user_email,name,category,title,area,description,status,submitted_at,updated_at,responded_at,resolved_at,service_cycle_started_at)
+        VALUES ($1,$2,$3,'Road damage',$4,'Purok 2','A large pothole near the barangay hall needs patching.',$5,$6,$6,$7,$8,$9)
+      `, [id, email, name, id, status, moments.submitted, respondedAt, resolvedAt, serviceCycleStartedAt]);
+    };
+    const insertHistory = async (id, entries) => {
+      for (const [position, entry] of entries.entries()) {
+        await first.db.query(
+          "INSERT INTO report_history (report_id,position,status,at,note,actor_name,actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+          [id, position, entry.status, entry.at, entry.note, entry.actorRole === "resident" ? name : "Official One", entry.actorRole],
+        );
+      }
+    };
+
+    // Resolved normally, then confirmed by the resident.
+    await insertReport("R-LEGACY-01", "Resolved");
+    await insertHistory("R-LEGACY-01", [
+      { status: "Submitted", at: moments.submitted, note: "Report received.", actorRole: "resident" },
+      { status: "Under Review", at: moments.underReview, note: "A barangay official is reviewing this report.", actorRole: "official" },
+      { status: "In Progress", at: moments.inProgress, note: "The crew is scheduled to patch the road.", actorRole: "official" },
+      { status: "Resolved", at: moments.resolved, note: "The road has been patched.", actorRole: "official" },
+      { status: "Resolved", at: moments.confirmed, note: "Resident confirmed the issue was addressed.", actorRole: "resident" },
+    ]);
+
+    // Resolved in one step, with no separate review entry.
+    await insertReport("R-LEGACY-02", "Resolved");
+    await insertHistory("R-LEGACY-02", [
+      { status: "Submitted", at: moments.submitted, note: "Report received.", actorRole: "resident" },
+      { status: "Resolved", at: moments.resolved, note: "Status updated to Resolved.", actorRole: "official" },
+    ]);
+
+    // Reopened after being resolved, then resolved again.
+    await insertReport("R-LEGACY-03", "Resolved", null, null, moments.reopened);
+    await insertHistory("R-LEGACY-03", [
+      { status: "Submitted", at: moments.submitted, note: "Report received.", actorRole: "resident" },
+      { status: "Resolved", at: moments.resolved, note: "The road has been patched.", actorRole: "official" },
+      { status: "Submitted", at: moments.reopened, note: "Resident requested reopening: The patch did not hold.", actorRole: "resident" },
+      { status: "Under Review", at: moments.reviewedAgain, note: "A barangay official is reviewing this report.", actorRole: "official" },
+      { status: "Resolved", at: moments.resolvedAgain, note: "The road has been patched again.", actorRole: "official" },
+    ]);
+
+    // Still waiting for its first response.
+    await insertReport("R-LEGACY-04", "Submitted");
+    await insertHistory("R-LEGACY-04", [
+      { status: "Submitted", at: moments.submitted, note: "Report received.", actorRole: "resident" },
+    ]);
+
+    // A concern that already carries its own recorded moments.
+    await insertReport("R-LEGACY-05", "Resolved", moments.alreadyRecorded, moments.alreadyRecorded);
+    await insertHistory("R-LEGACY-05", [
+      { status: "Submitted", at: moments.submitted, note: "Report received.", actorRole: "resident" },
+      { status: "Resolved", at: moments.resolved, note: "The road has been patched.", actorRole: "official" },
+    ]);
+
+    // Answered but not yet resolved: its first response should be recovered
+    // from the Under Review entry, while its resolution stays empty.
+    await insertReport("R-LEGACY-06", "In Progress");
+    await insertHistory("R-LEGACY-06", [
+      { status: "Submitted", at: moments.submitted, note: "Report received.", actorRole: "resident" },
+      { status: "Under Review", at: moments.underReview, note: "A barangay official is reviewing this report.", actorRole: "official" },
+      { status: "In Progress", at: moments.inProgress, note: "The crew is scheduled to patch the road.", actorRole: "official" },
+    ]);
+  } finally {
+    await first.close();
+  }
+
+  // Restarting runs the migration again, as an upgraded deployment would.
+  const second = await startServer(dataDir);
+  try {
+    const rows = await second.db.query(
+      "SELECT id, responded_at AS \"respondedAt\", resolved_at AS \"resolvedAt\", service_cycle_started_at AS \"serviceCycleStartedAt\" FROM reports WHERE id LIKE 'R-LEGACY-%' ORDER BY id",
+    );
+    const stored = new Map(rows.rows.map((row) => [row.id, row]));
+    const at = (value) => (value instanceof Date ? value.toISOString() : value);
+
+    assert.equal(at(stored.get("R-LEGACY-01").resolvedAt), moments.resolved.toISOString(),
+      "the resolution is recovered from the status history, not the later confirmation");
+    assert.equal(at(stored.get("R-LEGACY-01").respondedAt), moments.underReview.toISOString(),
+      "the first response is recovered from the status history");
+
+    assert.equal(at(stored.get("R-LEGACY-02").resolvedAt), moments.resolved.toISOString());
+    assert.equal(at(stored.get("R-LEGACY-02").respondedAt), moments.resolved.toISOString(),
+      "a concern resolved in one step was answered when it was resolved");
+
+    assert.equal(at(stored.get("R-LEGACY-03").resolvedAt), moments.resolvedAgain.toISOString(),
+      "the current cycle's resolution is recovered, not the one before the reopen");
+    assert.equal(at(stored.get("R-LEGACY-03").respondedAt), moments.reviewedAgain.toISOString(),
+      "the current cycle's first response is recovered, not the one before the reopen");
+
+    assert.equal(stored.get("R-LEGACY-04").resolvedAt, null, "a concern that was never resolved stays empty");
+    assert.equal(stored.get("R-LEGACY-04").respondedAt, null, "a concern that was never answered stays empty");
+
+    assert.equal(at(stored.get("R-LEGACY-05").resolvedAt), moments.alreadyRecorded.toISOString(),
+      "a recorded resolution is left as it is");
+    assert.equal(at(stored.get("R-LEGACY-05").respondedAt), moments.alreadyRecorded.toISOString(),
+      "a recorded first response is left as it is");
+
+    // An answered-but-unresolved concern recovers its first response and keeps
+    // its resolution empty.
+    assert.equal(at(stored.get("R-LEGACY-06").respondedAt), moments.underReview.toISOString(),
+      "an answered but unresolved concern recovers its first response");
+    assert.equal(stored.get("R-LEGACY-06").resolvedAt, null,
+      "an unresolved concern keeps its resolution empty");
+
+    // Service cycle start: never-reopened reports measure from submission,
+    // reopened reports measure from their latest Submitted (reopening) entry.
+    assert.equal(at(stored.get("R-LEGACY-01").serviceCycleStartedAt), moments.submitted.toISOString(),
+      "a never-reopened concern starts its cycle at submission");
+    assert.equal(at(stored.get("R-LEGACY-03").serviceCycleStartedAt), moments.reopened.toISOString(),
+      "a reopened concern starts its cycle at the latest Submitted entry");
+    assert.equal(at(stored.get("R-LEGACY-06").serviceCycleStartedAt), moments.submitted.toISOString(),
+      "an answered-but-unresolved concern starts its cycle at submission");
+
+    // The recovered moments reach the concern detail the resident and staff read.
+    const admin = await signIn(second);
+    const state = await api(second, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const report = state.data.reports.find((item) => item.id === "R-LEGACY-01");
+    assert.equal(report.resolvedAt, moments.resolved.toISOString());
+    assert.equal(report.respondedAt, moments.underReview.toISOString());
+  } finally {
+    await second.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 });

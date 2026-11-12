@@ -48,7 +48,7 @@ Existing follow-ups count retroactively. When a resident reaches the limit, the 
 
 ### Service targets
 
-Every concern carries two independent service targets, both measured from the moment it was submitted:
+Every concern carries two independent service targets, both measured from the start of its current service cycle — the moment it was submitted, or the moment it was reopened:
 
 | Priority | First response | Resolution |
 | --- | --- | --- |
@@ -59,6 +59,10 @@ Every concern carries two independent service targets, both measured from the mo
 The two targets are judged separately. A concern that has been answered but is still unresolved is no longer flagged as awaiting a response; it is flagged only when it passes its resolution target. The concern list marks either kind as **Overdue**, and the concern detail shows both deadlines, the recorded first response, and the recorded resolution.
 
 Changing the priority recomputes the targets. The first-response target only moves while no response has been recorded, so an answered concern keeps the target it was measured against; the resolution target always follows the current priority. Reopening a resolved concern clears the recorded first response and the recorded resolution, and restarts both targets from the reopen, giving staff a fresh window.
+
+The service cycle is tracked with its own timestamp rather than the submission date, so a concern that was reopened months after it was submitted does not fall back to its original date. A priority change after a reopen still measures from the reopen, and the reopened concern cannot become overdue the moment an official adjusts its priority.
+
+The server owns the timestamps that describe the service lifecycle. When an official records a status update, the server stamps the update, the status history entry, the recorded first response, and the recorded resolution with its own clock; a browser may ask for a status change, but it cannot say when it happened, so a backdated request cannot manufacture a missed or a met target. A newly filed concern is unanswered and unresolved, and the server records when it took the record in, so a resident cannot submit a concern that already claims a first response.
 
 ### Dates and time zone
 
@@ -112,6 +116,8 @@ Use `npm install` as the build/install command and `npm start` as the start comm
 The `/api/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
 
 Schema setup is applied at startup. The database uses separate tables for accounts and password hashes, reports and status history, report photos, schedules and reminder deduplication, notifications, role permissions, activity, announcements, community locations, and recycling listings, with foreign keys, checks, and indexes. Sessions are stored as hashes in PostgreSQL. Configure the provider's automated backups and test restore procedures before using real information.
+
+Upgrading an existing deployment applies the schema changes at startup and recovers what the new columns need from the records that are already there. A concern that was resolved or answered before the service-target columns existed keeps its moments: the resolution is recovered from the last status-history entry a staff member recorded as **Resolved**, and the first response from the first entry after the concern's current service cycle began. Concerns that were never answered or resolved stay empty, and a moment that is already recorded is left as it is.
 
 **The old local demonstration data is not imported into the new relational schema.** The existing `data/pglite/` directory is left untouched, but the new app will not read its legacy JSON state. Back it up before switching versions. The remote database starts clean as requested.
 

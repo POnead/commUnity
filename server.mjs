@@ -390,10 +390,21 @@ function serviceDeadline(anchor, days) {
   return new Date(anchor.getTime() + days * 86400000).toISOString();
 }
 
-// Each service target is set once, from the moment the concern was submitted.
+// The service clock runs on an anchor of its own, not on the submission date. It
+// starts when the concern is submitted and restarts when a resident reopens it,
+// so a later priority change measures against the current cycle instead of
+// pulling the deadlines back to the original submission.
+function serviceCycleAnchor(source) {
+  if (!source) return new Date();
+  const started = source.serviceCycleStartedAt || source.submittedAt;
+  const anchor = started ? new Date(started) : new Date();
+  return Number.isNaN(anchor.getTime()) ? new Date() : anchor;
+}
+
+// Each service target is set once, from the moment the current service cycle began.
 function computeServiceDeadlines(report) {
   if (!report) return report;
-  const anchor = report.submittedAt ? new Date(report.submittedAt) : new Date();
+  const anchor = serviceCycleAnchor(report);
   if (!report.responseDeadline) {
     report.responseDeadline = serviceDeadline(anchor, RESPONSE_DEADLINE_DAYS[report.priority] ?? RESPONSE_DEADLINE_DAYS.Medium);
   }
@@ -835,6 +846,38 @@ async function migrate(db) {
     UPDATE reports SET resolution_deadline = submitted_at +
       CASE priority WHEN 'High' THEN interval '7 days' WHEN 'Medium' THEN interval '14 days' ELSE interval '30 days' END
     WHERE resolution_deadline IS NULL;
+    -- A concern resolved or answered before these columns existed still has the
+    -- moment in its status history: the resolution is the last Resolved entry a
+    -- staff member recorded, and the first response is the first entry after the
+    -- current cycle began.
+    UPDATE reports SET resolved_at = (
+      SELECT history.at FROM report_history history
+        WHERE history.report_id=reports.id AND history.status='Resolved'
+          AND history.actor_role <> 'resident'
+        ORDER BY history.position DESC LIMIT 1)
+    WHERE status='Resolved' AND resolved_at IS NULL;
+    UPDATE reports SET responded_at = (
+      SELECT history.at FROM report_history history
+        WHERE history.report_id=reports.id AND history.status <> 'Submitted'
+          AND history.position > COALESCE((
+            SELECT cycle.position FROM report_history cycle
+              WHERE cycle.report_id=reports.id AND cycle.status='Submitted'
+              ORDER BY cycle.position DESC LIMIT 1), 0)
+        ORDER BY history.position ASC LIMIT 1)
+    WHERE status <> 'Submitted' AND responded_at IS NULL;
+    ALTER TABLE reports ADD COLUMN IF NOT EXISTS service_cycle_started_at timestamptz;
+    -- Reopened reports carry a fresh "Submitted" history entry that marks the
+    -- start of their current service cycle. The latest Submitted entry wins,
+    -- so reports reopened before this version still measure deadlines from the
+    -- reopen, not from the original submission.
+    UPDATE reports SET service_cycle_started_at = COALESCE(
+      (SELECT history.at FROM report_history history
+        WHERE history.report_id=reports.id AND history.status = 'Submitted'
+          ORDER BY history.position DESC LIMIT 1),
+      submitted_at)
+    WHERE service_cycle_started_at IS NULL;
+    ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET DEFAULT now();
+    ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET NOT NULL;
     ALTER TABLE activities ADD COLUMN IF NOT EXISTS result_reason text NOT NULL DEFAULT '';
     ALTER TABLE activities ADD COLUMN IF NOT EXISTS affected_id text NOT NULL DEFAULT '';
     ALTER TABLE activities ADD COLUMN IF NOT EXISTS client_ip text NOT NULL DEFAULT '';
@@ -1207,15 +1250,26 @@ function validateScheduleCollection(schedules) {
 }
 
 async function insertReport(db, report) {
+  // The server owns the record clock: submittedAt and updatedAt are stamped
+  // when the concern is received, never from the browser. A resident cannot
+  // submit a concern that already claims a first response or a resolution, and
+  // cannot backdate or forward-date a submission to manipulate service targets.
+  const now = new Date().toISOString();
+  report.submittedAt = now;
+  report.updatedAt = now;
+  report.respondedAt = null;
+  report.resolvedAt = null;
   validateReport(report);
+  // A new concern opens its first service cycle at submission.
+  report.serviceCycleStartedAt = report.serviceCycleStartedAt || now;
   computeServiceDeadlines(report);
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at, resolution_deadline, resolved_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at, resolution_deadline, resolved_at, service_cycle_started_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
     report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
     report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt, report.responseDeadline ?? null, report.respondedAt ?? null,
-    report.resolutionDeadline ?? null, report.resolvedAt ?? null]);
+    report.resolutionDeadline ?? null, report.resolvedAt ?? null, report.serviceCycleStartedAt]);
   for (const [position, item] of report.history.entries()) {
     await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
       [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);
@@ -1228,20 +1282,32 @@ async function insertReport(db, report) {
 
 async function replaceReport(db, report) {
   validateReport(report);
+  // The service clock belongs to the server. An existing concern keeps the cycle it
+  // is already in, so a reopened concern keeps the clock it was restarted on, and
+  // only a newly stored concern opens its cycle at submission. The submission
+  // moment is preserved from the database; the client cannot backdate or
+  // forward-date a concern.
+  const existing = await db.query("SELECT submitted_at, service_cycle_started_at FROM reports WHERE id=$1", [report.id]);
+  const existingRow = existing.rows[0];
+  report.submittedAt = existingRow ? new Date(existingRow.submitted_at).toISOString() : report.submittedAt;
+  report.serviceCycleStartedAt = existingRow && existingRow.service_cycle_started_at
+    ? new Date(existingRow.service_cycle_started_at).toISOString()
+    : report.submittedAt || new Date().toISOString();
   computeServiceDeadlines(report);
   await db.query(`
-    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at, resolution_deadline, resolved_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+    INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at, resolution_deadline, resolved_at, service_cycle_started_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
     ON CONFLICT (id) DO UPDATE SET user_email=excluded.user_email, name=excluded.name, category=excluded.category,
       title=excluded.title, area=excluded.area, barangay=excluded.barangay, location_detail=excluded.location_detail,
       latitude=excluded.latitude, longitude=excluded.longitude, description=excluded.description, urgent=excluded.urgent,
       priority=excluded.priority, assigned_to=excluded.assigned_to, status=excluded.status, submitted_at=excluded.submitted_at, updated_at=excluded.updated_at,
       response_deadline=excluded.response_deadline, responded_at=excluded.responded_at,
-      resolution_deadline=excluded.resolution_deadline, resolved_at=excluded.resolved_at
+      resolution_deadline=excluded.resolution_deadline, resolved_at=excluded.resolved_at,
+      service_cycle_started_at=excluded.service_cycle_started_at
   `, [report.id, report.userEmail, report.name, report.category, report.title, report.area, report.barangay || "",
     report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
     report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt, report.responseDeadline ?? null, report.respondedAt ?? null,
-    report.resolutionDeadline ?? null, report.resolvedAt ?? null]);
+    report.resolutionDeadline ?? null, report.resolvedAt ?? null, report.serviceCycleStartedAt]);
   await db.query("DELETE FROM report_history WHERE report_id = $1", [report.id]);
   await db.query("DELETE FROM report_photos WHERE report_id = $1", [report.id]);
   for (const [position, item] of report.history.entries()) {
@@ -1696,16 +1762,25 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
               throw new HttpError(400, `Add an update note when changing the status to ${incoming.status}.`);
             }
           }
+          // The server owns the update clock. The browser may ask for a status
+          // change, but it cannot say when it happened, so the recorded first
+          // response, the recorded resolution, the status entry, and the update
+          // itself are all stamped with the server's own time.
+          const updateAt = new Date().toISOString();
+          if (statusChanged) {
+            incoming.updatedAt = updateAt;
+            incoming.history.at(-1).at = updateAt;
+          }
           // The server owns the service-target fields, so a client copy is never trusted.
           incoming.respondedAt = oldReport.respondedAt ?? null;
           incoming.responseDeadline = oldReport.responseDeadline ?? null;
           incoming.resolvedAt = oldReport.resolvedAt ?? null;
           incoming.resolutionDeadline = oldReport.resolutionDeadline ?? null;
           if (statusChanged && oldReport.status === "Submitted") {
-            incoming.respondedAt = incoming.updatedAt;
+            incoming.respondedAt = updateAt;
           }
           if (statusChanged && incoming.status === "Resolved") {
-            incoming.resolvedAt = incoming.updatedAt;
+            incoming.resolvedAt = updateAt;
           }
           if (assignmentChanged) {
             const previousAssigneeId = oldReport.assignedTo?.id || null;
@@ -1788,6 +1863,9 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         incoming.responseDeadline = old.responseDeadline ?? null;
         incoming.resolvedAt = old.resolvedAt ?? null;
         incoming.resolutionDeadline = old.resolutionDeadline ?? null;
+        // The administrator cannot move the update clock either: the concern was
+        // last updated when the concern queue recorded the update.
+        incoming.updatedAt = old.updatedAt;
       }
       for (const report of after.reports) {
         const old = before.reports.find((item) => item.id === report.id);
@@ -2291,7 +2369,7 @@ async function handleCommunity(request, response, db, options, user) {
     }
     await withTransaction(db, async (transaction) => {
       const report = await transaction.query(
-        "SELECT id,status,priority,user_email AS \"userEmail\", submitted_at AS \"submittedAt\", responded_at AS \"respondedAt\", response_deadline AS \"responseDeadline\" FROM reports WHERE id=$1 FOR UPDATE",
+        "SELECT id,status,priority,user_email AS \"userEmail\", submitted_at AS \"submittedAt\", service_cycle_started_at AS \"serviceCycleStartedAt\", responded_at AS \"respondedAt\", response_deadline AS \"responseDeadline\" FROM reports WHERE id=$1 FOR UPDATE",
         [reportId],
       );
       if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
@@ -2306,8 +2384,10 @@ async function handleCommunity(request, response, db, options, user) {
         }
       }
       // The first-response target only moves while no response has been recorded; the
-      // resolution target is still live, so it always follows the new priority.
-      const anchor = current.submittedAt ? new Date(current.submittedAt) : new Date();
+      // resolution target is still live, so it always follows the new priority. Both
+      // are measured from the start of the current service cycle, which is the reopen
+      // when the resident reopened the concern and the submission otherwise.
+      const anchor = serviceCycleAnchor(current);
       const responseDeadline = current.respondedAt
         ? current.responseDeadline
         : serviceDeadline(anchor, RESPONSE_DEADLINE_DAYS[priority] ?? RESPONSE_DEADLINE_DAYS.Medium);
@@ -2345,6 +2425,7 @@ async function handleCommunity(request, response, db, options, user) {
         [reportId, Number(position.rows[0].position), current.status, `Resident confirmed the issue was addressed.${note ? ` ${note}` : ""}`, user.name]);
       const staff = await transaction.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
       for (const account of staff.rows) await insertNotification(transaction, account.email, "Concern confirmed addressed", `${reportId}: The resident confirmed this concern was addressed.`, reportId);
+      await insertActivity(transaction, user, "Confirmed concern as addressed", `${reportId} · The resident confirmed this concern was addressed.`, { affectedId: reportId });
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });
@@ -2362,19 +2443,21 @@ async function handleCommunity(request, response, db, options, user) {
       const current = report.rows[0];
       if (current.status !== "Resolved") throw new HttpError(409, "Only a resolved concern can be reopened.");
       // A reopened concern starts a fresh service clock for both targets, and the
-      // earlier first response no longer counts.
+      // earlier first response no longer counts. The clock's own anchor moves with
+      // it, so a later priority change still measures from this moment.
       const anchor = new Date();
       const responseDeadline = serviceDeadline(anchor, RESPONSE_DEADLINE_DAYS[current.priority] ?? RESPONSE_DEADLINE_DAYS.Medium);
       const resolutionDeadline = serviceDeadline(anchor, RESOLUTION_DEADLINE_DAYS[current.priority] ?? RESOLUTION_DEADLINE_DAYS.Medium);
       await transaction.query(
-        "UPDATE reports SET status='Submitted', updated_at=now(), response_deadline=$1, resolution_deadline=$2, responded_at=NULL, resolved_at=NULL WHERE id=$3",
-        [responseDeadline, resolutionDeadline, reportId],
+        "UPDATE reports SET status='Submitted', updated_at=now(), response_deadline=$1, resolution_deadline=$2, service_cycle_started_at=$3, responded_at=NULL, resolved_at=NULL WHERE id=$4",
+        [responseDeadline, resolutionDeadline, anchor.toISOString(), reportId],
       );
       const position = await transaction.query("SELECT COALESCE(MAX(position),-1)+1 AS position FROM report_history WHERE report_id=$1", [reportId]);
       await transaction.query("INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES($1,$2,$3,now(),$4,$5,'resident')",
         [reportId, Number(position.rows[0].position), "Submitted", `Resident requested reopening: ${reason}`, user.name]);
       const staff = await transaction.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
       for (const account of staff.rows) await insertNotification(transaction, account.email, "Concern reopened", `${reportId}: The resident requested this concern be reopened. Reason: ${reason}`, reportId);
+      await insertActivity(transaction, user, "Requested concern reopening", `${reportId} · ${reason}`, { affectedId: reportId });
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });

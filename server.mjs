@@ -1260,8 +1260,13 @@ async function insertReport(db, report) {
   report.respondedAt = null;
   report.resolvedAt = null;
   validateReport(report);
-  // A new concern opens its first service cycle at submission.
-  report.serviceCycleStartedAt = report.serviceCycleStartedAt || now;
+  // A new concern opens its first service cycle at submission. The server always
+  // owns the cycle start; a client-supplied serviceCycleStartedAt is never trusted.
+  report.serviceCycleStartedAt = now;
+  // Both service targets are computed from the server's own clock. Client-supplied
+  // deadlines are never trusted for a newly filed concern.
+  report.responseDeadline = null;
+  report.resolutionDeadline = null;
   computeServiceDeadlines(report);
   await db.query(`
     INSERT INTO reports (id, user_email, name, category, title, area, barangay, location_detail, latitude, longitude, description, urgent, priority, assigned_to, status, submitted_at, updated_at, response_deadline, responded_at, resolution_deadline, resolved_at, service_cycle_started_at)
@@ -1270,6 +1275,11 @@ async function insertReport(db, report) {
     report.locationDetail || "", report.latitude ?? null, report.longitude ?? null, report.description, report.urgent, report.priority,
     report.assignedTo?.id || null, report.status, report.submittedAt, report.updatedAt, report.responseDeadline ?? null, report.respondedAt ?? null,
     report.resolutionDeadline ?? null, report.resolvedAt ?? null, report.serviceCycleStartedAt]);
+  // The initial history entry is stamped by the server clock; a resident cannot
+  // fabricate the moment a concern was submitted.
+  if (report.history.length > 0) {
+    report.history[0].at = now;
+  }
   for (const [position, item] of report.history.entries()) {
     await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
       [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""]);

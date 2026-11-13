@@ -2,6 +2,45 @@
 
 CommUnity is a community-services portal for residents, barangay officials, and administrators. It provides resident reports, collection schedules, notifications, profile management, role-based workspaces, and an activity view. The Node.js server uses Express for its HTTP middleware and domain API routing.
 
+## Project structure
+
+```text
+server/
+  index.mjs                Composition root: createCommunityServer(), env wiring, CLI start
+  handle-api.mjs           /api dispatcher: origin check, session gate, audit policy, 404
+  platform/                Low-level helpers with no domain logic
+    http.mjs               HttpError, sendJson, requireJsonBody, multipart parsing
+    http-app.mjs           Express wiring: static files, security headers, error handler
+    api-router.mjs         Bridges Express to the dispatcher
+    db.mjs                 Pool/PGlite connection, withTransaction()
+    session.mjs            Sessions, cookies-as-auth, origin checks, trusted proxies
+    crypto.mjs             scrypt password hashes, AES-GCM settings encryption
+    email.mjs              SMTP mailer, queue, saved-settings loading
+    time.mjs               Asia/Manila calendar helpers
+    validate.mjs           Shared validators, account helpers
+    roles.mjs              ROLES and role_permissions defaults
+    uploads.mjs            Photo signature checks, orphan sweep
+    ratelimit.mjs          Shared attempt buckets, auth-state pruning
+    constants.mjs          MAX_STATE_BYTES, content types
+  domains/                 One module per domain; each owns its routes and queries
+    auth.mjs               Sign-in, registration, password reset, recovery
+    users.mjs              Accounts, profile, profile photos, working hours
+    state.mjs              The /api/state sync engine (read/role-scoped save)
+    reports.mjs            Concerns: validation, priority/SLA endpoints, photos
+    service-targets.mjs    Response vs. resolution targets, service cycles, overdue flags
+    schedules.mjs          Collection schedules and reminders
+    announcements.mjs      Announcements and calendar events (approval workflow)
+    notifications.mjs      Notification insertion and read-state sync
+    activity.mjs           Audit log (live + archive), admin browsing/export
+    locations.mjs          Community and recycling-list locations
+    settings.mjs           Admin SMTP settings
+  db/
+    migrate.mjs            Migration runner and administrator bootstrap
+    migrations/            Numbered, append-only schema migrations
+```
+
+The frontend is buildless vanilla JS (`app-core.js`, `app-views.js`, `app.js`) with a strict CSP. Tests live in `test/` — shared fixtures in `test/helpers.mjs`, one file per area (`reports`, `users`, `security`, `schedules`, `announcements`, `activity`, `maintenance`, `state`, `platform`, `frontend`, `service-targets`), plus `postgres-migration.test.mjs` (migrations against embedded PostgreSQL). `npm test` runs everything.
+
 ## Run locally
 
 Install Node.js, then install dependencies:
@@ -40,6 +79,7 @@ Signing out and every action that saves, updates, approves, declines, deactivate
 Residents choose a concern priority when submitting a report: **High** (immediate danger to health or safety), **Medium** (service disruption affecting daily activity), or **Low** (routine, cosmetic, or nuisance concern). The default is Medium. Officials and administrators can adjust a report's priority later from the concern detail page; the change is logged in the report history, activity feed, and a notification to the resident.
 
 Follow-up limits apply per report, counting all time:
+
 - **High** — unlimited follow-ups
 - **Medium** — 5 follow-ups
 - **Low** — 3 follow-ups
@@ -51,10 +91,10 @@ Existing follow-ups count retroactively. When a resident reaches the limit, the 
 Every concern carries two independent service targets, both measured from the start of its current service cycle — the moment it was submitted, or the moment it was reopened:
 
 | Priority | First response | Resolution |
-| --- | --- | --- |
-| High | 1 day | 7 days |
-| Medium | 3 days | 14 days |
-| Low | 7 days | 30 days |
+| -------- | -------------- | ---------- |
+| High     | 1 day          | 7 days     |
+| Medium   | 3 days         | 14 days    |
+| Low      | 7 days         | 30 days    |
 
 The two targets are judged separately. A concern that has been answered but is still unresolved is no longer flagged as awaiting a response; it is flagged only when it passes its resolution target. The concern list marks either kind as **Overdue**, and the concern detail shows both deadlines, the recorded first response, and the recorded resolution.
 
@@ -92,25 +132,25 @@ Set `APP_TIME_ZONE` to another IANA zone only if the deployment serves a differe
 
 Deploy this Node.js project on a host that supports Node.js and connect a managed PostgreSQL database. Configure these values using the host's **secret/environment-variable settings**, not source code:
 
-| Variable | Value |
-|---|---|
-| `NODE_ENV` | `production` |
-| `PORT` | Supplied by the host |
-| `DATABASE_URL` | PostgreSQL connection string with TLS enabled |
-| `APP_ORIGIN` | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash) |
-| `APP_TIME_ZONE` | Optional IANA time zone for calendar days, deadlines, reminders and log timestamps (default `Asia/Manila`) |
-| `INITIAL_ADMIN_EMAIL` | Email for the first administrator |
-| `INITIAL_ADMIN_PASSWORD` | Unique password of at least 8 characters |
-| `PG_POOL_MAX` | Optional PostgreSQL pool size per instance (default `10`, maximum `100`) |
-| `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`) |
-| `TRUSTED_PROXY_IPS` | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For` |
-| `UPLOADS_DIR` | Photo upload directory (default `data/uploads`); use persistent storage in deployments |
-| `SMTP_HOST` | Optional SMTP server hostname |
-| `SMTP_PORT` | Optional SMTP port, usually `587` or `465` |
-| `SMTP_USER` | Optional SMTP username |
-| `SMTP_PASS` | Optional SMTP password |
-| `SMTP_FROM` | Optional sender address, for example `CommUnity <no-reply@example.com>` |
-| `SMTP_SETTINGS_KEY` | Required to save SMTP settings from the administrator UI; use a long random secret and keep it stable so saved credentials can be decrypted |
+| Variable                   | Value                                                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                 | `production`                                                                                                                                |
+| `PORT`                     | Supplied by the host                                                                                                                        |
+| `DATABASE_URL`             | PostgreSQL connection string with TLS enabled                                                                                               |
+| `APP_ORIGIN`               | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash)                                                  |
+| `APP_TIME_ZONE`            | Optional IANA time zone for calendar days, deadlines, reminders and log timestamps (default `Asia/Manila`)                                  |
+| `INITIAL_ADMIN_EMAIL`      | Email for the first administrator                                                                                                           |
+| `INITIAL_ADMIN_PASSWORD`   | Unique password of at least 8 characters                                                                                                    |
+| `PG_POOL_MAX`              | Optional PostgreSQL pool size per instance (default `10`, maximum `100`)                                                                    |
+| `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`)                                                                     |
+| `TRUSTED_PROXY_IPS`        | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For`                                                 |
+| `UPLOADS_DIR`              | Photo upload directory (default `data/uploads`); use persistent storage in deployments                                                      |
+| `SMTP_HOST`                | Optional SMTP server hostname                                                                                                               |
+| `SMTP_PORT`                | Optional SMTP port, usually `587` or `465`                                                                                                  |
+| `SMTP_USER`                | Optional SMTP username                                                                                                                      |
+| `SMTP_PASS`                | Optional SMTP password                                                                                                                      |
+| `SMTP_FROM`                | Optional sender address, for example `CommUnity <no-reply@example.com>`                                                                     |
+| `SMTP_SETTINGS_KEY`        | Required to save SMTP settings from the administrator UI; use a long random secret and keep it stable so saved credentials can be decrypted |
 
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
 The `/api/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.

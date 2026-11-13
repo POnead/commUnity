@@ -2,28 +2,26 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import express from "express";
 import { createApiRouter } from "./api-router.mjs";
+import { CONTENT_TYPES, MAX_STATE_BYTES } from "./constants.mjs";
+
+export { CONTENT_TYPES, MAX_STATE_BYTES };
 
 const PUBLIC_FILES = new Set([
-  "index.html", "styles.css", "app-core.js", "app-views.js", "app.js",
+  "index.html",
+  "styles.css",
+  "app-core.js",
+  "app-views.js",
+  "app.js",
   "logo/palsara-transparent.png",
   "favicon.png",
-  "node_modules/leaflet/dist/leaflet.js", "node_modules/leaflet/dist/leaflet.css",
-  "node_modules/leaflet/dist/images/layers.png", "node_modules/leaflet/dist/images/layers-2x.png",
-  "node_modules/leaflet/dist/images/marker-icon.png", "node_modules/leaflet/dist/images/marker-icon-2x.png",
+  "node_modules/leaflet/dist/leaflet.js",
+  "node_modules/leaflet/dist/leaflet.css",
+  "node_modules/leaflet/dist/images/layers.png",
+  "node_modules/leaflet/dist/images/layers-2x.png",
+  "node_modules/leaflet/dist/images/marker-icon.png",
+  "node_modules/leaflet/dist/images/marker-icon-2x.png",
   "node_modules/leaflet/dist/images/marker-shadow.png",
 ]);
-
-export const MAX_STATE_BYTES = 32 * 1024 * 1024;
-
-export const CONTENT_TYPES = {
-  ".css": "text/css; charset=utf-8",
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-};
 
 function sendJson(response, status, value) {
   response.writeHead(status, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
@@ -32,7 +30,10 @@ function sendJson(response, status, value) {
 
 function addSecurityHeaders(response, secure) {
   response.setHeader("Cache-Control", "no-store");
-  response.setHeader("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'");
+  response.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'",
+  );
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=()");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -101,10 +102,20 @@ export function createExpressApp({
     }
   });
   const STATUS_TEXT = {
-    200: "OK", 201: "Created", 202: "Accepted", 204: "No Content",
-    400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-    405: "Method Not Allowed", 409: "Conflict", 413: "Too Large",
-    429: "Too Many Requests", 500: "Server Error", 503: "Unavailable",
+    200: "OK",
+    201: "Created",
+    202: "Accepted",
+    204: "No Content",
+    400: "Bad Request",
+    401: "Unauthorized",
+    403: "Forbidden",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    409: "Conflict",
+    413: "Too Large",
+    429: "Too Many Requests",
+    500: "Server Error",
+    503: "Unavailable",
   };
   app.use((request, response, next) => {
     const startedAt = process.hrtime.bigint();
@@ -136,7 +147,7 @@ export function createExpressApp({
     next();
   });
   app.use(apiRouter);
-  app.use((error, request, response, next) => {
+  app.use((error, request, response, _next) => {
     if (response.headersSent) {
       response.destroy(error);
       return;

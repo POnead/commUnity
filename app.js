@@ -362,9 +362,9 @@ function modalMarkup() {
       ? events.map((event) => {
         const hasMap = (event.kind === "Announcement" && event.isEvent || event.kind === "Event") &&
           Number.isFinite(event.latitude) && Number.isFinite(event.longitude);
-        let badgeLabel = "";
-        let badgeVariant = "approved";
-        let leftBorder = "var(--accent)";
+        let badgeLabel;
+        let badgeVariant;
+        let leftBorder;
         if (event.kind === "Event") {
           badgeLabel = calendarStatusLabel(event.status);
           badgeVariant = event.status === "pending" ? "pending" : event.status === "declined" ? "declined" : "approved";

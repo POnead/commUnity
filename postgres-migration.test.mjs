@@ -6,47 +6,70 @@ import path from "node:path";
 import net from "node:net";
 import EmbeddedPostgres from "embedded-postgres";
 import pg from "pg";
-import { migrate } from "./server.mjs";
+import { migrate } from "./server/index.mjs";
 
 // These tests boot a real PostgreSQL 18 cluster (zonky embedded binaries) so the
 // migration suite is exercised against the same engine managed deployments use,
 // not only PGlite. Clusters are ephemeral: data lives in a temp dir and is
 // removed on exit.
-async function startPostgres() {
-  const base = await mkdtemp(path.join(os.tmpdir(), "community-migration-pg-"));
-  const port = await new Promise((resolve, reject) => {
-    const probe = net.createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
+async function startPostgres({ attempts = 3 } = {}) {
+  // Bootstrapping a cluster can lose the race between probing a free port and
+  // the postmaster binding it, especially on a loaded machine. Retry with a
+  // fresh port and temp dir; never leave a half-started cluster behind.
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const base = await mkdtemp(path.join(os.tmpdir(), "community-migration-pg-"));
+    const port = await new Promise((resolve, reject) => {
+      const probe = net.createServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const { port } = probe.address();
+        probe.close(() => resolve(port));
+      });
     });
-  });
-  const embedded = new EmbeddedPostgres({
-    databaseDir: path.join(base, "data"),
-    user: "postgres",
-    password: "migration-test-password",
-    port,
-    persistent: false,
-    autoRehydrateSymlinks: true,
-    onLog: () => {},
-    onError: () => {},
-  });
-  await embedded.initialise();
-  await embedded.start();
-  const pool = new pg.Pool({
-    host: "127.0.0.1",
-    port,
-    user: "postgres",
-    password: "migration-test-password",
-    database: "postgres",
-  });
-  const stop = async () => {
-    await pool.end();
-    await embedded.stop();
-    await rm(base, { recursive: true, force: true });
-  };
-  return { pool, stop };
+    const embedded = new EmbeddedPostgres({
+      databaseDir: path.join(base, "data"),
+      user: "postgres",
+      password: "migration-test-password",
+      port,
+      persistent: false,
+      autoRehydrateSymlinks: true,
+      onLog: () => {},
+      onError: () => {},
+    });
+    try {
+      await embedded.initialise();
+      await embedded.start();
+    } catch (error) {
+      lastError = error;
+      await embedded.stop().catch(() => {});
+      await rm(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+      continue;
+    }
+    const pool = new pg.Pool({
+      host: "127.0.0.1",
+      port,
+      user: "postgres",
+      password: "migration-test-password",
+      database: "postgres",
+    });
+    const stop = async () => {
+      await pool.end();
+      // embedded-postgres deletes databaseDir inside stop() when persistent is
+      // false, and that internal rm has no retries — on Windows taskkill /f leaves
+      // handles briefly, so the deletion can fail with EBUSY after the postmaster
+      // has already exited. The cluster IS stopped at that point; swallow the
+      // scratch-deletion error and sweep the directory ourselves instead.
+      await embedded.stop().catch((error) => {
+        console.warn(`embedded-postgres could not remove its data directory: ${error.message}`);
+      });
+      await rm(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 }).catch((error) => {
+        console.warn(`Could not remove ${base}: ${error.message}`);
+      });
+    };
+    return { pool, stop };
+  }
+  throw lastError;
 }
 
 async function appliedVersions(pool) {
@@ -116,10 +139,12 @@ test("a PostgreSQL database from migration v1 upgrades and backfills service-cyc
     await pool.query("ALTER TABLE reports DROP COLUMN IF EXISTS resolution_deadline");
     await pool.query("ALTER TABLE reports DROP COLUMN IF EXISTS service_cycle_started_at");
 
-    await pool.query(
-      "INSERT INTO users (id, email, name, area, role, status) VALUES ($1, $2, $3, $4, 'resident', 'Active')",
-      ["U-LEGACY-1", "legacy-upgrade@example.test", "Legacy Upgrade", "Purok 2"],
-    );
+    await pool.query("INSERT INTO users (id, email, name, area, role, status) VALUES ($1, $2, $3, $4, 'resident', 'Active')", [
+      "U-LEGACY-1",
+      "legacy-upgrade@example.test",
+      "Legacy Upgrade",
+      "Purok 2",
+    ]);
     await pool.query(
       `INSERT INTO reports (id, user_email, name, category, title, area, description, status, submitted_at, updated_at, urgent)
        VALUES ('R-LEGACY-UPGRADE', 'legacy-upgrade@example.test', 'Legacy Upgrade', 'Road damage', 'Legacy pothole', 'Purok 2', 'A large pothole near the school.', 'Resolved', '2026-01-02T08:00:00Z', '2026-01-05T11:00:00Z', false)`,

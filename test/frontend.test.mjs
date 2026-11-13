@@ -81,6 +81,38 @@ test("renders saved concern pins inline for residents and officials with a direc
   assert.match(residentWithoutPin, /Beside the community hall/);
 });
 
+test("staff can adjust a report's priority from the concern detail page, residents cannot", async () => {
+  core.__setTestState({
+    currentUser: { id: "official-one", name: "Official One", email: "official@example.test", role: "official" },
+    data: {
+      version: 1,
+      users: [{ id: "r1", name: "Resident Example", email: "resident@example.test", role: "resident", status: "Active" }],
+      reports: [],
+      schedules: [],
+      notifications: [],
+      activities: [],
+      announcements: [],
+      calendarEvents: [],
+      locations: [],
+      recyclingLocations: [],
+      permissions: {},
+      accountOverrides: {},
+    },
+  });
+  const report = freshBaseReport({ priority: "High" });
+
+  const officialDetail = views.reportDetail(report, "official");
+  assert.match(officialDetail, /id="report-priority-form"/);
+  assert.match(officialDetail, /name="reportId" value="RPT-map-test"/);
+  assert.match(officialDetail, /Update priority/);
+
+  const administratorDetail = views.reportDetail(report, "administrator");
+  assert.match(administratorDetail, /id="report-priority-form"/);
+
+  const residentDetail = views.reportDetail(report, "resident");
+  assert.doesNotMatch(residentDetail, /id="report-priority-form"/);
+});
+
 test("renders community-wide official hours on the resident dashboard", async () => {
   core.__setTestState({
     currentUser: { role: "resident", area: "Purok 1", email: "resident@example.test" },

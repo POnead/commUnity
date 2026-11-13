@@ -1386,6 +1386,38 @@ test("officials cannot forge activity log entries through the account editor", a
   }
 });
 
+test("administrators cannot forge activity log entries through the state save", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forge-admin-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const forged = structuredClone(state.data);
+    forged.activities.push({
+      id: "ACT-forged-admin-0001",
+      actor: state.data.users.find((item) => item.role === "administrator")?.name || "Portal administrator",
+      role: "administrator",
+      action: "Deleted a report",
+      detail: "The administrator deleted a report they never touched.",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const rejected = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: forged },
+    });
+    assert.equal(rejected.status, 403, await rejected.text());
+
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action=$1", ["Deleted a report"]);
+    assert.equal(stored.rows[0].count, 0, "an administrator cannot fabricate a deletion event");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("the server stamps activity timestamps, not the browser", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-activity-time-"));
   const app = await startServer(dataDir);
@@ -3736,6 +3768,17 @@ test("stores calendar event coordinates and returns them in saved state", async 
     const saved = state.data.calendarEvents.find((item) => item.id === event.id);
     assert.equal(saved.latitude, 14.01799);
     assert.equal(saved.longitude, 121.09465);
+
+    const zeroAnchor = await api(app, "/api/calendar/events", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { title: "Zero anchor", detail: "Coordinates of zero are valid locations.", date, latitude: 0, longitude: 0 },
+    });
+    const zeroCreated = await zeroAnchor.json();
+    assert.equal(zeroAnchor.status, 200, JSON.stringify(zeroCreated));
+    const zeroEvent = zeroCreated.data.calendarEvents.find((item) => item.title === "Zero anchor");
+    assert.equal(zeroEvent.latitude, 0);
+    assert.equal(zeroEvent.longitude, 0);
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -3907,6 +3950,9 @@ test("an existing database is upgraded to backfill the recorded resolution and f
     // the status history, in the same order the deadlines are backfilled.
     await first.db.query("ALTER TABLE reports ALTER COLUMN service_cycle_started_at DROP NOT NULL");
     await first.db.query("UPDATE reports SET service_cycle_started_at=NULL WHERE id LIKE 'R-LEGACY-%'");
+    // Stand the database down to the migration state before the backfill ran,
+    // so the restart upgrades it by applying the missing migration.
+    await first.db.query("DELETE FROM schema_migrations WHERE version = 2");
   } finally {
     await first.close();
   }
@@ -4721,6 +4767,9 @@ test("an existing database is upgraded to accept the system actor", async () => 
     // Restore the older restrictive constraint to stand in for a live deployment.
     await first.db.query("ALTER TABLE activities DROP CONSTRAINT activities_role_check");
     await first.db.query("ALTER TABLE activities ADD CONSTRAINT activities_role_check CHECK (role IN ('resident', 'official', 'administrator'))");
+    // Stand the database down to the migration state before the widening ran,
+    // so the restart applies the missing migration.
+    await first.db.query("DELETE FROM schema_migrations WHERE version = 2");
   } finally {
     await first.close();
   }

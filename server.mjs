@@ -653,256 +653,273 @@ async function createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeout
   return db;
 }
 
-async function migrate(db) {
-  const schema = `
-    CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());
-    CREATE TABLE IF NOT EXISTS app_meta (id integer PRIMARY KEY CHECK (id = 1), revision bigint NOT NULL DEFAULT 0);
-    CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, encrypted_value text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
-    INSERT INTO app_meta (id, revision) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
-    CREATE TABLE IF NOT EXISTS users (
-      id text PRIMARY KEY, email text NOT NULL UNIQUE,
-      name text NOT NULL, area text NOT NULL, phone text NOT NULL DEFAULT '',
-      role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
-      status text NOT NULL CHECK (status IN ('Active', 'Inactive')),
-      working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM',
-      available_days jsonb NOT NULL DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]'::jsonb,
-      permission_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
-      requires_password_change boolean NOT NULL DEFAULT false,
-      deactivation_reason text NOT NULL DEFAULT '',
-      recovery_email text NOT NULL DEFAULT '',
-      reset_requested boolean NOT NULL DEFAULT false,
-      joined_at date NOT NULL DEFAULT CURRENT_DATE
-    );
-    CREATE TABLE IF NOT EXISTS user_credentials (
-      user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      password_hash text NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS reports (
-      id text PRIMARY KEY, user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE,
-      name text NOT NULL, category text NOT NULL, title text NOT NULL, area text NOT NULL,
-      barangay text NOT NULL DEFAULT '',
-      location_detail text NOT NULL DEFAULT '', latitude double precision, longitude double precision,
-      description text NOT NULL, urgent boolean NOT NULL DEFAULT false,
-      priority text NOT NULL DEFAULT 'Medium',
-      assigned_to text REFERENCES users(id) ON DELETE SET NULL,
-      status text NOT NULL CHECK (status IN ('Submitted', 'Under Review', 'In Progress', 'Resolved')),
-      submitted_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS report_history (
-      id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
-      position integer NOT NULL, status text NOT NULL, at timestamptz NOT NULL, note text NOT NULL,
-      actor_name text NOT NULL DEFAULT '', actor_role text NOT NULL DEFAULT '',
-      UNIQUE (report_id, position)
-    );
-    CREATE TABLE IF NOT EXISTS report_photos (
-      id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
-      position integer NOT NULL, name text NOT NULL, photo_url text NOT NULL,
-      UNIQUE (report_id, position)
-    );
-    CREATE TABLE IF NOT EXISTS schedules (
-      id text PRIMARY KEY, area text NOT NULL, zone text NOT NULL, date date NOT NULL,
-      waste_type text NOT NULL, start_time text NOT NULL, end_time text NOT NULL,
-      frequency text NOT NULL, team text NOT NULL,
-      series_id text, recurrence_end date,
-      status text NOT NULL CHECK (status IN ('Scheduled', 'On the way', 'Collecting', 'Completed', 'Delayed', 'Cancelled', 'Rescheduled'))
-    );
-    CREATE TABLE IF NOT EXISTS schedule_history (
-      id bigserial PRIMARY KEY, schedule_id text NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
-      position integer NOT NULL, previous_status text, status text NOT NULL,
-      at timestamptz NOT NULL, actor_name text NOT NULL DEFAULT '', actor_role text NOT NULL DEFAULT '',
-      note text NOT NULL DEFAULT '', previous_date date, previous_start text NOT NULL DEFAULT '',
-      previous_end text NOT NULL DEFAULT '', replacement_date date,
-      replacement_start text NOT NULL DEFAULT '', replacement_end text NOT NULL DEFAULT '',
-      UNIQUE (schedule_id, position)
-    );
-    CREATE TABLE IF NOT EXISTS notifications (
-      id text PRIMARY KEY, target_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
-      report_id text REFERENCES reports(id) ON DELETE SET NULL, title text NOT NULL,
-      body text NOT NULL, created_at timestamptz NOT NULL, read boolean NOT NULL DEFAULT false
-    );
-    CREATE TABLE IF NOT EXISTS activities (
-      id text PRIMARY KEY, actor text NOT NULL, role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator', 'system')),
-      action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL,
-      result_reason text NOT NULL DEFAULT '', affected_id text NOT NULL DEFAULT '', client_ip text NOT NULL DEFAULT ''
-    );
-    CREATE TABLE IF NOT EXISTS activity_archive (
-      id text PRIMARY KEY, actor text NOT NULL, role text NOT NULL,
-      action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL,
-      result_reason text NOT NULL DEFAULT '', affected_id text NOT NULL DEFAULT '', client_ip text NOT NULL DEFAULT '',
-      archived_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS role_permissions (
-      role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
-      permission text NOT NULL, enabled boolean NOT NULL, PRIMARY KEY (role, permission)
-    );
-    CREATE TABLE IF NOT EXISTS announcements (
-      id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL, date date NOT NULL,
-      approval_status text NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('pending', 'approved', 'declined')),
-      decline_reason text NOT NULL DEFAULT '',
-      is_event boolean NOT NULL DEFAULT false, latitude double precision, longitude double precision,
-      created_by text REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE TABLE IF NOT EXISTS calendar_events (
-      id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL DEFAULT '', date date NOT NULL,
-      approval_status text NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'declined')),
-      decline_reason text NOT NULL DEFAULT '',
-      latitude double precision, longitude double precision,
-      created_by text REFERENCES users(id) ON DELETE SET NULL,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS password_reset_requests (
-      id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      requested_at timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'completed', 'declined')), handled_by text REFERENCES users(id) ON DELETE SET NULL,
-      handled_at timestamptz
-    );
-    CREATE TABLE IF NOT EXISTS password_reset_tokens (
-      id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_hash text NOT NULL UNIQUE, expires_at timestamptz NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS recovery_email_tokens (
-      id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      email text NOT NULL, token_hash text NOT NULL UNIQUE,
-      expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS recovery_email_requests (
-      recovery_email text PRIMARY KEY, last_requested_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS password_reset_tokens_user_idx ON password_reset_tokens(user_id);
-    CREATE INDEX IF NOT EXISTS recovery_email_tokens_user_idx ON recovery_email_tokens(user_id);
-    CREATE TABLE IF NOT EXISTS report_follow_ups (
-      id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
-      user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
-      message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS report_follow_ups_report_id_idx ON report_follow_ups(report_id);
-    CREATE TABLE IF NOT EXISTS community_locations (
-      id text PRIMARY KEY, area text NOT NULL UNIQUE, barangay text NOT NULL,
-      street text NOT NULL DEFAULT '', purok text NOT NULL, landmark text NOT NULL DEFAULT ''
-    );
-    CREATE TABLE IF NOT EXISTS recycling_locations (
-      id text PRIMARY KEY, name text NOT NULL, barangay text NOT NULL, street text NOT NULL,
-      purok text NOT NULL DEFAULT '', landmark text NOT NULL DEFAULT '', materials text NOT NULL,
-      phone text NOT NULL DEFAULT '', hours text NOT NULL DEFAULT '', active boolean NOT NULL DEFAULT true
-    );
-    CREATE TABLE IF NOT EXISTS schedule_reminders (
-      schedule_id text NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
-      user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
-      notified_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (schedule_id, user_email)
-    );
-    CREATE TABLE IF NOT EXISTS web_sessions (
-      token_hash text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
-    );
-    CREATE TABLE IF NOT EXISTS auth_attempts (
-      attempt_key text PRIMARY KEY, attempts integer NOT NULL, window_started_at timestamptz NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS reports_owner_submitted_idx ON reports(user_email, submitted_at DESC);
-    CREATE INDEX IF NOT EXISTS reports_status_updated_idx ON reports(status, updated_at DESC);
-    CREATE INDEX IF NOT EXISTS schedules_date_area_idx ON schedules(date, area);
-    CREATE INDEX IF NOT EXISTS notifications_owner_created_idx ON notifications(target_email, created_at DESC);
-    CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON web_sessions(expires_at);
-    CREATE INDEX IF NOT EXISTS activities_at_idx ON activities(at DESC);
-    CREATE INDEX IF NOT EXISTS activity_archive_at_idx ON activity_archive(at DESC);
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS location_detail text NOT NULL DEFAULT '';
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS barangay text NOT NULL DEFAULT '';
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS latitude double precision;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS longitude double precision;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'Medium';
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS assigned_to text REFERENCES users(id) ON DELETE SET NULL;
-    UPDATE reports SET priority='High' WHERE urgent=true AND priority='Medium';
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM';
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS available_days jsonb NOT NULL DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]'::jsonb;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_overrides jsonb NOT NULL DEFAULT '{}'::jsonb;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_password_change boolean NOT NULL DEFAULT false;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason text NOT NULL DEFAULT '';
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email text NOT NULL DEFAULT '';
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email_verified boolean NOT NULL DEFAULT false;
-    ALTER TABLE password_reset_tokens ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_requested boolean NOT NULL DEFAULT false;
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
-    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS approval_status text NOT NULL DEFAULT 'approved';
-    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS decline_reason text NOT NULL DEFAULT '';
-    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS is_event boolean NOT NULL DEFAULT false;
-    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS latitude double precision;
-    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS longitude double precision;
-    ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by text REFERENCES users(id) ON DELETE SET NULL;
-    ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS latitude double precision;
-    ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS longitude double precision;
-    ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';
-    ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';
-    ALTER TABLE report_photos ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';
-    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS series_id text;
-    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS recurrence_end date;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS response_deadline timestamptz;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS responded_at timestamptz;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolution_deadline timestamptz;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
-    -- A concern resolved or answered before these columns existed still has the
-    -- moment in its status history: the resolution is the last Resolved entry a
-    -- staff member recorded, and the first response is the first entry after the
-    -- current cycle began.
-    UPDATE reports SET resolved_at = (
-      SELECT history.at FROM report_history history
-        WHERE history.report_id=reports.id AND history.status='Resolved'
-          AND history.actor_role <> 'resident'
-        ORDER BY history.position DESC LIMIT 1)
-    WHERE status='Resolved' AND resolved_at IS NULL;
-    UPDATE reports SET responded_at = (
-      SELECT history.at FROM report_history history
-        WHERE history.report_id=reports.id AND history.status <> 'Submitted'
-          AND history.position > COALESCE((
-            SELECT cycle.position FROM report_history cycle
-              WHERE cycle.report_id=reports.id AND cycle.status='Submitted'
-              ORDER BY cycle.position DESC LIMIT 1), 0)
-        ORDER BY history.position ASC LIMIT 1)
-    WHERE status <> 'Submitted' AND responded_at IS NULL;
-    ALTER TABLE reports ADD COLUMN IF NOT EXISTS service_cycle_started_at timestamptz;
-    -- Reopened reports carry a fresh "Submitted" history entry that marks the
-    -- start of their current service cycle. The latest Submitted entry wins,
-    -- so reports reopened before this version still measure deadlines from the
-    -- reopen, not from the original submission.
-    UPDATE reports SET service_cycle_started_at = COALESCE(
-      (SELECT history.at FROM report_history history
-        WHERE history.report_id=reports.id AND history.status = 'Submitted'
-          ORDER BY history.position DESC LIMIT 1),
-      submitted_at)
-    WHERE service_cycle_started_at IS NULL;
-    ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET DEFAULT now();
-    ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET NOT NULL;
-    -- Deadlines are anchored on the service cycle, not the original submission:
-    -- a concern reopened before this version keeps measuring its targets from
-    -- the reopening. This runs after the cycle backfill above so a legacy
-    -- database without these columns recovers its cycle starts first.
-    UPDATE reports SET response_deadline = service_cycle_started_at +
-      CASE priority WHEN 'High' THEN interval '1 day' WHEN 'Medium' THEN interval '3 days' ELSE interval '7 days' END
-    WHERE response_deadline IS NULL;
-    UPDATE reports SET resolution_deadline = service_cycle_started_at +
-      CASE priority WHEN 'High' THEN interval '7 days' WHEN 'Medium' THEN interval '14 days' ELSE interval '30 days' END
-    WHERE resolution_deadline IS NULL;
-    ALTER TABLE activities ADD COLUMN IF NOT EXISTS result_reason text NOT NULL DEFAULT '';
-    ALTER TABLE activities ADD COLUMN IF NOT EXISTS affected_id text NOT NULL DEFAULT '';
-    ALTER TABLE activities ADD COLUMN IF NOT EXISTS client_ip text NOT NULL DEFAULT '';
-    ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_role_check;
-    ALTER TABLE activities ADD CONSTRAINT activities_role_check CHECK (role IN ('resident', 'official', 'administrator', 'system'));
-    ALTER TABLE report_photos DROP COLUMN IF EXISTS data_url;
-    UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
-      FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';
-    INSERT INTO community_locations (id, area, barangay, purok) VALUES
-      ('balete-purok-1', 'Purok 1', 'Palsara', 'Purok 1'),
-      ('balete-purok-2', 'Purok 2', 'Palsara', 'Purok 2'),
-      ('balete-purok-3', 'Purok 3', 'Palsara', 'Purok 3'),
-      ('balete-purok-4', 'Purok 4', 'Palsara', 'Purok 4'),
-      ('balete-purok-5', 'Purok 5', 'Palsara', 'Purok 5'),
-      ('balete-main-road', 'Main Road', 'Palsara', 'Main Road')
-    ON CONFLICT (id) DO UPDATE SET barangay=excluded.barangay, area=excluded.area, purok=excluded.purok;
-    UPDATE community_locations SET barangay='Palsara' WHERE barangay='Balete';
-    INSERT INTO schema_migrations (version) VALUES (1), (2) ON CONFLICT (version) DO NOTHING;
-  `;
-  if (typeof db.exec === "function") await db.exec(schema);
-  else await db.query(schema);
+const MIGRATIONS = [
+  {
+    version: 1,
+    name: "initial_schema",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS users (
+  id text PRIMARY KEY, email text NOT NULL UNIQUE,
+  name text NOT NULL, area text NOT NULL, phone text NOT NULL DEFAULT '',
+  role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
+  status text NOT NULL CHECK (status IN ('Active', 'Inactive')),
+  working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM',
+  available_days jsonb NOT NULL DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]'::jsonb,
+  permission_overrides jsonb NOT NULL DEFAULT '{}'::jsonb,
+  requires_password_change boolean NOT NULL DEFAULT false,
+  deactivation_reason text NOT NULL DEFAULT '',
+  recovery_email text NOT NULL DEFAULT '',
+  reset_requested boolean NOT NULL DEFAULT false,
+  joined_at date NOT NULL DEFAULT CURRENT_DATE
+);`,
+      `CREATE TABLE IF NOT EXISTS user_credentials (
+  user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  password_hash text NOT NULL
+);`,
+      `CREATE TABLE IF NOT EXISTS reports (
+  id text PRIMARY KEY, user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE,
+  name text NOT NULL, category text NOT NULL, title text NOT NULL, area text NOT NULL,
+  barangay text NOT NULL DEFAULT '',
+  location_detail text NOT NULL DEFAULT '', latitude double precision, longitude double precision,
+  description text NOT NULL, urgent boolean NOT NULL DEFAULT false,
+  priority text NOT NULL DEFAULT 'Medium',
+  assigned_to text REFERENCES users(id) ON DELETE SET NULL,
+  status text NOT NULL CHECK (status IN ('Submitted', 'Under Review', 'In Progress', 'Resolved')),
+  submitted_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+);`,
+      `CREATE TABLE IF NOT EXISTS report_history (
+  id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  position integer NOT NULL, status text NOT NULL, at timestamptz NOT NULL, note text NOT NULL,
+  actor_name text NOT NULL DEFAULT '', actor_role text NOT NULL DEFAULT '',
+  UNIQUE (report_id, position)
+);`,
+      `CREATE TABLE IF NOT EXISTS report_photos (
+  id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  position integer NOT NULL, name text NOT NULL, photo_url text NOT NULL,
+  UNIQUE (report_id, position)
+);`,
+      `CREATE TABLE IF NOT EXISTS schedules (
+  id text PRIMARY KEY, area text NOT NULL, zone text NOT NULL, date date NOT NULL,
+  waste_type text NOT NULL, start_time text NOT NULL, end_time text NOT NULL,
+  frequency text NOT NULL, team text NOT NULL,
+  series_id text, recurrence_end date,
+  status text NOT NULL CHECK (status IN ('Scheduled', 'On the way', 'Collecting', 'Completed', 'Delayed', 'Cancelled', 'Rescheduled'))
+);`,
+      `CREATE TABLE IF NOT EXISTS schedule_history (
+  id bigserial PRIMARY KEY, schedule_id text NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  position integer NOT NULL, previous_status text, status text NOT NULL,
+  at timestamptz NOT NULL, actor_name text NOT NULL DEFAULT '', actor_role text NOT NULL DEFAULT '',
+  note text NOT NULL DEFAULT '', previous_date date, previous_start text NOT NULL DEFAULT '',
+  previous_end text NOT NULL DEFAULT '', replacement_date date,
+  replacement_start text NOT NULL DEFAULT '', replacement_end text NOT NULL DEFAULT '',
+  UNIQUE (schedule_id, position)
+);`,
+      `CREATE TABLE IF NOT EXISTS notifications (
+  id text PRIMARY KEY, target_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
+  report_id text REFERENCES reports(id) ON DELETE SET NULL, title text NOT NULL,
+  body text NOT NULL, created_at timestamptz NOT NULL, read boolean NOT NULL DEFAULT false
+);`,
+      `CREATE TABLE IF NOT EXISTS activities (
+  id text PRIMARY KEY, actor text NOT NULL, role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator', 'system')),
+  action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL,
+  result_reason text NOT NULL DEFAULT '', affected_id text NOT NULL DEFAULT '', client_ip text NOT NULL DEFAULT ''
+);`,
+      `CREATE TABLE IF NOT EXISTS activity_archive (
+  id text PRIMARY KEY, actor text NOT NULL, role text NOT NULL,
+  action text NOT NULL, detail text NOT NULL, at timestamptz NOT NULL, result text NOT NULL,
+  result_reason text NOT NULL DEFAULT '', affected_id text NOT NULL DEFAULT '', client_ip text NOT NULL DEFAULT '',
+  archived_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS role_permissions (
+  role text NOT NULL CHECK (role IN ('resident', 'official', 'administrator')),
+  permission text NOT NULL, enabled boolean NOT NULL, PRIMARY KEY (role, permission)
+);`,
+      `CREATE TABLE IF NOT EXISTS announcements (
+  id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL, date date NOT NULL,
+  approval_status text NOT NULL DEFAULT 'approved' CHECK (approval_status IN ('pending', 'approved', 'declined')),
+  decline_reason text NOT NULL DEFAULT '',
+  is_event boolean NOT NULL DEFAULT false, latitude double precision, longitude double precision,
+  created_by text REFERENCES users(id) ON DELETE SET NULL
+);`,
+      `CREATE TABLE IF NOT EXISTS calendar_events (
+  id bigserial PRIMARY KEY, title text NOT NULL, detail text NOT NULL DEFAULT '', date date NOT NULL,
+  approval_status text NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved', 'declined')),
+  decline_reason text NOT NULL DEFAULT '',
+  latitude double precision, longitude double precision,
+  created_by text REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS password_reset_requests (
+  id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  requested_at timestamptz NOT NULL DEFAULT now(), status text NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'completed', 'declined')), handled_by text REFERENCES users(id) ON DELETE SET NULL,
+  handled_at timestamptz
+);`,
+      `CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash text NOT NULL UNIQUE, expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS recovery_email_tokens (
+  id bigserial PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email text NOT NULL, token_hash text NOT NULL UNIQUE,
+  expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS recovery_email_requests (
+  recovery_email text PRIMARY KEY, last_requested_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS report_follow_ups (
+  id bigserial PRIMARY KEY, report_id text NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
+  message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS community_locations (
+  id text PRIMARY KEY, area text NOT NULL UNIQUE, barangay text NOT NULL,
+  street text NOT NULL DEFAULT '', purok text NOT NULL, landmark text NOT NULL DEFAULT ''
+);`,
+      `CREATE TABLE IF NOT EXISTS recycling_locations (
+  id text PRIMARY KEY, name text NOT NULL, barangay text NOT NULL, street text NOT NULL,
+  purok text NOT NULL DEFAULT '', landmark text NOT NULL DEFAULT '', materials text NOT NULL,
+  phone text NOT NULL DEFAULT '', hours text NOT NULL DEFAULT '', active boolean NOT NULL DEFAULT true
+);`,
+      `CREATE TABLE IF NOT EXISTS schedule_reminders (
+  schedule_id text NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  user_email text NOT NULL REFERENCES users(email) ON UPDATE CASCADE ON DELETE CASCADE,
+  notified_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (schedule_id, user_email)
+);`,
+      `CREATE TABLE IF NOT EXISTS web_sessions (
+  token_hash text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+);`,
+      `CREATE TABLE IF NOT EXISTS auth_attempts (
+  attempt_key text PRIMARY KEY, attempts integer NOT NULL, window_started_at timestamptz NOT NULL
+);`,
+      `CREATE INDEX IF NOT EXISTS password_reset_tokens_user_idx ON password_reset_tokens(user_id);`,
+      `CREATE INDEX IF NOT EXISTS recovery_email_tokens_user_idx ON recovery_email_tokens(user_id);`,
+      `CREATE INDEX IF NOT EXISTS report_follow_ups_report_id_idx ON report_follow_ups(report_id);`,
+      `CREATE INDEX IF NOT EXISTS reports_owner_submitted_idx ON reports(user_email, submitted_at DESC);`,
+      `CREATE INDEX IF NOT EXISTS reports_status_updated_idx ON reports(status, updated_at DESC);`,
+      `CREATE INDEX IF NOT EXISTS schedules_date_area_idx ON schedules(date, area);`,
+      `CREATE INDEX IF NOT EXISTS notifications_owner_created_idx ON notifications(target_email, created_at DESC);`,
+      `CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON web_sessions(expires_at);`,
+      `CREATE INDEX IF NOT EXISTS activities_at_idx ON activities(at DESC);`,
+      `CREATE INDEX IF NOT EXISTS activity_archive_at_idx ON activity_archive(at DESC);`,
+    ],
+  },
+  {
+    version: 2,
+    name: "additive_columns_and_backfills",
+    statements: [
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS location_detail text NOT NULL DEFAULT '';`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS barangay text NOT NULL DEFAULT '';`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS latitude double precision;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS longitude double precision;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS priority text NOT NULL DEFAULT 'Medium';`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS assigned_to text REFERENCES users(id) ON DELETE SET NULL;`,
+      `UPDATE reports SET priority='High' WHERE urgent=true AND priority='Medium';`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS working_hours text NOT NULL DEFAULT 'Monday-Friday, 8:00 AM-5:00 PM';`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS available_days jsonb NOT NULL DEFAULT '["Monday","Tuesday","Wednesday","Thursday","Friday"]'::jsonb;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS permission_overrides jsonb NOT NULL DEFAULT '{}'::jsonb;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS requires_password_change boolean NOT NULL DEFAULT false;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason text NOT NULL DEFAULT '';`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email text NOT NULL DEFAULT '';`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_email_verified boolean NOT NULL DEFAULT false;`,
+      `ALTER TABLE password_reset_tokens ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_requested boolean NOT NULL DEFAULT false;`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';`,
+      `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS approval_status text NOT NULL DEFAULT 'approved';`,
+      `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS decline_reason text NOT NULL DEFAULT '';`,
+      `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS is_event boolean NOT NULL DEFAULT false;`,
+      `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS latitude double precision;`,
+      `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS longitude double precision;`,
+      `ALTER TABLE announcements ADD COLUMN IF NOT EXISTS created_by text REFERENCES users(id) ON DELETE SET NULL;`,
+      `ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS latitude double precision;`,
+      `ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS longitude double precision;`,
+      `ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_name text NOT NULL DEFAULT '';`,
+      `ALTER TABLE report_history ADD COLUMN IF NOT EXISTS actor_role text NOT NULL DEFAULT '';`,
+      `ALTER TABLE report_photos ADD COLUMN IF NOT EXISTS photo_url text NOT NULL DEFAULT '';`,
+      `ALTER TABLE schedules ADD COLUMN IF NOT EXISTS series_id text;`,
+      `ALTER TABLE schedules ADD COLUMN IF NOT EXISTS recurrence_end date;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS response_deadline timestamptz;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS responded_at timestamptz;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolution_deadline timestamptz;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at timestamptz;`,
+      `UPDATE reports SET resolved_at = (
+  SELECT history.at FROM report_history history
+    WHERE history.report_id=reports.id AND history.status='Resolved'
+      AND history.actor_role <> 'resident'
+    ORDER BY history.position DESC LIMIT 1)
+WHERE status='Resolved' AND resolved_at IS NULL;`,
+      `UPDATE reports SET responded_at = (
+  SELECT history.at FROM report_history history
+    WHERE history.report_id=reports.id AND history.status <> 'Submitted'
+      AND history.position > COALESCE((
+        SELECT cycle.position FROM report_history cycle
+          WHERE cycle.report_id=reports.id AND cycle.status='Submitted'
+          ORDER BY cycle.position DESC LIMIT 1), 0)
+    ORDER BY history.position ASC LIMIT 1)
+WHERE status <> 'Submitted' AND responded_at IS NULL;`,
+      `ALTER TABLE reports ADD COLUMN IF NOT EXISTS service_cycle_started_at timestamptz;`,
+      `UPDATE reports SET service_cycle_started_at = COALESCE(
+  (SELECT history.at FROM report_history history
+    WHERE history.report_id=reports.id AND history.status = 'Submitted'
+      ORDER BY history.position DESC LIMIT 1),
+  submitted_at)
+WHERE service_cycle_started_at IS NULL;`,
+      `ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET DEFAULT now();`,
+      `ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET NOT NULL;`,
+      `UPDATE reports SET response_deadline = service_cycle_started_at +
+  CASE priority WHEN 'High' THEN interval '1 day' WHEN 'Medium' THEN interval '3 days' ELSE interval '7 days' END
+WHERE response_deadline IS NULL;`,
+      `UPDATE reports SET resolution_deadline = service_cycle_started_at +
+  CASE priority WHEN 'High' THEN interval '7 days' WHEN 'Medium' THEN interval '14 days' ELSE interval '30 days' END
+WHERE resolution_deadline IS NULL;`,
+      `ALTER TABLE activities ADD COLUMN IF NOT EXISTS result_reason text NOT NULL DEFAULT '';`,
+      `ALTER TABLE activities ADD COLUMN IF NOT EXISTS affected_id text NOT NULL DEFAULT '';`,
+      `ALTER TABLE activities ADD COLUMN IF NOT EXISTS client_ip text NOT NULL DEFAULT '';`,
+      `ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_role_check;`,
+      `ALTER TABLE activities ADD CONSTRAINT activities_role_check CHECK (role IN ('resident', 'official', 'administrator', 'system'));`,
+      `ALTER TABLE report_photos DROP COLUMN IF EXISTS data_url;`,
+      `UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
+  FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';`,
+      `INSERT INTO community_locations (id, area, barangay, purok) VALUES
+  ('balete-purok-1', 'Purok 1', 'Palsara', 'Purok 1'),
+  ('balete-purok-2', 'Purok 2', 'Palsara', 'Purok 2'),
+  ('balete-purok-3', 'Purok 3', 'Palsara', 'Purok 3'),
+  ('balete-purok-4', 'Purok 4', 'Palsara', 'Purok 4'),
+  ('balete-purok-5', 'Purok 5', 'Palsara', 'Purok 5'),
+  ('balete-main-road', 'Main Road', 'Palsara', 'Main Road')
+ON CONFLICT (id) DO UPDATE SET barangay=excluded.barangay, area=excluded.area, purok=excluded.purok;`,
+      `UPDATE community_locations SET barangay='Palsara' WHERE barangay='Balete';`,
+    ],
+  },
+];
+
+async function readAppliedMigrationVersions(db) {
+  const result = await db.query("SELECT version FROM schema_migrations ORDER BY version");
+  return new Set(result.rows.map((row) => Number(row.version)));
+}
+
+async function applyMigration(db, migration) {
+  await withTransaction(db, async (transaction) => {
+    for (const statement of migration.statements) {
+      await transaction.query(statement);
+    }
+    await transaction.query("INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING", [migration.version]);
+  });
+}
+
+export async function migrate(db) {
+  await db.query("CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
+  await db.query("CREATE TABLE IF NOT EXISTS app_meta (id integer PRIMARY KEY CHECK (id = 1), revision bigint NOT NULL DEFAULT 0)");
+  await db.query("INSERT INTO app_meta (id, revision) VALUES (1, 0) ON CONFLICT (id) DO NOTHING");
+  await db.query("CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, encrypted_value text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())");
+  const appliedVersions = await readAppliedMigrationVersions(db);
+  for (const migration of [...MIGRATIONS].sort((left, right) => left.version - right.version)) {
+    if (appliedVersions.has(migration.version)) continue;
+    await applyMigration(db, migration);
+  }
   const permissionRows = Object.entries(PERMISSIONS).flatMap(([role, entries]) =>
     Object.entries(entries).map(([permission, enabled]) => [role, permission, enabled])
   );
@@ -1227,8 +1244,9 @@ function validateSameOrigin(request, server, appOrigin) {
 }
 
 // Residents and officials may only record activities the server can verify actually
-// happened. An administrator is trusted to manage the system and is not restricted
-// here (an administrator can perform the real actions directly in the database).
+// happened. An administrator is trusted to manage the system, but the log is still
+// written from operations the server itself performed, so administrative appends are
+// held to the same server-generated action vocabulary instead of accepting any text.
 const RESIDENT_ACTIVITY_ACTIONS = new Set(["Submitted a concern", "Submitted an urgent concern"]);
 const OFFICIAL_ACTIVITY_ACTIONS = new Set([
   "Updated a report",
@@ -1238,10 +1256,30 @@ const OFFICIAL_ACTIVITY_ACTIONS = new Set([
   "Updated a collection schedule",
   "Added a collection schedule",
 ]);
+const ADMIN_ACTIVITY_ACTIONS = new Set([
+  ...OFFICIAL_ACTIVITY_ACTIONS,
+  "Added user account",
+  "Created resident account",
+  "Changed account password",
+  "Set recovery email",
+  "Removed recovery email",
+  "Updated profile information",
+  "Deactivated user account",
+  "Reactivated user account",
+  "Submitted an announcement",
+  "Published an announcement",
+  "Updated an announcement",
+  "Approved an announcement",
+  "Declined an announcement",
+  "Removed an announcement",
+  "Approved a calendar event",
+  "Declined a calendar event",
+]);
 
 function activityActionsFor(user) {
   if (user.role === "resident") return RESIDENT_ACTIVITY_ACTIONS;
   if (user.role === "official") return OFFICIAL_ACTIVITY_ACTIONS;
+  if (user.role === "administrator") return ADMIN_ACTIVITY_ACTIONS;
   return null;
 }
 
@@ -3020,8 +3058,8 @@ async function handleCalendar(request, response, db, options, user) {
       const db = transaction;
       const title = request.body.title.trim();
       const detail = String(request.body.detail || "").trim();
-      const latitude = Number(request.body.latitude) || null;
-      const longitude = Number(request.body.longitude) || null;
+      const latitude = request.body.latitude == null || request.body.latitude === "" ? null : Number(request.body.latitude);
+      const longitude = request.body.longitude == null || request.body.longitude === "" ? null : Number(request.body.longitude);
       await db.query(
         "INSERT INTO calendar_events (title,detail,date,approval_status,created_by,latitude,longitude) VALUES ($1,$2,$3,$4,$5,$6,$7)",
         [title, detail, request.body.date, approvalStatus, user.id, latitude, longitude],

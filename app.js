@@ -34,9 +34,7 @@ function haversineDistanceM(lat1, lon1, lat2, lon2) {
   const earthRadiusM = 6371000;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * earthRadiusM * Math.asin(Math.sqrt(a));
 }
 
@@ -57,7 +55,22 @@ function routeState() {
   const pages = {
     resident: ["dashboard", "calendar", "collection", "report", "reports", "history", "notifications", "profile"],
     official: ["dashboard", "calendar", "concerns", "collection", "history", "announcements", "notifications", "profile"],
-    administrator: ["dashboard", "calendar", "reports", "approvals", "analytics", "notifications", "users", "locations", "announcements", "roles", "activity", "settings", "email", "profile"],
+    administrator: [
+      "dashboard",
+      "calendar",
+      "reports",
+      "approvals",
+      "analytics",
+      "notifications",
+      "users",
+      "locations",
+      "announcements",
+      "roles",
+      "activity",
+      "settings",
+      "email",
+      "profile",
+    ],
   };
   const resolvedPage = pages[role]?.includes(pageName) ? pageName : "dashboard";
   if (!canOpenPage(currentUser, resolvedPage)) {
@@ -202,7 +215,10 @@ const OFFICIAL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "
 const DEFAULT_OFFICIAL_DAYS = OFFICIAL_DAYS.slice(0, 5);
 
 function availableDayOptions(selectedDays = DEFAULT_OFFICIAL_DAYS) {
-  return OFFICIAL_DAYS.map((day) => `<label class="availability-day"><input type="checkbox" name="availableDays" value="${day}" ${selectedDays.includes(day) ? "checked" : ""}><span>${day}</span></label>`).join("");
+  return OFFICIAL_DAYS.map(
+    (day) =>
+      `<label class="availability-day"><input type="checkbox" name="availableDays" value="${day}" ${selectedDays.includes(day) ? "checked" : ""}><span>${day}</span></label>`,
+  ).join("");
 }
 
 function modalMarkup() {
@@ -219,7 +235,9 @@ function modalMarkup() {
       ["Source", item.source === "archived" ? `Archived on ${dateTimeLabel(item.archivedAt)}` : "Current log"],
       ["Event ID", item.id],
       ["Details", item.detail],
-    ].map(([label, value]) => `<div class="activity-detail-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>`;
+    ]
+      .map(([label, value]) => `<div class="activity-detail-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`)
+      .join("")}</div>`;
     return makeModal("Activity event", body);
   }
   if (modalState.kind === "forced-password") {
@@ -263,9 +281,10 @@ function modalMarkup() {
       return "";
     }
     const latest = (schedule.history || []).at(-1);
-    const statusNote = latest && ["Delayed", "Cancelled", "Rescheduled"].includes(schedule.status) && latest.note
-      ? `<div class="notice-bar"><strong>${esc(schedule.status)}</strong><span>${esc(latest.note)}</span></div>`
-      : "";
+    const statusNote =
+      latest && ["Delayed", "Cancelled", "Rescheduled"].includes(schedule.status) && latest.note
+        ? `<div class="notice-bar"><strong>${esc(schedule.status)}</strong><span>${esc(latest.note)}</span></div>`
+        : "";
     const body = `<div class="modal-form-fields">
       <div class="status-line">${statusPill(schedule.status)}<span class="muted small">${esc(schedule.area)} · ${esc(schedule.zone)}</span></div>
       <ul class="plain-list">
@@ -312,7 +331,7 @@ function modalMarkup() {
           </div>
         </div>
       </div></div>
-      <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? needsApproval ? "Save and send for approval" : "Save changes" : needsApproval ? "Send for approval" : "Publish announcement"}</button></div></form>`;
+      <div class="form-actions">${item ? `<button class="button danger" type="button" data-action="delete-announcement" data-id="${esc(item.id)}">Remove announcement</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? (needsApproval ? "Save and send for approval" : "Save changes") : needsApproval ? "Send for approval" : "Publish announcement"}</button></div></form>`;
     return makeModal(item ? "Edit announcement" : "New announcement", body);
   }
   if (modalState.kind === "announcement-location") {
@@ -359,30 +378,36 @@ function modalMarkup() {
     const date = modalState.date || todayISO();
     const events = calendarEventsForDate(date);
     const eventList = events.length
-      ? events.map((event) => {
-        const hasMap = (event.kind === "Announcement" && event.isEvent || event.kind === "Event") &&
-          Number.isFinite(event.latitude) && Number.isFinite(event.longitude);
-        let badgeLabel;
-        let badgeVariant;
-        let leftBorder;
-        if (event.kind === "Event") {
-          badgeLabel = calendarStatusLabel(event.status);
-          badgeVariant = event.status === "pending" ? "pending" : event.status === "declined" ? "declined" : "approved";
-          leftBorder = event.status === "pending" ? "var(--warning)" : event.status === "declined" ? "var(--danger)" : "var(--accent)";
-        } else if (event.kind === "Announcement" && event.isEvent) {
-          badgeLabel = "Approved";
-          badgeVariant = "approved";
-          leftBorder = "var(--success)";
-        } else {
-          badgeLabel = "Approved";
-          badgeVariant = "approved";
-          leftBorder = "var(--accent)";
-        }
-        const detailText = String(event.detail || "");
-        const detailParts = detailText.split(" · ").map((p) => p.trim()).filter(Boolean);
-        const timePart = detailParts.find((p) => /AM|PM/.test(p));
-        const locationPart = detailParts.filter((p) => !/AM|PM/.test(p)).join(" · ");
-        return `<div class="event-detail-card" style="--card-accent: ${leftBorder};">
+      ? events
+          .map((event) => {
+            const hasMap =
+              ((event.kind === "Announcement" && event.isEvent) || event.kind === "Event") &&
+              Number.isFinite(event.latitude) &&
+              Number.isFinite(event.longitude);
+            let badgeLabel;
+            let badgeVariant;
+            let leftBorder;
+            if (event.kind === "Event") {
+              badgeLabel = calendarStatusLabel(event.status);
+              badgeVariant = event.status === "pending" ? "pending" : event.status === "declined" ? "declined" : "approved";
+              leftBorder = event.status === "pending" ? "var(--warning)" : event.status === "declined" ? "var(--danger)" : "var(--accent)";
+            } else if (event.kind === "Announcement" && event.isEvent) {
+              badgeLabel = "Approved";
+              badgeVariant = "approved";
+              leftBorder = "var(--success)";
+            } else {
+              badgeLabel = "Approved";
+              badgeVariant = "approved";
+              leftBorder = "var(--accent)";
+            }
+            const detailText = String(event.detail || "");
+            const detailParts = detailText
+              .split(" · ")
+              .map((p) => p.trim())
+              .filter(Boolean);
+            const timePart = detailParts.find((p) => /AM|PM/.test(p));
+            const locationPart = detailParts.filter((p) => !/AM|PM/.test(p)).join(" · ");
+            return `<div class="event-detail-card" style="--card-accent: ${leftBorder};">
           <div class="event-card-top">
             <span class="event-card-category">${esc(event.kind)}</span>
             <span class="event-card-status event-card-status--${badgeVariant}">${esc(badgeLabel)}</span>
@@ -395,7 +420,8 @@ function modalMarkup() {
           ${!timePart && !locationPart && detailText ? `<p class="event-card-body">${esc(detailText)}</p>` : ""}
           ${hasMap ? `<div class="event-card-map-panel"><div id="announcement-detail-map-${event.id}" class="report-map-canvas report-detail-map" data-latitude="${event.latitude}" data-longitude="${event.longitude}" role="region" aria-label="Map centered on this event's location"></div><p class="map-status" id="announcement-detail-map-status-${event.id}" role="status" aria-live="polite">Map pin at ${event.latitude.toFixed(6)}, ${event.longitude.toFixed(6)}.</p><a class="button secondary small" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${event.latitude},${event.longitude}`)}" target="_blank" rel="noopener noreferrer">Open in Google Maps</a></div>` : ""}
         </div>`;
-      }).join("")
+          })
+          .join("")
       : `<div class="event-detail-empty"><strong>No events</strong><p>Nothing is scheduled on ${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}.</p></div>`;
     const body = `<div class="event-detail-modal"><div class="event-detail-head"><h3 class="event-detail-date-title">${esc(dateLabel(date, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</h3></div><div class="event-detail-list">${eventList}</div></div>`;
     return makeModal("Event details", body, "modal--event-details");
@@ -418,7 +444,10 @@ function modalMarkup() {
   }
   if (modalState.kind === "deactivate") {
     const user = modalState.id ? getUser(modalState.id) : null;
-    if (!user) { modalState = null; return ""; }
+    if (!user) {
+      modalState = null;
+      return "";
+    }
     const body = `<form id="deactivate-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
       <div class="modal-form-fields"><p class="field-help">Why is ${esc(user.name)} being deactivated? The reason is recorded with the account.</p><div class="form-field span-all"><label for="deactivate-reason">Reason *</label><textarea class="textarea" id="deactivate-reason" name="reason" required maxlength="500"></textarea></div></div>
       <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button danger" type="submit">Deactivate account</button></div></form>`;
@@ -456,9 +485,10 @@ function showModal(kind, id = "") {
   if (kind === "announcement") {
     const item = id ? data.announcements.find((record) => record.id === id) : null;
     announcementMapExpanded = Boolean(item?.isEvent);
-    announcementMapSelection = item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
-      ? { latitude: item.latitude, longitude: item.longitude }
-      : null;
+    announcementMapSelection =
+      item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
+        ? { latitude: item.latitude, longitude: item.longitude }
+        : null;
   }
   modalState = { kind, id };
   render();
@@ -495,7 +525,11 @@ function updatePagination(onlyRecords = null) {
     visible.forEach((row, index) => {
       row.hidden = index < page * pageSize || index >= (page + 1) * pageSize;
     });
-    rows.filter((row) => row.dataset.filteredOut === "true").forEach((row) => { row.hidden = true; });
+    rows
+      .filter((row) => row.dataset.filteredOut === "true")
+      .forEach((row) => {
+        row.hidden = true;
+      });
     let controls = table.nextElementSibling?.classList.contains("pagination") ? table.nextElementSibling : null;
     if (pageCount <= 1) {
       controls?.remove();
@@ -532,19 +566,80 @@ function exportCsv(filename, headers, rows, note = "") {
 function exportReports(history = false) {
   const reports = sortedReports(currentUser.role === "resident" ? userReports() : data.reports);
   if (history) {
-    exportCsv("community-report-history.csv",
-      ["Report ID", "Resident", "Category", "Barangay", "Purok or area", "Street or landmark", "Latitude", "Longitude", "Status", "Date and time", "Update", "Updated by"],
-      reports.flatMap((report) => report.history.map((item) => [
-          report.id, report.name, report.category, report.barangay || "", report.area, report.locationDetail || "", report.latitude ?? "", report.longitude ?? "", item.status, item.at, item.note, item.actorName || "",
-      ])),
+    exportCsv(
+      "community-report-history.csv",
+      [
+        "Report ID",
+        "Resident",
+        "Category",
+        "Barangay",
+        "Purok or area",
+        "Street or landmark",
+        "Latitude",
+        "Longitude",
+        "Status",
+        "Date and time",
+        "Update",
+        "Updated by",
+      ],
+      reports.flatMap((report) =>
+        report.history.map((item) => [
+          report.id,
+          report.name,
+          report.category,
+          report.barangay || "",
+          report.area,
+          report.locationDetail || "",
+          report.latitude ?? "",
+          report.longitude ?? "",
+          item.status,
+          item.at,
+          item.note,
+          item.actorName || "",
+        ]),
+      ),
     );
     return;
   }
-  exportCsv("community-reports.csv",
-    ["Report ID", "Resident", "Email", "Category", "Concern", "Barangay", "Purok or area", "Street or landmark", "Latitude", "Longitude", "Description", "Urgent", "Priority", "Status", "Assigned official", "Submitted", "Updated"],
+  exportCsv(
+    "community-reports.csv",
+    [
+      "Report ID",
+      "Resident",
+      "Email",
+      "Category",
+      "Concern",
+      "Barangay",
+      "Purok or area",
+      "Street or landmark",
+      "Latitude",
+      "Longitude",
+      "Description",
+      "Urgent",
+      "Priority",
+      "Status",
+      "Assigned official",
+      "Submitted",
+      "Updated",
+    ],
     reports.map((report) => [
-      report.id, report.name, report.userEmail, report.category, report.title, report.barangay || "", report.area, report.locationDetail || "",
-      report.latitude ?? "", report.longitude ?? "", report.description, report.urgent ? "Yes" : "No", report.priority || "Medium", report.status, report.assignedTo?.name || "", report.submittedAt, report.updatedAt,
+      report.id,
+      report.name,
+      report.userEmail,
+      report.category,
+      report.title,
+      report.barangay || "",
+      report.area,
+      report.locationDetail || "",
+      report.latitude ?? "",
+      report.longitude ?? "",
+      report.description,
+      report.urgent ? "Yes" : "No",
+      report.priority || "Medium",
+      report.status,
+      report.assignedTo?.name || "",
+      report.submittedAt,
+      report.updatedAt,
     ]),
   );
 }
@@ -576,34 +671,61 @@ async function exportActivityLog() {
   const response = await fetch(`/api/community/activity/export?${activityQuery()}`);
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The activity log could not be exported.");
-  exportCsv("community-activity-log.csv",
-    ["Event ID", "Date and time", "Actor", "Role", "Action", "Details", "Result", "Result reason", "Affected record", "Client address", "Source", "Archived at"],
+  exportCsv(
+    "community-activity-log.csv",
+    [
+      "Event ID",
+      "Date and time",
+      "Actor",
+      "Role",
+      "Action",
+      "Details",
+      "Result",
+      "Result reason",
+      "Affected record",
+      "Client address",
+      "Source",
+      "Archived at",
+    ],
     result.activities.map((item) => [
-      item.id, item.at, item.actor, roleLabel(item.role), item.action, item.detail, item.result,
-      item.resultReason || "", item.affectedId || "", item.clientIp || "", item.source || "current", item.archivedAt || "",
+      item.id,
+      item.at,
+      item.actor,
+      roleLabel(item.role),
+      item.action,
+      item.detail,
+      item.result,
+      item.resultReason || "",
+      item.affectedId || "",
+      item.clientIp || "",
+      item.source || "current",
+      item.archivedAt || "",
     ]),
-    result.truncated ? `Export limited to ${result.activities.length} of ${result.total} records. Narrow the date range to export the rest.` : "",
+    result.truncated
+      ? `Export limited to ${result.activities.length} of ${result.total} records. Narrow the date range to export the rest.`
+      : "",
   );
 }
 
 async function compressPhoto(file) {
   if (!["image/jpeg", "image/png"].includes(file.type)) throw new Error(`${file.name}: choose a JPG or PNG image.`);
   if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name}: each photo must be 5 MB or smaller.`);
-  const image = typeof createImageBitmap === "function"
-    ? await createImageBitmap(file)
-    : await new Promise((resolve, reject) => {
-      const objectUrl = URL.createObjectURL(file);
-      const fallbackImage = new Image();
-      fallbackImage.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(fallbackImage);
-      };
-      fallbackImage.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        reject(new Error(`${file.name}: this image could not be opened.`));
-      };
-      fallbackImage.src = objectUrl;
-    });
+  const image =
+    typeof createImageBitmap === "function"
+      ? await createImageBitmap(file)
+      : await new Promise((resolve, reject) => {
+          const objectUrl = URL.createObjectURL(file);
+          const fallbackImage = new Image();
+          fallbackImage.onload = () => {
+            URL.revokeObjectURL(objectUrl);
+            resolve(fallbackImage);
+          };
+          fallbackImage.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error(`${file.name}: this image could not be opened.`));
+          };
+          fallbackImage.src = objectUrl;
+        });
   if (!image.width || !image.height) throw new Error(`${file.name}: this image has no usable dimensions.`);
   const scale = Math.min(1, 1200 / Math.max(image.width, image.height));
   const canvas = document.createElement("canvas");
@@ -615,8 +737,18 @@ async function compressPhoto(file) {
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   if (typeof image.close === "function") image.close();
-  const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error(`${file.name}: this image could not be prepared.`)), "image/jpeg", 0.72));
-  return { name: file.name.slice(0, 120), file: new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" }), previewUrl: URL.createObjectURL(blob) };
+  const blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (value) => (value ? resolve(value) : reject(new Error(`${file.name}: this image could not be prepared.`))),
+      "image/jpeg",
+      0.72,
+    ),
+  );
+  return {
+    name: file.name.slice(0, 120),
+    file: new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" }),
+    previewUrl: URL.createObjectURL(blob),
+  };
 }
 
 function nextReportId() {
@@ -650,7 +782,10 @@ async function submitReportDraft() {
     userEmail: currentUser.email,
     name: currentUser.name,
     category: reportDraft.category,
-    title: reportDraft.category === "Other community concern" ? `Community concern in ${reportDraft.area}` : `${reportDraft.category} · ${reportDraft.area}`,
+    title:
+      reportDraft.category === "Other community concern"
+        ? `Community concern in ${reportDraft.area}`
+        : `${reportDraft.category} · ${reportDraft.area}`,
     area: reportDraft.area,
     barangay: reportDraft.barangay,
     locationDetail: reportDraft.locationDetail,
@@ -668,7 +803,7 @@ async function submitReportDraft() {
   };
   data.reports.unshift(report);
   addActivity(report.urgent ? "Submitted an urgent concern" : "Submitted a concern", `${report.id} · ${report.title}`);
-  if (!await localSave()) {
+  if (!(await localSave())) {
     data.reports = data.reports.filter((item) => item.id !== report.id);
     return;
   }
@@ -690,7 +825,9 @@ async function updateReportStatus(form) {
   if (status !== report.status) {
     const allowed = REPORT_TRANSITIONS[report.status] ?? [];
     if (!allowed.includes(status)) {
-      throw new Error(`This concern cannot move from ${report.status} to ${status}. Follow the path: Submitted → Under Review → In Progress → Resolved.`);
+      throw new Error(
+        `This concern cannot move from ${report.status} to ${status}. Follow the path: Submitted → Under Review → In Progress → Resolved.`,
+      );
     }
     if (!note) throw new Error(`Add an update note when changing the status to ${status}.`);
   }
@@ -709,7 +846,7 @@ async function updateReportStatus(form) {
   report.updatedAt = now;
   report.history.push({ status, at: now, note: note || `Status updated to ${status}.` });
   addActivity("Updated a report", `${report.id} · ${status}`);
-  if (!await localSave()) return;
+  if (!(await localSave())) return;
   selectedReportId = null;
   render();
   toast(`${report.id} updated. The resident has an in-app notification.`, "success");
@@ -729,7 +866,7 @@ async function updateReportAssignment(id, claim) {
   if (!confirmed) return;
   report.assignedTo = claim ? { id: currentUser.id, name: currentUser.name } : null;
   addActivity(claim ? "Claimed a concern" : "Released a concern", `${report.id} · ${report.title}`);
-  if (!await localSave()) return;
+  if (!(await localSave())) return;
   render();
   toast(claim ? `${report.id} assigned to you.` : `${report.id} released to the queue.`, "success");
 }
@@ -810,9 +947,10 @@ async function submitFollowUp(form) {
   if (limit !== null && remaining <= 0) {
     throw new Error(`This ${report.priority || "Medium"} priority concern has reached its ${limit} follow-up limit.`);
   }
-  const limitLine = limit === null
-    ? "Unlimited follow-ups remain for this High priority concern."
-    : `${remaining} of ${limit} follow-ups remaining for this ${report.priority} priority concern.`;
+  const limitLine =
+    limit === null
+      ? "Unlimited follow-ups remain for this High priority concern."
+      : `${remaining} of ${limit} follow-ups remaining for this ${report.priority} priority concern.`;
   const confirmed = await confirmAction({
     title: "Send follow-up?",
     message: `Send this follow-up to barangay staff for ${reportId || "this report"}?\n\n${limitLine}`,
@@ -884,7 +1022,8 @@ async function updateCollection(form) {
   const status = String(form.get("status") || "");
   const frequency = String(form.get("frequency") || "Weekly");
   const recurrenceEnd = String(form.get("recurrenceEnd") || "").trim() || null;
-  if (!locationAreas().includes(area) || !COLLECTION_STATUSES.includes(status) || !date) throw new Error("Choose a valid area, collection date, and service status.");
+  if (!locationAreas().includes(area) || !COLLECTION_STATUSES.includes(status) || !date)
+    throw new Error("Choose a valid area, collection date, and service status.");
   if (!SCHEDULE_FREQUENCIES.includes(frequency)) throw new Error("Choose a valid collection frequency.");
   const record = {
     ...(existing || { id: nextScheduleId(date) }),
@@ -902,7 +1041,8 @@ async function updateCollection(form) {
   };
   const endMinutes = timeToMinutes(record.end);
   const startMinutes = timeToMinutes(record.start);
-  if (endMinutes < 0 || startMinutes < 0 || endMinutes <= startMinutes) throw new Error("Use a valid time such as 6:00 AM, and make sure the end time is later.");
+  if (endMinutes < 0 || startMinutes < 0 || endMinutes <= startMinutes)
+    throw new Error("Use a valid time such as 6:00 AM, and make sure the end time is later.");
   if (!record.wasteType || !record.start || !record.end) throw new Error("Complete the service, collection time, and waste type.");
   const statusNote = String(form.get("statusNote") || "").trim();
   if (!existing && status === "Rescheduled") throw new Error("Save this collection first, then reschedule it to a replacement pickup.");
@@ -925,9 +1065,9 @@ async function updateCollection(form) {
   const confirmed = await confirmAction({
     title: existing ? "Save schedule?" : "Add schedule?",
     message: existing
-      ? `${statusSummary ? `${statusSummary} ` : ""}${existing.seriesId
-        ? `The other pickups in this recurring series stay unchanged.`
-        : `Residents will be notified about this change.`}`
+      ? `${statusSummary ? `${statusSummary} ` : ""}${
+          existing.seriesId ? `The other pickups in this recurring series stay unchanged.` : `Residents will be notified about this change.`
+        }`
       : occurrenceDates.length > 1
         ? `Add ${occurrenceDates.length} ${record.wasteType} pickups for ${record.area}, from ${dateLabel(occurrenceDates[0])} to ${dateLabel(occurrenceDates.at(-1))}? Residents will be notified about the new schedule.`
         : `Add this ${record.wasteType} collection schedule for ${record.area}? Residents will be notified.`,
@@ -937,8 +1077,10 @@ async function updateCollection(form) {
   if (existing) {
     if (historyEntry) existing.history = [...(existing.history || []), historyEntry];
     Object.assign(existing, record);
-    addActivity(statusChanged ? "Changed a collection status" : "Updated a collection schedule",
-      `${record.id} · ${record.area} · ${existing.status}${statusNote ? ` · ${statusNote}` : ""}`);
+    addActivity(
+      statusChanged ? "Changed a collection status" : "Updated a collection schedule",
+      `${record.id} · ${record.area} · ${existing.status}${statusNote ? ` · ${statusNote}` : ""}`,
+    );
   } else {
     const seriesId = occurrenceDates.length > 1 ? nextScheduleId(occurrenceDates[0]) : null;
     const creationEntry = scheduleStatusEntry(null, {
@@ -958,11 +1100,14 @@ async function updateCollection(form) {
       history: [{ ...creationEntry }],
     }));
     data.schedules.push(...records);
-    addActivity("Added a collection schedule", records.length > 1
-      ? `${records[0].id} · ${record.area} · ${records.length} recurring pickups`
-      : `${records[0].id} · ${record.area} · ${status}`);
+    addActivity(
+      "Added a collection schedule",
+      records.length > 1
+        ? `${records[0].id} · ${record.area} · ${records.length} recurring pickups`
+        : `${records[0].id} · ${record.area} · ${status}`,
+    );
   }
-  if (!await localSave()) return;
+  if (!(await localSave())) return;
   modalState = null;
   render();
   toast("Collection schedule saved. Residents in the affected area have an in-app update.", "success");
@@ -985,16 +1130,14 @@ async function saveLocation(form) {
   const existing = data.locations.find((item) => item.id === id);
   const confirmed = await confirmAction({
     title: existing ? "Save location?" : "Add location?",
-    message: existing
-      ? `Save changes to ${record.area}?`
-      : `Add ${record.area} as a community location?`,
+    message: existing ? `Save changes to ${record.area}?` : `Add ${record.area} as a community location?`,
     confirmLabel: existing ? "Save location" : "Add location",
   });
   if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.locations.push(record);
   addActivity(existing ? "Updated a community location" : "Added a community location", `${record.area} · ${record.barangay}`);
-  if (!await localSave()) return;
+  if (!(await localSave())) return;
   modalState = null;
   render();
   toast("Community location saved.", "success");
@@ -1020,16 +1163,14 @@ async function saveRecyclingLocation(form) {
   const existing = data.recyclingLocations.find((item) => item.id === id);
   const confirmed = await confirmAction({
     title: existing ? "Save listing?" : "Add listing?",
-    message: existing
-      ? `Save changes to ${record.name}?`
-      : `Add ${record.name} to the recycling directory?`,
+    message: existing ? `Save changes to ${record.name}?` : `Add ${record.name} to the recycling directory?`,
     confirmLabel: existing ? "Save listing" : "Add listing",
   });
   if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.recyclingLocations.push(record);
   addActivity(existing ? "Updated a recycling directory listing" : "Added a recycling directory listing", record.name);
-  if (!await localSave()) return;
+  if (!(await localSave())) return;
   modalState = null;
   render();
   toast("Recycling directory listing saved.", "success");
@@ -1045,9 +1186,16 @@ async function saveAnnouncement(form) {
   let latitude = readOptionalCoordinate(form.get("latitude"));
   let longitude = readOptionalCoordinate(form.get("longitude"));
   if (isEvent) {
-    if (latitude === null || longitude === null ||
-        !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    if (
+      latitude === null ||
+      longitude === null ||
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
       throw new Error("Place a pin on the map for this event announcement, or turn off the event option.");
     }
   } else {
@@ -1067,8 +1215,12 @@ async function saveAnnouncement(form) {
   const needsApproval = currentUser.role === "official";
   const confirmed = await confirmAction({
     title: id
-      ? needsApproval ? "Resubmit announcement for approval?" : "Save announcement?"
-      : needsApproval ? "Send announcement for approval?" : "Publish announcement?",
+      ? needsApproval
+        ? "Resubmit announcement for approval?"
+        : "Save announcement?"
+      : needsApproval
+        ? "Send announcement for approval?"
+        : "Publish announcement?",
     message: id
       ? needsApproval
         ? "Save these changes and send the announcement to an administrator for approval. Residents will see it after it is approved."
@@ -1096,8 +1248,12 @@ async function saveAnnouncement(form) {
   render();
   toast(
     needsApproval
-      ? id ? "Announcement updated and sent for approval." : "Announcement sent for approval."
-      : id ? "Announcement updated." : "Announcement published.",
+      ? id
+        ? "Announcement updated and sent for approval."
+        : "Announcement sent for approval."
+      : id
+        ? "Announcement updated."
+        : "Announcement published.",
     "success",
   );
 }
@@ -1105,9 +1261,10 @@ async function saveAnnouncement(form) {
 async function decideAnnouncement(id, status, reason = "") {
   const confirmed = await confirmAction({
     title: status === "declined" ? "Decline announcement?" : "Approve announcement?",
-    message: status === "declined"
-      ? "Decline this announcement and send the reason to the official?"
-      : "Approve and publish this announcement to residents?",
+    message:
+      status === "declined"
+        ? "Decline this announcement and send the reason to the official?"
+        : "Approve and publish this announcement to residents?",
     confirmLabel: status === "declined" ? "Decline announcement" : "Approve & publish",
     tone: status === "declined" ? "danger" : "primary",
   });
@@ -1160,9 +1317,10 @@ async function saveCalendarEvent(form) {
 async function decideCalendarEvent(id, status, reason = "") {
   const confirmed = await confirmAction({
     title: status === "declined" ? "Reject event request?" : "Approve event?",
-    message: status === "declined"
-      ? "Reject this event request and send the reason to the official?"
-      : "Approve this event and add it to the calendar?",
+    message:
+      status === "declined"
+        ? "Reject this event request and send the reason to the official?"
+        : "Approve this event and add it to the calendar?",
     confirmLabel: status === "declined" ? "Reject event" : "Approve event",
     tone: status === "declined" ? "danger" : "primary",
   });
@@ -1180,7 +1338,10 @@ async function decideCalendarEvent(id, status, reason = "") {
   lastPersistedSnapshot = JSON.stringify(data);
   modalState = null;
   render();
-  toast(status === "declined" ? "Event rejected and the reason sent to the official." : "Event approved and added to the calendar.", "success");
+  toast(
+    status === "declined" ? "Event rejected and the reason sent to the official." : "Event approved and added to the calendar.",
+    "success",
+  );
 }
 
 function calendarEventsForDate(dateStr) {
@@ -1205,7 +1366,12 @@ function calendarEventsForDate(dateStr) {
         latitude: item.latitude ?? null,
         longitude: item.longitude ?? null,
       })),
-    ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
+    ...schedules.map((item) => ({
+      date: item.date,
+      title: `${item.wasteType} collection`,
+      detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`,
+      kind: "Collection",
+    })),
     ...activeEvents,
   ];
   return events.filter((event) => event.date === dateStr);
@@ -1256,7 +1422,13 @@ async function updateProfile(form) {
   const response = await fetch("/api/profile", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, area, phone: String(form.get("phone") || "").trim(), recoveryEmail: String(form.get("recoveryEmail") || "").trim(), photoUrl }),
+    body: JSON.stringify({
+      name,
+      area,
+      phone: String(form.get("phone") || "").trim(),
+      recoveryEmail: String(form.get("recoveryEmail") || "").trim(),
+      photoUrl,
+    }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
@@ -1271,7 +1443,8 @@ async function updateProfile(form) {
 function profileSavedMessage(recovery = {}) {
   if (recovery.verified) return "Profile saved. Recovery email verified.";
   if (recovery.verificationSent) return "Profile saved. A verification link was sent to your recovery email.";
-  if (currentUser.recoveryEmail) return "Profile saved. The recovery email is not verified because the email service is not configured, so no verification link was sent.";
+  if (currentUser.recoveryEmail)
+    return "Profile saved. The recovery email is not verified because the email service is not configured, so no verification link was sent.";
   return "Profile saved.";
 }
 
@@ -1312,10 +1485,26 @@ async function saveSmtpSettings(form) {
 
 function applySmtpPreset(provider) {
   const presets = {
-    gmail: ["smtp.gmail.com", "587", 'Gmail: turn on 2-Step Verification, then <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer">create an App Password</a>. Enter that generated password here.'],
-    outlook: ["smtp.office365.com", "587", 'Outlook/Microsoft 365: <a href="https://support.microsoft.com/account-billing/how-to-get-and-use-app-passwords-5896ed9c-9f7f-4d4b-ae2c-7c9f6b2c0f2a" target="_blank" rel="noopener noreferrer">learn about app passwords</a> if your account supports them. If SMTP AUTH is disabled, ask your Microsoft 365 administrator to enable it.'],
-    sendgrid: ["smtp.sendgrid.net", "587", 'SendGrid: <a href="https://docs.sendgrid.com/ui/account-and-settings/api-keys" target="_blank" rel="noopener noreferrer">create an API key</a> in Settings > API Keys. Enter apikey as the username and the generated API key as the password.'],
-    custom: ["", "587", "Other provider: open its SMTP or mail-client setup page and copy the SMTP host, port, username, and app password or service key here."],
+    gmail: [
+      "smtp.gmail.com",
+      "587",
+      'Gmail: turn on 2-Step Verification, then <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer">create an App Password</a>. Enter that generated password here.',
+    ],
+    outlook: [
+      "smtp.office365.com",
+      "587",
+      'Outlook/Microsoft 365: <a href="https://support.microsoft.com/account-billing/how-to-get-and-use-app-passwords-5896ed9c-9f7f-4d4b-ae2c-7c9f6b2c0f2a" target="_blank" rel="noopener noreferrer">learn about app passwords</a> if your account supports them. If SMTP AUTH is disabled, ask your Microsoft 365 administrator to enable it.',
+    ],
+    sendgrid: [
+      "smtp.sendgrid.net",
+      "587",
+      'SendGrid: <a href="https://docs.sendgrid.com/ui/account-and-settings/api-keys" target="_blank" rel="noopener noreferrer">create an API key</a> in Settings > API Keys. Enter apikey as the username and the generated API key as the password.',
+    ],
+    custom: [
+      "",
+      "587",
+      "Other provider: open its SMTP or mail-client setup page and copy the SMTP host, port, username, and app password or service key here.",
+    ],
   };
   const preset = presets[provider];
   const form = app.querySelector("#smtp-settings-form");
@@ -1346,7 +1535,12 @@ async function updatePassword(form) {
     body: JSON.stringify({ currentPassword: oldPassword, newPassword: password, confirmPassword: confirm }),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(response.status === 401 ? "Your session expired. Please sign in again before changing your password." : (result.error || "The password could not be changed."));
+  if (!response.ok)
+    throw new Error(
+      response.status === 401
+        ? "Your session expired. Please sign in again before changing your password."
+        : result.error || "The password could not be changed.",
+    );
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The account was updated, but CommUnity could not reload.");
@@ -1363,7 +1557,9 @@ async function updatePassword(form) {
 
 async function createResident(form) {
   const name = String(form.get("name") || "").trim();
-  const email = String(form.get("email") || "").trim().toLowerCase();
+  const email = String(form.get("email") || "")
+    .trim()
+    .toLowerCase();
   const password = String(form.get("password") || "");
   const confirm = String(form.get("confirmPassword") || "");
   const area = String(form.get("area") || "").trim();
@@ -1381,8 +1577,12 @@ async function createResident(form) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      name, email, area, phone: String(form.get("phone") || "").trim(),
-      password, confirmPassword: confirm,
+      name,
+      email,
+      area,
+      phone: String(form.get("phone") || "").trim(),
+      password,
+      confirmPassword: confirm,
     }),
   });
   const result = await response.json();
@@ -1470,7 +1670,9 @@ async function resetUserPassword(form) {
 
 async function forgotPassword(form) {
   const fields = new FormData(form);
-  const recoveryEmail = String(fields.get("recoveryEmail") || "").trim().toLowerCase();
+  const recoveryEmail = String(fields.get("recoveryEmail") || "")
+    .trim()
+    .toLowerCase();
   if (!recoveryEmail) throw new Error("Enter your recovery email address.");
   const confirmed = await confirmAction({
     title: "Send reset request?",
@@ -1536,7 +1738,9 @@ async function verifyRecovery(form) {
 async function addOrEditUser(form) {
   const originalEmail = String(form.get("originalEmail") || "");
   const name = String(form.get("name") || "").trim();
-  const email = String(form.get("email") || "").trim().toLowerCase();
+  const email = String(form.get("email") || "")
+    .trim()
+    .toLowerCase();
   const role = String(form.get("role") || "");
   const area = String(form.get("area") || "");
   const status = String(form.get("status") || "");
@@ -1558,47 +1762,75 @@ async function addOrEditUser(form) {
   const clockMinutes = (time) => {
     const match = time.match(/^(\d{1,2}):(\d{2}) (AM|PM)$/);
     if (!match) return -1;
-    const hour = Number(match[1]) % 12 + (match[3] === "PM" ? 12 : 0);
+    const hour = (Number(match[1]) % 12) + (match[3] === "PM" ? 12 : 0);
     return hour * 60 + Number(match[2]);
   };
   if (role === "official" && (clockMinutes(startTime) < 0 || clockMinutes(endTime) <= clockMinutes(startTime))) {
     throw new Error("Choose a working-hours end time that is after the start time.");
   }
   if (role === "official" && selectedDays.length === 0) throw new Error("Select at least one day the official is available.");
-  const savedAvailableDays = role === "official"
-    ? OFFICIAL_DAYS.filter((day) => selectedDays.includes(day))
-    : existing?.availableDays || DEFAULT_OFFICIAL_DAYS;
-  const savedWorkingHours = role === "official"
-    ? `${savedAvailableDays.join(", ")}, ${startTime}-${endTime}`
-    : existing?.workingHours || "Monday-Friday, 8:00 AM-5:00 PM";
-  if (data.users.some((user) => user.email.toLowerCase() === email && user.email !== originalEmail)) throw new Error("An account already uses this email address.");
-  if (email !== originalEmail && originalEmail === currentUser.email) throw new Error("You cannot change your own administrator sign-in address here.");
+  const savedAvailableDays =
+    role === "official" ? OFFICIAL_DAYS.filter((day) => selectedDays.includes(day)) : existing?.availableDays || DEFAULT_OFFICIAL_DAYS;
+  const savedWorkingHours =
+    role === "official"
+      ? `${savedAvailableDays.join(", ")}, ${startTime}-${endTime}`
+      : existing?.workingHours || "Monday-Friday, 8:00 AM-5:00 PM";
+  if (data.users.some((user) => user.email.toLowerCase() === email && user.email !== originalEmail))
+    throw new Error("An account already uses this email address.");
+  if (email !== originalEmail && originalEmail === currentUser.email)
+    throw new Error("You cannot change your own administrator sign-in address here.");
   if (area.length < 2) throw new Error("Enter an area for this account.");
   const password = existing ? "" : String(form.get("password") || "");
   if (!existing && password.length < 8) throw new Error("Use an initial password with at least 8 characters.");
-  if (existing?.email === currentUser.email && (role !== "administrator" || accountStatus !== "Active")) throw new Error("You cannot remove your own administrator access or deactivate your account.");
+  if (existing?.email === currentUser.email && (role !== "administrator" || accountStatus !== "Active"))
+    throw new Error("You cannot remove your own administrator access or deactivate your account.");
   const confirmed = await confirmAction({
     title: existing ? "Save account?" : "Create account?",
-    message: existing
-      ? `Save changes to ${existing.name}'s account?`
-      : `Create an account for ${name} as ${ROLES[role]}?`,
+    message: existing ? `Save changes to ${existing.name}'s account?` : `Create an account for ${name} as ${ROLES[role]}?`,
     confirmLabel: existing ? "Save account" : "Create account",
   });
   if (!confirmed) return;
   if (existing) {
     const oldEmail = existing.email;
-    Object.assign(existing, { name, email, role, area, status: accountStatus, workingHours: savedWorkingHours, availableDays: savedAvailableDays, phone: String(form.get("phone") || "").trim() });
-    data.reports.filter((report) => report.userEmail === oldEmail).forEach((report) => { report.name = name; });
+    Object.assign(existing, {
+      name,
+      email,
+      role,
+      area,
+      status: accountStatus,
+      workingHours: savedWorkingHours,
+      availableDays: savedAvailableDays,
+      phone: String(form.get("phone") || "").trim(),
+    });
+    data.reports
+      .filter((report) => report.userEmail === oldEmail)
+      .forEach((report) => {
+        report.name = name;
+      });
     if (oldEmail !== email) {
-      data.notifications.forEach((item) => { if (item.targetEmail === oldEmail) item.targetEmail = email; });
-      data.reports.forEach((report) => { if (report.userEmail === oldEmail) report.userEmail = email; });
+      data.notifications.forEach((item) => {
+        if (item.targetEmail === oldEmail) item.targetEmail = email;
+      });
+      data.reports.forEach((report) => {
+        if (report.userEmail === oldEmail) report.userEmail = email;
+      });
     }
     addActivity("Updated user account", `${name} · ${ROLES[role]}`);
   } else {
     const response = await fetch("/api/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, name, area, role, status, workingHours: savedWorkingHours, availableDays: savedAvailableDays, phone: String(form.get("phone") || "").trim(), password }),
+      body: JSON.stringify({
+        email,
+        name,
+        area,
+        role,
+        status,
+        workingHours: savedWorkingHours,
+        availableDays: savedAvailableDays,
+        phone: String(form.get("phone") || "").trim(),
+        password,
+      }),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The account could not be added.");
@@ -1611,7 +1843,7 @@ async function addOrEditUser(form) {
     toast("Account added.", "success");
     return;
   }
-  if (!await localSave()) return;
+  if (!(await localSave())) return;
   modalState = null;
   render();
   toast(existing ? "Account updated." : "Account added.", "success");
@@ -1628,7 +1860,11 @@ async function toggleAccount(email) {
       confirmLabel: "Reactivate",
     });
     if (!confirmed) return;
-    const response = await fetch("/api/users/reactivate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+    const response = await fetch("/api/users/reactivate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The account could not be reactivated.");
     const stateResponse = await fetch("/api/state");
@@ -1660,7 +1896,11 @@ async function deactivateAccount(email, reason) {
     tone: "danger",
   });
   if (!confirmed) return;
-  const response = await fetch("/api/users/deactivate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, reason: trimmedReason }) });
+  const response = await fetch("/api/users/deactivate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, reason: trimmedReason }),
+  });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The account could not be deactivated.");
   // The server revoked this account's sessions in the same transaction. Refresh
@@ -1691,7 +1931,10 @@ function openReport(id) {
     return;
   }
   selectedReportId = report.id;
-  const destination = routeUrl(currentUser.role, currentUser.role === "resident" ? "reports" : currentUser.role === "administrator" ? "reports" : "concerns");
+  const destination = routeUrl(
+    currentUser.role,
+    currentUser.role === "resident" ? "reports" : currentUser.role === "administrator" ? "reports" : "concerns",
+  );
   if (window.location.hash === destination) {
     pendingReportRoute = "";
     render();
@@ -1770,8 +2013,14 @@ async function useCurrentLocation() {
       });
     });
     const { latitude, longitude } = position.coords;
-    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    if (
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
       throw new Error("Invalid location received.");
     }
     const distanceM = haversineDistanceM(latitude, longitude, BALETE_CENTER[0], BALETE_CENTER[1]);
@@ -1826,7 +2075,8 @@ function clearMapButton() {
 function createTileLayer(map) {
   return window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
   }).addTo(map);
 }
 
@@ -1897,8 +2147,7 @@ function initializeReportDetailMap() {
   reportDetailMapElement = mapElement;
   const latitude = Number(mapElement.dataset.latitude);
   const longitude = Number(mapElement.dataset.longitude);
-  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-      !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
     const status = app.querySelector("#report-detail-map-status");
     if (status) status.textContent = "This report's saved map coordinates are invalid.";
     reportDetailMapElement = null;
@@ -1913,7 +2162,9 @@ function initializeReportDetailMap() {
     alt: "Exact concern location",
   }).addTo(reportDetailMap);
   tileLayer.on("tileerror", () => {
-    if (statusElement) statusElement.textContent = "Map tiles could not be loaded. Check your internet connection; the saved pin and directions link are still available.";
+    if (statusElement)
+      statusElement.textContent =
+        "Map tiles could not be loaded. Check your internet connection; the saved pin and directions link are still available.";
   });
 }
 
@@ -1955,7 +2206,8 @@ function initializeAnnouncementMap() {
     const tileLayer = createTileLayer(announcementMap);
     tileLayer.on("tileerror", () => {
       const status = app.querySelector("#announcement-map-status");
-      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
+      if (status)
+        status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
     });
     announcementMap.on("click", (event) => setAnnouncementMapPin(event.latlng));
   } else {
@@ -2007,7 +2259,8 @@ function initializeCalendarEventMap() {
     const tileLayer = createTileLayer(calendarEventMap);
     tileLayer.on("tileerror", () => {
       const status = app.querySelector("#calendar-event-map-status");
-      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
+      if (status)
+        status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
     });
     calendarEventMap.on("click", (event) => setCalendarEventMapPin(event.latlng));
   } else {
@@ -2043,9 +2296,7 @@ function initializeAnnouncementDetailMap() {
     }
     return true;
   });
-  announcementDetailMapElements = announcementDetailMapElements.filter(
-    (_, i) => announcementDetailMaps[i] !== undefined
-  );
+  announcementDetailMapElements = announcementDetailMapElements.filter((_, i) => announcementDetailMaps[i] !== undefined);
 
   mapElements.forEach((el) => {
     const already = announcementDetailMapElements.indexOf(el);
@@ -2055,8 +2306,14 @@ function initializeAnnouncementDetailMap() {
     }
     const latitude = Number(el.dataset.latitude);
     const longitude = Number(el.dataset.longitude);
-    if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-        !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    if (
+      !Number.isFinite(latitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      !Number.isFinite(longitude) ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
       const status = el.parentElement?.querySelector('[id^="announcement-detail-map-status"]');
       if (status) status.textContent = "This event's saved map coordinates are invalid.";
       return;
@@ -2069,7 +2326,9 @@ function initializeAnnouncementDetailMap() {
       alt: "Event location",
     }).addTo(map);
     tileLayer.on("tileerror", () => {
-      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; the saved pin and Google Maps link are still available.";
+      if (status)
+        status.textContent =
+          "Map tiles could not be loaded. Check your internet connection; the saved pin and Google Maps link are still available.";
     });
     announcementDetailMaps.push(map);
     announcementDetailMapElements.push(el);
@@ -2180,7 +2439,9 @@ async function handleAction(button, clickEvent) {
     });
     if (!confirmed) return;
     const unreadIds = unreadItems.map((item) => item.id);
-    unreadItems.forEach((item) => { item.read = true; });
+    unreadItems.forEach((item) => {
+      item.read = true;
+    });
     try {
       if (unreadIds.length) {
         const response = await fetch("/api/community/mark-notifications-read", {
@@ -2193,7 +2454,9 @@ async function handleAction(button, clickEvent) {
       render();
       toast("All notifications marked as read.", "success");
     } catch (error) {
-      unreadItems.forEach((item) => { item.read = false; });
+      unreadItems.forEach((item) => {
+        item.read = false;
+      });
       throw error;
     }
   } else if (action === "add-schedule") {
@@ -2318,14 +2581,13 @@ async function handleAction(button, clickEvent) {
   } else if (action === "toggle-permission") {
     const permission = button.dataset.permission;
     const role = selectedPermissionRole;
-    if (!Object.hasOwn(data.permissions, role) || !Object.hasOwn(data.permissions[role], permission)) throw new Error("This permission could not be found.");
+    if (!Object.hasOwn(data.permissions, role) || !Object.hasOwn(data.permissions[role], permission))
+      throw new Error("This permission could not be found.");
     permissionDrafts[role] ||= { ...data.permissions[role] };
     permissionDrafts[role][permission] = !permissionDrafts[role][permission];
     rememberOpenPermissionGroups();
     render();
-    [...app.querySelectorAll('[data-action="toggle-permission"]')]
-      .find((item) => item.dataset.permission === permission)
-      ?.focus();
+    [...app.querySelectorAll('[data-action="toggle-permission"]')].find((item) => item.dataset.permission === permission)?.focus();
   } else if (action === "toggle-account-permission") {
     const email = button.dataset.email;
     const permission = button.dataset.permission;
@@ -2413,11 +2675,17 @@ async function handleAction(button, clickEvent) {
     if (!draft) throw new Error("There are no role permission changes to save.");
     for (const permission of ["manageUsers", "manageRoles"]) {
       if (role === "administrator" && data.permissions[role][permission] && !draft[permission]) {
-        const anotherAdminCanManage = data.users.some((user) =>
-          user.role === "administrator" && user.status === "Active" && user.email !== currentUser.email &&
-          data.permissions.administrator[permission],
+        const anotherAdminCanManage = data.users.some(
+          (user) =>
+            user.role === "administrator" &&
+            user.status === "Active" &&
+            user.email !== currentUser.email &&
+            data.permissions.administrator[permission],
         );
-        if (!anotherAdminCanManage) throw new Error("Keep these permissions enabled for at least one active administrator so the local workspace remains manageable.");
+        if (!anotherAdminCanManage)
+          throw new Error(
+            "Keep these permissions enabled for at least one active administrator so the local workspace remains manageable.",
+          );
       }
     }
     const changes = PERMISSION_DEFS.filter(({ id }) => draft[id] !== Boolean(data.permissions[role][id]));
@@ -2476,17 +2744,22 @@ async function handleAction(button, clickEvent) {
     closeModal();
   } else if (action === "calendar-prev") {
     calendarMonth--;
-    if (calendarMonth < 0) { calendarMonth = 11; calendarYear--; }
+    if (calendarMonth < 0) {
+      calendarMonth = 11;
+      calendarYear--;
+    }
     render();
   } else if (action === "calendar-next") {
     calendarMonth++;
-    if (calendarMonth > 11) { calendarMonth = 0; calendarYear++; }
+    if (calendarMonth > 11) {
+      calendarMonth = 0;
+      calendarYear++;
+    }
     render();
   } else if (action === "calendar-day") {
     const date = button.dataset.date || "";
     const now = Date.now();
-    const isDoubleClick = clickEvent.detail === 2 ||
-      (lastCalendarClick.date === date && now - lastCalendarClick.at < 450);
+    const isDoubleClick = clickEvent.detail === 2 || (lastCalendarClick.date === date && now - lastCalendarClick.at < 450);
     lastCalendarClick = { date, at: now };
     if (isDoubleClick && button.classList.contains("calendar-cell--has-events")) {
       lastCalendarClick = { date: "", at: 0 };
@@ -2558,10 +2831,13 @@ async function handleAction(button, clickEvent) {
     render();
   } else if (action === "edit-report-draft") {
     reportDraft.step = "details";
-    reportMapSelection = reportDraft.latitude === null ? null : {
-      latitude: reportDraft.latitude,
-      longitude: reportDraft.longitude,
-    };
+    reportMapSelection =
+      reportDraft.latitude === null
+        ? null
+        : {
+            latitude: reportDraft.latitude,
+            longitude: reportDraft.longitude,
+          };
     render();
   } else if (action === "submit-report") {
     submitReportDraft().catch((error) => toast(error.message, "error"));
@@ -2583,21 +2859,31 @@ async function handleSubmit(formEvent) {
       await createResident(fields);
     } else if (formId === "report-draft-form") {
       const draft = reportDraftFromForm(fields);
-      if (!CATEGORIES.includes(draft.category) ||
-          !isResidentArea(draft.area)) {
+      if (!CATEGORIES.includes(draft.category) || !isResidentArea(draft.area)) {
         throw new Error("Choose a valid area within Palsara barangay.");
       }
-      if (!draft.locationDetail || draft.locationDetail.length > 250) throw new Error("Enter a street or nearby landmark no longer than 250 characters.");
+      if (!draft.locationDetail || draft.locationDetail.length > 250)
+        throw new Error("Enter a street or nearby landmark no longer than 250 characters.");
       if (draft.description.length < 12) throw new Error("Describe the concern in at least 12 characters.");
-      if ((draft.latitude === null) !== (draft.longitude === null) ||
-          (draft.latitude !== null && (!Number.isFinite(draft.latitude) || draft.latitude < -90 || draft.latitude > 90 ||
-            !Number.isFinite(draft.longitude) || draft.longitude < -180 || draft.longitude > 180))) {
+      if (
+        (draft.latitude === null) !== (draft.longitude === null) ||
+        (draft.latitude !== null &&
+          (!Number.isFinite(draft.latitude) ||
+            draft.latitude < -90 ||
+            draft.latitude > 90 ||
+            !Number.isFinite(draft.longitude) ||
+            draft.longitude < -180 ||
+            draft.longitude > 180))
+      ) {
         throw new Error("Choose a valid map location or clear the pin before continuing.");
       }
-      reportMapSelection = draft.latitude === null ? null : {
-        latitude: draft.latitude,
-        longitude: draft.longitude,
-      };
+      reportMapSelection =
+        draft.latitude === null
+          ? null
+          : {
+              latitude: draft.latitude,
+              longitude: draft.longitude,
+            };
       reportDraft = draft;
       render();
     } else if (formId === "report-status-form") {
@@ -2833,8 +3119,7 @@ app.addEventListener("change", (changeEvent) => {
       const status = app.querySelector("#announcement-map-status");
       if (status) status.textContent = "No pin selected.";
     }
-  }
-  else if (target.matches("#calendar-event-has-location")) {
+  } else if (target.matches("#calendar-event-has-location")) {
     calendarEventMapExpanded = target.checked;
     const region = app.querySelector("#calendar-event-map-region");
     if (region) region.hidden = !target.checked;
@@ -2855,8 +3140,7 @@ app.addEventListener("change", (changeEvent) => {
       const status = app.querySelector("#calendar-event-map-status");
       if (status) status.textContent = "No pin selected.";
     }
-  }
-  else if (target.matches("#user-form [name=role]")) {
+  } else if (target.matches("#user-form [name=role]")) {
     const areaField = app.querySelector("#user-form [name=area]");
     if (!areaField) return;
     const areas = locationAreas();
@@ -2870,9 +3154,10 @@ app.addEventListener("change", (changeEvent) => {
     }
     const availabilityField = app.querySelector(".availability-field");
     availabilityField.hidden = target.value !== "official";
-    availabilityField.querySelectorAll("[name=availableDays]").forEach((field) => { field.disabled = target.value !== "official"; });
-  }
-  else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
+    availabilityField.querySelectorAll("[name=availableDays]").forEach((field) => {
+      field.disabled = target.value !== "official";
+    });
+  } else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
     const query = app.querySelector("[data-search-input]")?.value || "";
     refreshSearch(query);
   }
@@ -2891,9 +3176,11 @@ document.addEventListener("keydown", (keyEvent) => {
   if (keyEvent.key !== "Tab") return;
   const dialog = app.querySelector(".modal-backdrop .modal, #mobile-navigation:not([hidden]) .mobile-drawer");
   if (!dialog) return;
-  const focusable = [...dialog.querySelectorAll(
-    'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  )].filter((element) => element.getClientRects().length > 0);
+  const focusable = [
+    ...dialog.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((element) => element.getClientRects().length > 0);
   if (!focusable.length) {
     keyEvent.preventDefault();
     dialog.focus();

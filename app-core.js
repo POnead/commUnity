@@ -18,15 +18,7 @@ const REPORT_TRANSITIONS = {
   Resolved: [],
 };
 const RESPONSE_DEADLINE_DAYS = { High: 1, Medium: 3, Low: 7 };
-const COLLECTION_STATUSES = [
-  "Scheduled",
-  "On the way",
-  "Collecting",
-  "Completed",
-  "Delayed",
-  "Cancelled",
-  "Rescheduled",
-];
+const COLLECTION_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
 const CATEGORIES = [
   "Road damage",
   "Broken streetlight",
@@ -41,16 +33,16 @@ const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
 const AREAS = ["Purok 1", "Purok 2", "Purok 3", "Purok 4", "Purok 5", "Main Road"];
 const PALSARA_CENTER = [14.01799, 121.09465];
 const PALSARA_BOUNDS = [
-  [13.9900, 121.0600],
-  [14.0450, 121.1300],
+  [13.99, 121.06],
+  [14.045, 121.13],
 ];
 const AREA_COORDINATES = {
   "Purok 1": [14.01799, 121.09465],
-  "Purok 2": [14.0250, 121.0870],
-  "Purok 3": [14.0100, 121.1020],
-  "Purok 4": [14.0050, 121.0900],
-  "Purok 5": [14.0300, 121.0980],
-  "Main Road": [14.0200, 121.0800],
+  "Purok 2": [14.025, 121.087],
+  "Purok 3": [14.01, 121.102],
+  "Purok 4": [14.005, 121.09],
+  "Purok 5": [14.03, 121.098],
+  "Main Road": [14.02, 121.08],
 };
 function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
@@ -62,14 +54,19 @@ function areasInBarangay(barangay) {
   return (data?.locations || []).filter((location) => location.barangay === barangay).map((location) => location.area);
 }
 function locationAreaLabels() {
-  return Object.fromEntries((data?.locations || []).map((location) => [    location.area,
-    `${location.barangay} · ${location.purok}${location.street ? ` · ${location.street}` : ""}`,
-  ]));
+  return Object.fromEntries(
+    (data?.locations || []).map((location) => [
+      location.area,
+      `${location.barangay} · ${location.purok}${location.street ? ` · ${location.street}` : ""}`,
+    ]),
+  );
 }
 function residentAreaOptions(barangay = "Palsara") {
-  const areas = [...new Set((data?.locations || [])
-    .filter((location) => location?.barangay === barangay && location.area)
-    .map((location) => location.area))];
+  const areas = [
+    ...new Set(
+      (data?.locations || []).filter((location) => location?.barangay === barangay && location.area).map((location) => location.area),
+    ),
+  ];
   return areas.length ? areas : AREAS;
 }
 function isResidentArea(area, barangay = "Palsara") {
@@ -83,26 +80,91 @@ function effectivePermissions(user, dataContext = null) {
   const overrides = effectiveData?.accountOverrides?.[user.email] || {};
   const effective = {};
   for (const id of Object.keys(roleDefaults)) {
-    effective[id] = Object.hasOwn(overrides, id)
-      ? Boolean(overrides[id])
-      : Boolean(roleDefaults[id]);
+    effective[id] = Object.hasOwn(overrides, id) ? Boolean(overrides[id]) : Boolean(roleDefaults[id]);
   }
   return effective;
 }
 const DEFAULT_PERMISSIONS = {
-  resident: { submitReports: true, viewSchedules: true, manageReports: false, manageSchedules: false, manageAnnouncements: false, manageUsers: false, manageRoles: false, viewAudit: false },
-  official: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: false, manageRoles: false, viewAudit: false },
-  administrator: { submitReports: false, viewSchedules: true, manageReports: true, manageSchedules: true, manageAnnouncements: true, manageUsers: true, manageRoles: true, viewAudit: true },
+  resident: {
+    submitReports: true,
+    viewSchedules: true,
+    manageReports: false,
+    manageSchedules: false,
+    manageAnnouncements: false,
+    manageUsers: false,
+    manageRoles: false,
+    viewAudit: false,
+  },
+  official: {
+    submitReports: false,
+    viewSchedules: true,
+    manageReports: true,
+    manageSchedules: true,
+    manageAnnouncements: true,
+    manageUsers: false,
+    manageRoles: false,
+    viewAudit: false,
+  },
+  administrator: {
+    submitReports: false,
+    viewSchedules: true,
+    manageReports: true,
+    manageSchedules: true,
+    manageAnnouncements: true,
+    manageUsers: true,
+    manageRoles: true,
+    viewAudit: true,
+  },
 };
 const PERMISSION_DEFS = [
-  { id: "submitReports", label: "Submit and track concerns", group: "Community services", description: "Create concerns and view their updates." },
-  { id: "viewSchedules", label: "View collection schedules", group: "Community services", description: "See posted collection dates and service updates." },
-  { id: "manageReports", label: "Review and update reports", group: "Community services", description: "Review resident concerns and record status updates." },
-  { id: "manageSchedules", label: "Manage collection schedules", group: "Community services", description: "Create, update, and remove service schedules." },
-  { id: "manageAnnouncements", label: "Manage announcements", group: "Community services", description: "Publish or remove updates shared with residents." },
-  { id: "manageUsers", label: "Manage user accounts", group: "Portal administration", description: "Review accounts and adjust access in this workspace." },
-  { id: "manageRoles", label: "Change role permissions", group: "Portal administration", description: "Choose which workspace functions each role can access." },
-  { id: "viewAudit", label: "Review activity history", group: "Portal administration", description: "Review recorded account and service activity." },
+  {
+    id: "submitReports",
+    label: "Submit and track concerns",
+    group: "Community services",
+    description: "Create concerns and view their updates.",
+  },
+  {
+    id: "viewSchedules",
+    label: "View collection schedules",
+    group: "Community services",
+    description: "See posted collection dates and service updates.",
+  },
+  {
+    id: "manageReports",
+    label: "Review and update reports",
+    group: "Community services",
+    description: "Review resident concerns and record status updates.",
+  },
+  {
+    id: "manageSchedules",
+    label: "Manage collection schedules",
+    group: "Community services",
+    description: "Create, update, and remove service schedules.",
+  },
+  {
+    id: "manageAnnouncements",
+    label: "Manage announcements",
+    group: "Community services",
+    description: "Publish or remove updates shared with residents.",
+  },
+  {
+    id: "manageUsers",
+    label: "Manage user accounts",
+    group: "Portal administration",
+    description: "Review accounts and adjust access in this workspace.",
+  },
+  {
+    id: "manageRoles",
+    label: "Change role permissions",
+    group: "Portal administration",
+    description: "Choose which workspace functions each role can access.",
+  },
+  {
+    id: "viewAudit",
+    label: "Review activity history",
+    group: "Portal administration",
+    description: "Review recorded account and service activity.",
+  },
 ];
 
 const app = document.getElementById("app");
@@ -138,15 +200,18 @@ let activityLogLoadedKey = "";
 
 const icons = {
   home: '<path d="m3.5 10 8.5-7 8.5 7"></path><path d="M5.5 9v11h13V9"></path><path d="M9 20v-6h6v6"></path>',
-  calendar: '<rect x="3.5" y="5" width="17" height="16" rx="2"></rect><path d="M7.5 3v4M16.5 3v4M3.5 9h17"></path><path d="M7.5 13h3M7.5 16h6"></path>',
+  calendar:
+    '<rect x="3.5" y="5" width="17" height="16" rx="2"></rect><path d="M7.5 3v4M16.5 3v4M3.5 9h17"></path><path d="M7.5 13h3M7.5 16h6"></path>',
   flag: '<path d="M5 21V4"></path><path d="M5 5c5-3 9 3 14 0v10c-5 3-9-3-14 0"></path>',
   clipboard: '<rect x="5" y="4.5" width="14" height="17" rx="2"></rect><path d="M9 4.5V3h6v1.5M8.5 10h7M8.5 14h7M8.5 18h4"></path>',
   clock: '<circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3.5 2"></path>',
   bell: '<path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"></path>',
   user: '<circle cx="12" cy="8" r="3.5"></circle><path d="M5 20a7 7 0 0 1 14 0"></path>',
-  users: '<path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"></path><circle cx="9.5" cy="7" r="3.5"></circle><path d="M17 11a3.5 3.5 0 1 0-1.2-6.8M17 14.5h1a4 4 0 0 1 4 4V20"></path>',
+  users:
+    '<path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"></path><circle cx="9.5" cy="7" r="3.5"></circle><path d="M17 11a3.5 3.5 0 1 0-1.2-6.8M17 14.5h1a4 4 0 0 1 4 4V20"></path>',
   shield: '<path d="M12 3 19 6v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"></path><path d="m9 12 2 2 4-4"></path>',
-  settings: '<circle cx="12" cy="12" r="3"></circle><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.9 1.1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.9-1.1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2.2l-1.4-1.1L6.9 9.3l1.7.7a8 8 0 0 1 1.9-1.1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.9 1.1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1-.1 2.2Z"></path>',
+  settings:
+    '<circle cx="12" cy="12" r="3"></circle><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.9 1.1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.9-1.1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2.2l-1.4-1.1L6.9 9.3l1.7.7a8 8 0 0 1 1.9-1.1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.9 1.1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1-.1 2.2Z"></path>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m3 7 9 6 9-6"></path>',
   search: '<circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 4 4"></path>',
   chevron: '<path d="m8 10 4 4 4-4"></path>',
@@ -158,7 +223,8 @@ const icons = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"></path>',
   logout: '<path d="M10 17l5-5-5-5M15 12H3M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"></path>',
   eye: '<path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.5"></circle>',
-  image: '<rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m21 15-5-5L5 20"></path>',
+  image:
+    '<rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m21 15-5-5L5 20"></path>',
   download: '<path d="M12 3v12M7 10l5 5 5-5M4 20h16"></path>',
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"></path>',
   leaf: '<path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z"></path><path d="M4 21c3-5 6-8 12-11"></path>',
@@ -173,13 +239,17 @@ function brandMark() {
 }
 
 function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[char]);
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[char],
+  );
 }
 
 function asDate(value) {
@@ -240,7 +310,9 @@ function monthKeyOffset(offset, from = new Date()) {
 }
 
 function normalizeStatus(value) {
-  return String(value || "").toLowerCase().replaceAll(" ", "-");
+  return String(value || "")
+    .toLowerCase()
+    .replaceAll(" ", "-");
 }
 
 function statusPill(value, label = value) {
@@ -249,11 +321,19 @@ function statusPill(value, label = value) {
 
 // "system" is an audit role, not an account role, so it is not part of ROLES.
 function roleLabel(role) {
-  return role === "system" ? "System" : (ROLES[role] || role);
+  return role === "system" ? "System" : ROLES[role] || role;
 }
 
 function initials(name = "") {
-  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0] || "").join("").toUpperCase() || "C";
+  return (
+    name
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0] || "")
+      .join("")
+      .toUpperCase() || "C"
+  );
 }
 
 function idFor(prefix) {
@@ -307,8 +387,11 @@ async function localSave() {
         if (response.status === 409 && !refreshed) {
           const stateResponse = await fetch("/api/state");
           const state = await stateResponse.json();
-          if (stateResponse.ok && state.revision !== dataRevision &&
-              stateMatchesIgnoringNotifications(state.data, JSON.parse(lastPersistedSnapshot || "null"))) {
+          if (
+            stateResponse.ok &&
+            state.revision !== dataRevision &&
+            stateMatchesIgnoringNotifications(state.data, JSON.parse(lastPersistedSnapshot || "null"))
+          ) {
             dataRevision = state.revision;
             refreshed = true;
             continue;
@@ -600,7 +683,8 @@ function addNotification(targetEmail, title, body, reportId = "") {
 }
 
 function addRoleNotification(role, title, body, reportId = "") {
-  data.users.filter((user) => user.role === role && user.status === "Active")
+  data.users
+    .filter((user) => user.role === role && user.status === "Active")
     .forEach((user) => addNotification(user.email, title, body, reportId));
 }
 
@@ -660,7 +744,10 @@ function scheduleClockMinutes(value) {
   return (hours % 12) * 60 + minutes + (match[3].toUpperCase() === "PM" ? 720 : 0);
 }
 
-function scheduleStatusEntry(previous, { status, note = "", date, start, end, at = new Date().toISOString(), actorName = "", actorRole = "" } = {}) {
+function scheduleStatusEntry(
+  previous,
+  { status, note = "", date, start, end, at = new Date().toISOString(), actorName = "", actorRole = "" } = {},
+) {
   if (!COLLECTION_STATUSES.includes(status)) throw new Error("Choose a valid collection status.");
   if (previous && previous.status === status) return null;
   const reason = String(note || "").trim();
@@ -679,8 +766,7 @@ function scheduleStatusEntry(previous, { status, note = "", date, start, end, at
     if (startMinutes < 0 || endMinutes < 0 || endMinutes <= startMinutes) {
       throw new Error("Enter a valid replacement pickup time such as 6:00 AM, with the end time later.");
     }
-    if (previous && replacementDate === previous.date &&
-        replacementStart === previous.start && replacementEnd === previous.end) {
+    if (previous && replacementDate === previous.date && replacementStart === previous.start && replacementEnd === previous.end) {
       throw new Error("Change the pickup date or time so residents can see the replacement.");
     }
     replacement = { date: replacementDate, start: replacementStart, end: replacementEnd };
@@ -715,9 +801,7 @@ function scheduleOccurrenceDates(startDate, frequency, endDate = null) {
   const stepDays = frequency === "Weekly" ? 7 : frequency === "Bi-weekly" ? 14 : 0;
   const dates = [];
   for (let index = 0; ; index += 1) {
-    const candidate = stepDays
-      ? new Date(start.getTime() + index * stepDays * 86400000)
-      : addMonthsUtc(start, index);
+    const candidate = stepDays ? new Date(start.getTime() + index * stepDays * 86400000) : addMonthsUtc(start, index);
     if (candidate > end) break;
     if (dates.length >= MAX_RECURRENCE_OCCURRENCES) throw new Error("Choose a repeat-until date within five years.");
     dates.push(candidate.toISOString().slice(0, 10));
@@ -746,7 +830,9 @@ function actionButton(label, action, variant = "secondary", extra = "", attrs = 
 }
 
 function selectOptions(items, selected, labels = {}) {
-  return items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labels[item] || item)}</option>`).join("");
+  return items
+    .map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labels[item] || item)}</option>`)
+    .join("");
 }
 
 function inputField(label, name, value = "", options = {}) {
@@ -793,9 +879,11 @@ function calendarEventFromForm(fields) {
   };
   const latitude = readOptionalCoordinate(fields.get("latitude"));
   const longitude = readOptionalCoordinate(fields.get("longitude"));
-  if ((latitude === null) !== (longitude === null) ||
-      (latitude !== null && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
-        !Number.isFinite(longitude) || longitude < -180 || longitude > 180))) {
+  if (
+    (latitude === null) !== (longitude === null) ||
+    (latitude !== null &&
+      (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180))
+  ) {
     throw new Error("Choose a valid map location or clear the pin before continuing.");
   }
   return {

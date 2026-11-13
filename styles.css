@@ -204,7 +204,11 @@ a:hover {
   font-weight: 500;
   line-height: 1.2;
   text-decoration: none;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
 }
 
 .button:hover {
@@ -531,7 +535,9 @@ a:hover {
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .nav-link:hover {
@@ -1522,7 +1528,9 @@ a:hover {
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
-  transition: border-color 150ms ease, background-color 150ms ease;
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease;
 }
 
 .availability-day:hover {
@@ -2922,7 +2930,9 @@ a:hover {
   font-size: 14px;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 160ms ease, transform 160ms ease;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
 }
 
 .toast.visible {
@@ -3975,7 +3985,10 @@ a:hover {
   background: var(--surface-soft);
   color: var(--accent-ink, var(--accent));
   cursor: pointer;
-  transition: opacity 0.15s, transform 0.15s, background 0.15s;
+  transition:
+    opacity 0.15s,
+    transform 0.15s,
+    background 0.15s;
   border: 1px solid var(--line);
 }
 
@@ -4037,37 +4050,45 @@ a:hover {
   }
 }
 
-.trend-table, .workload-table {
+.trend-table,
+.workload-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
   margin-top: 8px;
 }
 
-.trend-table th, .workload-table th,
-.trend-table td, .workload-table td {
+.trend-table th,
+.workload-table th,
+.trend-table td,
+.workload-table td {
   text-align: left;
   padding: 8px 10px;
   border-bottom: 1px solid var(--line);
 }
 
-.trend-table th, .workload-table th {
+.trend-table th,
+.workload-table th {
   color: var(--muted);
   font-weight: 600;
   font-size: 12px;
 }
 
-.trend-table td:first-child, .workload-table td:first-child {
+.trend-table td:first-child,
+.workload-table td:first-child {
   font-weight: 550;
   color: var(--ink);
 }
 
 @media (max-width: 640px) {
-  .trend-table, .workload-table {
+  .trend-table,
+  .workload-table {
     font-size: 12px;
   }
-  .trend-table th, .workload-table th,
-  .trend-table td, .workload-table td {
+  .trend-table th,
+  .workload-table th,
+  .trend-table td,
+  .workload-table td {
     padding: 6px 8px;
   }
 }

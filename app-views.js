@@ -16,46 +16,111 @@ function navGroups(role) {
   const pendingApprovalCount =
     (data.calendarEvents || []).filter((event) => event.approvalStatus === "pending").length +
     (data.announcements || []).filter((item) => item.approvalStatus === "pending").length;
-  const groups = role === "resident" ? [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["collection", "Garbage collection", "calendar"], ["report", "Report a concern", "flag"]] },
-    { title: "Your activity", links: [["reports", "My reports", "clipboard"], ["history", "Report history", "clock"], ["notifications", "Notifications", "bell", unreadCount()]] },
-    { title: "Account", links: [["profile", "Profile", "user"]] },
-  ] : role === "official" ? [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["concerns", "Concern queue", "clipboard", openConcernCount, "open concerns"]] },
-    { title: "Services", links: [["collection", "Garbage collection", "calendar"], ["history", "Report history", "clock"], ["announcements", "Announcements", "activity"], ["notifications", "Notifications", "bell", unreadCount()]] },
-    { title: "Account", links: [["profile", "Profile", "user"]] },
-  ] : [
-    { title: "Community", links: [["dashboard", "Overview", "home"], ["calendar", "Calendar", "calendar"], ["reports", "Community reports", "clipboard"], ["approvals", "Approval queue", "check", pendingApprovalCount, "pending requests"]] },
-    { title: "Updates and account", links: [["notifications", "Notifications", "bell", unreadCount()], ["settings", "Settings", "settings"], ["activity", "Activity Log", "activity"]] },
-  ];
+  const groups =
+    role === "resident"
+      ? [
+          {
+            title: "Community",
+            links: [
+              ["dashboard", "Overview", "home"],
+              ["calendar", "Calendar", "calendar"],
+              ["collection", "Garbage collection", "calendar"],
+              ["report", "Report a concern", "flag"],
+            ],
+          },
+          {
+            title: "Your activity",
+            links: [
+              ["reports", "My reports", "clipboard"],
+              ["history", "Report history", "clock"],
+              ["notifications", "Notifications", "bell", unreadCount()],
+            ],
+          },
+          { title: "Account", links: [["profile", "Profile", "user"]] },
+        ]
+      : role === "official"
+        ? [
+            {
+              title: "Community",
+              links: [
+                ["dashboard", "Overview", "home"],
+                ["calendar", "Calendar", "calendar"],
+                ["concerns", "Concern queue", "clipboard", openConcernCount, "open concerns"],
+              ],
+            },
+            {
+              title: "Services",
+              links: [
+                ["collection", "Garbage collection", "calendar"],
+                ["history", "Report history", "clock"],
+                ["announcements", "Announcements", "activity"],
+                ["notifications", "Notifications", "bell", unreadCount()],
+              ],
+            },
+            { title: "Account", links: [["profile", "Profile", "user"]] },
+          ]
+        : [
+            {
+              title: "Community",
+              links: [
+                ["dashboard", "Overview", "home"],
+                ["calendar", "Calendar", "calendar"],
+                ["reports", "Community reports", "clipboard"],
+                ["approvals", "Approval queue", "check", pendingApprovalCount, "pending requests"],
+              ],
+            },
+            {
+              title: "Updates and account",
+              links: [
+                ["notifications", "Notifications", "bell", unreadCount()],
+                ["settings", "Settings", "settings"],
+                ["activity", "Activity Log", "activity"],
+              ],
+            },
+          ];
   return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage({ role, email: currentUser?.email }, key)) }));
 }
 function requiredPermission(role, pageName) {
   const map = {
     resident: { collection: "viewSchedules", report: "submitReports", reports: "submitReports", history: "submitReports" },
     official: { concerns: "manageReports", history: "manageReports", collection: "manageSchedules", announcements: "manageAnnouncements" },
-    administrator: { reports: "manageReports", analytics: "manageReports", users: "manageUsers", locations: "manageUsers", announcements: "manageAnnouncements", roles: "manageRoles", activity: "viewAudit" },
+    administrator: {
+      reports: "manageReports",
+      analytics: "manageReports",
+      users: "manageUsers",
+      locations: "manageUsers",
+      announcements: "manageAnnouncements",
+      roles: "manageRoles",
+      activity: "viewAudit",
+    },
   };
   return map[role]?.[pageName] || "";
 }
 
 function officialReportFilters(reports, activeFilter) {
-  const options = [["all", "All open"], ["Submitted", "Submitted"], ["Under Review", "Under review"], ["In Progress", "In progress"]];
-  return `<div class="filter-row" role="group" aria-label="Filter concerns">${options.map(([value, label]) => {
-    const count = value === "all"
-      ? reports.filter((report) => report.status !== "Resolved").length
-      : reports.filter((report) => report.status === value).length;
-    return `<button type="button" class="filter-button ${activeFilter === value ? "selected" : ""}" data-action="filter-reports" data-value="${esc(value)}" aria-pressed="${activeFilter === value}">${esc(label)} <span class="filter-count">${count}</span></button>`;
-  }).join("")}</div>`;
+  const options = [
+    ["all", "All open"],
+    ["Submitted", "Submitted"],
+    ["Under Review", "Under review"],
+    ["In Progress", "In progress"],
+  ];
+  return `<div class="filter-row" role="group" aria-label="Filter concerns">${options
+    .map(([value, label]) => {
+      const count =
+        value === "all"
+          ? reports.filter((report) => report.status !== "Resolved").length
+          : reports.filter((report) => report.status === value).length;
+      return `<button type="button" class="filter-button ${activeFilter === value ? "selected" : ""}" data-action="filter-reports" data-value="${esc(value)}" aria-pressed="${activeFilter === value}">${esc(label)} <span class="filter-count">${count}</span></button>`;
+    })
+    .join("")}</div>`;
 }
 
 function canOpenPage(user, pageName) {
   const permission = requiredPermission(user?.role, pageName);
   if (!permission) return true;
   const override = user?.email ? data.accountOverrides?.[user.email] : null;
-  const allowed = override && Object.hasOwn(override, permission)
-    ? Boolean(override[permission])
-    : Boolean(data.permissions?.[user?.role]?.[permission]);
+  const allowed =
+    override && Object.hasOwn(override, permission) ? Boolean(override[permission]) : Boolean(data.permissions?.[user?.role]?.[permission]);
   return allowed;
 }
 
@@ -69,7 +134,10 @@ function userAvatar(user, extra = "") {
 
 function checkDataConsistency() {
   const counts = STATUSES.map((status) => data.reports.filter((report) => report.status === status).length);
-  console.assert(counts.reduce((sum, count) => sum + count, 0) === data.reports.length, "Every community report must have one valid status.");
+  console.assert(
+    counts.reduce((sum, count) => sum + count, 0) === data.reports.length,
+    "Every community report must have one valid status.",
+  );
   console.assert(new Set(data.reports.map((report) => report.id)).size === data.reports.length, "Report IDs must be unique.");
   console.assert(new Set(data.schedules.map((schedule) => schedule.id)).size === data.schedules.length, "Schedule IDs must be unique.");
   console.assert(
@@ -79,16 +147,25 @@ function checkDataConsistency() {
 }
 
 function navMarkup(role, page) {
-  return navGroups(role).filter((group) => group.links.length).map((group) => `
+  return navGroups(role)
+    .filter((group) => group.links.length)
+    .map(
+      (group) => `
     <div class="nav-group">
       <p class="nav-group-label">${esc(group.title)}</p>
       <nav class="nav-list" aria-label="${esc(group.title)}">
-        ${group.links.map(([key, label, iconName, count, countLabel = "unread"]) => `
+        ${group.links
+          .map(
+            ([key, label, iconName, count, countLabel = "unread"]) => `
           <a class="nav-link ${key === page ? "active" : ""}" href="${routeUrl(role, key)}" ${key === page ? 'aria-current="page"' : ""} ${count ? `aria-label="${esc(`${label}, ${count} ${countLabel}`)}"` : ""}>
             ${icon(iconName)}<span>${esc(label)}</span>${count ? `<span class="nav-count" aria-hidden="true">${count}</span>` : ""}
-          </a>`).join("")}
+          </a>`,
+          )
+          .join("")}
       </nav>
-    </div>`).join("");
+    </div>`,
+    )
+    .join("");
 }
 
 function pageTitle(role, page) {
@@ -135,7 +212,9 @@ function pageTitle(role, page) {
 
 function shell(role, page, title, description, body, actions = "") {
   const roleLabel = ROLES[role];
-  const date = new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "short", month: "short", day: "numeric" }).format(new Date());
+  const date = new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "short", month: "short", day: "numeric" }).format(
+    new Date(),
+  );
   const account = `<div class="user-chip">${userAvatar(currentUser)}<div class="user-chip-copy"><strong>${esc(currentUser.name)}</strong><span>${esc(roleLabel)}</span></div></div>`;
   return `
     <div class="workspace">
@@ -203,28 +282,36 @@ function panel(title, body, options = {}) {
 }
 
 function reportRows(reports, role) {
-  if (!reports.length) return `<div class="empty-state"><strong>No concerns in this view</strong>When a report is submitted, it will appear here.</div>`;
-  const headers = role === "resident"
-    ? ["Concern", "Priority", "Affected area", "Date submitted", "Status", "Action"]
-    : ["Concern", "Resident", "Priority", "Affected area", "Status", "Action"];
-  const cells = reports.map((report) => {
-    const priority = report.priority || "Medium";
-    const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(displayReportId(report.id))}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
-    const second = role === "resident"
-      ? `<div class="record-meta" role="cell" data-label="Affected area">${esc(report.area)}</div>`
-      : `<div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>`;
-    const third = role === "resident"
-      ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
-      : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
-    const priorityCell = `<div class="record-meta" role="cell" data-label="Priority"><span class="status" data-status="${esc(normalizeStatus(priority))}">${esc(priority)}</span></div>`;
-    const overdueBadge = report.overdue ? `<span class="status-overdue" title="${esc(report.responseOverdue ? "Past the first-response deadline with no staff response yet" : "Past the resolution deadline and still unresolved")}">Overdue</span>` : "";
-    const statusCell = `<div role="cell" data-label="Status">${statusPill(report.status)}${overdueBadge}</div>`;
-    const actionsCell = `<div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>`;
-    const ordered = role === "resident" ? `${priorityCell}${second}${third}` : `${second}${priorityCell}${third}`;
-    return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status} ${priority}`.toLowerCase())}">
+  if (!reports.length)
+    return `<div class="empty-state"><strong>No concerns in this view</strong>When a report is submitted, it will appear here.</div>`;
+  const headers =
+    role === "resident"
+      ? ["Concern", "Priority", "Affected area", "Date submitted", "Status", "Action"]
+      : ["Concern", "Resident", "Priority", "Affected area", "Status", "Action"];
+  const cells = reports
+    .map((report) => {
+      const priority = report.priority || "Medium";
+      const first = `<div role="cell"><button class="text-button record-primary" type="button" data-action="view-report" data-id="${esc(report.id)}">${esc(report.title)}</button><span class="record-secondary">${esc(displayReportId(report.id))}</span>${role === "official" ? `<span class="record-secondary">Assigned to ${esc(report.assignedTo?.name || "no one")}</span>` : ""}</div>`;
+      const second =
+        role === "resident"
+          ? `<div class="record-meta" role="cell" data-label="Affected area">${esc(report.area)}</div>`
+          : `<div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>`;
+      const third =
+        role === "resident"
+          ? `<div class="record-date" role="cell" data-label="Date submitted">${esc(dateLabel(report.submittedAt))}</div>`
+          : `<div class="record-meta" role="cell" data-label="Area">${esc(report.area)}<span class="record-secondary">${esc(dateLabel(report.submittedAt))}</span></div>`;
+      const priorityCell = `<div class="record-meta" role="cell" data-label="Priority"><span class="status" data-status="${esc(normalizeStatus(priority))}">${esc(priority)}</span></div>`;
+      const overdueBadge = report.overdue
+        ? `<span class="status-overdue" title="${esc(report.responseOverdue ? "Past the first-response deadline with no staff response yet" : "Past the resolution deadline and still unresolved")}">Overdue</span>`
+        : "";
+      const statusCell = `<div role="cell" data-label="Status">${statusPill(report.status)}${overdueBadge}</div>`;
+      const actionsCell = `<div class="record-actions" role="cell" data-label="">${role === "official" ? reportAssignmentAction(report) : ""}<button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View</button></div>`;
+      const ordered = role === "resident" ? `${priorityCell}${second}${third}` : `${second}${priorityCell}${third}`;
+      return `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.category} ${report.name} ${report.barangay || ""} ${report.area} ${report.locationDetail || ""} ${report.status} ${priority}`.toLowerCase())}">
       ${first}${ordered}${statusCell}${actionsCell}
     </div>`;
-  }).join("");
+    })
+    .join("");
   return `<div class="records" data-page-size="10" role="table" aria-label="Community concerns"><div class="record-row record-head" role="row">${headers.map((header) => `<span role="columnheader">${esc(header)}</span>`).join("")}</div>${cells}</div>`;
 }
 
@@ -239,25 +326,41 @@ function reportAssignmentAction(report) {
 }
 
 function reportHistoryRows(reports) {
-  const updates = reports.flatMap((report) => report.history.map((item) => ({ report, item })))
+  const updates = reports
+    .flatMap((report) => report.history.map((item) => ({ report, item })))
     .sort((a, b) => asDate(b.item.at) - asDate(a.item.at));
   if (!updates.length) return `<div class="empty-state"><strong>No report updates yet</strong>Status changes will appear here.</div>`;
-  const rows = updates.map(({ report, item }) => `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.name} ${report.category} ${item.status} ${item.note}`.toLowerCase())}">
+  const rows = updates
+    .map(
+      ({
+        report,
+        item,
+      }) => `<div class="record-row filter-item" role="row" data-search="${esc(`${report.id} ${report.title} ${report.name} ${report.category} ${item.status} ${item.note}`.toLowerCase())}">
     <div role="cell"><strong class="record-primary">${esc(report.title)}</strong><span class="record-secondary">${esc(displayReportId(report.id))}</span></div>
     <div class="record-meta" role="cell" data-label="Resident">${esc(report.name)}</div>
     <div role="cell" data-label="Update">${statusPill(item.status)}<span class="record-secondary">${esc(item.note)}</span>${item.actorName ? `<span class="record-secondary">By ${esc(item.actorName)}</span>` : ""}</div>
     <div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div>
     <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-report" data-id="${esc(report.id)}">View report</button></div>
-  </div>`).join("");
+  </div>`,
+    )
+    .join("");
   return `<div class="records" data-page-size="10" role="table" aria-label="Report activity"><div class="record-row record-head" role="row"><span role="columnheader">Concern</span><span role="columnheader">Resident</span><span role="columnheader">Update</span><span role="columnheader">Date and time</span><span role="columnheader">Action</span></div>${rows}</div>`;
 }
 
 function reportFilters(reports, activeFilter) {
-  const options = [["all", "All reports"], ["Submitted", "Submitted"], ["Under Review", "Under review"], ["In Progress", "In progress"], ["Resolved", "Resolved"]];
-  return `<div class="filter-row" role="group" aria-label="Filter reports">${options.map(([value, label]) => {
-    const count = value === "all" ? reports.length : reports.filter((report) => report.status === value).length;
-    return `<button type="button" class="filter-button ${activeFilter === value ? "selected" : ""}" data-action="filter-reports" data-value="${esc(value)}" aria-pressed="${activeFilter === value}">${esc(label)} <span class="filter-count">${count}</span></button>`;
-  }).join("")}</div>`;
+  const options = [
+    ["all", "All reports"],
+    ["Submitted", "Submitted"],
+    ["Under Review", "Under review"],
+    ["In Progress", "In progress"],
+    ["Resolved", "Resolved"],
+  ];
+  return `<div class="filter-row" role="group" aria-label="Filter reports">${options
+    .map(([value, label]) => {
+      const count = value === "all" ? reports.length : reports.filter((report) => report.status === value).length;
+      return `<button type="button" class="filter-button ${activeFilter === value ? "selected" : ""}" data-action="filter-reports" data-value="${esc(value)}" aria-pressed="${activeFilter === value}">${esc(label)} <span class="filter-count">${count}</span></button>`;
+    })
+    .join("")}</div>`;
 }
 
 function searchToolbar(label = "Search concerns by report ID, resident or description") {
@@ -265,51 +368,70 @@ function searchToolbar(label = "Search concerns by report ID, resident or descri
 }
 
 function timelineMarkup(history) {
-  return `<ol class="timeline">${history.map((item, index) => `
-    <li class="timeline-item ${index === 0 ? "" : "future"}"><span class="timeline-dot" aria-hidden="true"></span><div class="timeline-copy"><strong>${esc(item.status)}</strong><span>${esc(item.note)}${item.actorName ? ` · By ${esc(item.actorName)}` : ""} · ${esc(dateTimeLabel(item.at))}</span></div></li>`).join("")}</ol>`;
+  return `<ol class="timeline">${history
+    .map(
+      (item, index) => `
+    <li class="timeline-item ${index === 0 ? "" : "future"}"><span class="timeline-dot" aria-hidden="true"></span><div class="timeline-copy"><strong>${esc(item.status)}</strong><span>${esc(item.note)}${item.actorName ? ` · By ${esc(item.actorName)}` : ""} · ${esc(dateTimeLabel(item.at))}</span></div></li>`,
+    )
+    .join("")}</ol>`;
 }
 
 function reportDetail(report, role) {
   const isResident = role === "resident";
-  const nextStatuses = report.status === "Resolved" ? [] : (REPORT_TRANSITIONS[report.status] || []);
-  const needsNote = nextStatuses.length ? `<p class="field-help">Add an update note for the resident. Marking a concern <strong>Resolved</strong> requires a resolution explanation.</p>` : "";
-  const statusForm = role === "official" && nextStatuses.length ? `
+  const nextStatuses = report.status === "Resolved" ? [] : REPORT_TRANSITIONS[report.status] || [];
+  const needsNote = nextStatuses.length
+    ? `<p class="field-help">Add an update note for the resident. Marking a concern <strong>Resolved</strong> requires a resolution explanation.</p>`
+    : "";
+  const statusForm =
+    role === "official" && nextStatuses.length
+      ? `
     <form class="form-stack" id="report-status-form">
       <input type="hidden" name="reportId" value="${esc(report.id)}">
       ${selectField("Update status", "status", nextStatuses, report.status)}
       <div class="form-field"><label for="status-note">Update for the resident</label><textarea class="textarea" id="status-note" name="note" maxlength="400"></textarea></div>
       ${needsNote}
       <div class="form-actions"><button class="button" type="submit">Save report update</button></div>
-    </form>` : role === "official"
-      ? `<p class="muted small">This concern is resolved. Residents can confirm it was addressed or request that it be reopened.</p>`
-      : "";
+    </form>`
+      : role === "official"
+        ? `<p class="muted small">This concern is resolved. Residents can confirm it was addressed or request that it be reopened.</p>`
+        : "";
   const photos = (report.photos || []).length
     ? `<div class="photo-preview">${report.photos.map((photo) => `<a class="photo-thumb" href="${esc(photo.photoUrl)}" target="_blank" rel="noopener" aria-label="Open report photo ${esc(photo.name)}"><img src="${esc(photo.photoUrl)}" alt="Photo attached to ${esc(report.id)}"></a>`).join("")}</div>`
     : `<p class="muted small">No photo was attached to this report.</p>`;
   const hasMapPin = Number.isFinite(report.latitude) && Number.isFinite(report.longitude);
-  const reportLocation = role !== "administrator"
-    ? panel("Exact map location", hasMapPin
-      ? `<div id="report-detail-map" class="report-map-canvas report-detail-map" data-latitude="${report.latitude}" data-longitude="${report.longitude}" role="region" aria-label="Map centered on this concern's reported location"></div><p class="map-status" id="report-detail-map-status" role="status" aria-live="polite">Map pin at ${report.latitude.toFixed(6)}, ${report.longitude.toFixed(6)}.</p><a class="text-button map-directions-link" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open directions in Google Maps</a>`
-      : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`)
-    : "";
+  const reportLocation =
+    role !== "administrator"
+      ? panel(
+          "Exact map location",
+          hasMapPin
+            ? `<div id="report-detail-map" class="report-map-canvas report-detail-map" data-latitude="${report.latitude}" data-longitude="${report.longitude}" role="region" aria-label="Map centered on this concern's reported location"></div><p class="map-status" id="report-detail-map-status" role="status" aria-live="polite">Map pin at ${report.latitude.toFixed(6)}, ${report.longitude.toFixed(6)}.</p><a class="text-button map-directions-link" href="https://www.google.com/maps/search/?api=1&amp;query=${encodeURIComponent(`${report.latitude},${report.longitude}`)}" target="_blank" rel="noopener noreferrer">Open directions in Google Maps</a>`
+            : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`,
+        )
+      : "";
   const priority = report.priority || "Medium";
-  const followUpLimit = Object.hasOwn(FOLLOW_UP_LIMITS, priority)
-    ? FOLLOW_UP_LIMITS[priority]
-    : FOLLOW_UP_LIMITS.Medium;
+  const followUpLimit = Object.hasOwn(FOLLOW_UP_LIMITS, priority) ? FOLLOW_UP_LIMITS[priority] : FOLLOW_UP_LIMITS.Medium;
   const followUpCount = Number(report.followUpCount || 0);
   const followUpRemaining = followUpLimit === null ? null : Math.max(0, followUpLimit - followUpCount);
   const followUpsOpen = report.status !== "Resolved" && (followUpLimit === null || followUpRemaining > 0);
-  const followUpNote = report.status === "Resolved"
-    ? "This concern is resolved. Follow-ups are closed."
-    : followUpLimit === null
-      ? `${priority} priority · Unlimited follow-ups.`
-      : `${priority} priority · ${followUpRemaining} of ${followUpLimit} follow-ups remaining.`;
+  const followUpNote =
+    report.status === "Resolved"
+      ? "This concern is resolved. Follow-ups are closed."
+      : followUpLimit === null
+        ? `${priority} priority · Unlimited follow-ups.`
+        : `${priority} priority · ${followUpRemaining} of ${followUpLimit} follow-ups remaining.`;
   const followUpForm = isResident
-    ? panel("Need to add context?", `<p class="muted small">${esc(followUpNote)}</p>${followUpsOpen ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" required maxlength="1000"></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : ""}`)
+    ? panel(
+        "Need to add context?",
+        `<p class="muted small">${esc(followUpNote)}</p>${followUpsOpen ? `<form id="follow-up-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><div class="form-field"><label for="follow-up-message">Follow-up message</label><textarea class="textarea" id="follow-up-message" name="message" required maxlength="1000"></textarea></div><div class="form-actions"><button class="button secondary" type="submit">Follow Up</button></div></form>` : ""}`,
+      )
     : "";
-  const priorityForm = role === "official" || role === "administrator"
-    ? panel("Concern priority", `<form id="report-priority-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><p class="muted small">Residents choose this at submission; staff can adjust it here.</p>${selectField("Priority", "priority", REPORT_PRIORITIES, priority)}<div class="form-actions"><button class="button secondary" type="submit">Update priority</button></div></form>`)
-    : "";
+  const priorityForm =
+    role === "official" || role === "administrator"
+      ? panel(
+          "Concern priority",
+          `<form id="report-priority-form" class="form-stack"><input type="hidden" name="reportId" value="${esc(report.id)}"><p class="muted small">Residents choose this at submission; staff can adjust it here.</p>${selectField("Priority", "priority", REPORT_PRIORITIES, priority)}<div class="form-actions"><button class="button secondary" type="submit">Update priority</button></div></form>`,
+        )
+      : "";
   const body = `
     <div class="content-stack">
       <div class="profile-layout">
@@ -329,9 +451,14 @@ function reportDetail(report, role) {
           ${panel("Attached photos", photos)}
           ${followUpForm}
           ${role === "official" ? panel("Record an update", statusForm) : ""}
-          ${isResident && report.status === "Resolved"
-            ? panel("Close or reopen this concern", `<div class="form-actions"><button class="button" type="button" data-action="confirm-report" data-id="${esc(report.id)}">Confirm addressed</button><button class="button secondary small" type="button" data-action="reopen-report" data-id="${esc(report.id)}">Request reopening</button></div><p class="field-help">Confirming marks the concern as addressed. Reopening returns it to the concern queue with your reason so staff can review it again.</p>`)
-            : ""}
+          ${
+            isResident && report.status === "Resolved"
+              ? panel(
+                  "Close or reopen this concern",
+                  `<div class="form-actions"><button class="button" type="button" data-action="confirm-report" data-id="${esc(report.id)}">Confirm addressed</button><button class="button secondary small" type="button" data-action="reopen-report" data-id="${esc(report.id)}">Request reopening</button></div><p class="field-help">Confirming marks the concern as addressed. Reopening returns it to the concern queue with your reason so staff can review it again.</p>`,
+                )
+              : ""
+          }
         </div>
         <div class="content-stack">
           ${role !== "resident" ? `<section class="panel"><header class="panel-head"><div><h2>Reported by</h2></div></header><div class="panel-body"><div class="account-summary">${userAvatar({ name: report.name })}<div><strong>${esc(report.name)}</strong><span>${esc((getUser(report.userEmail)?.area || report.area) + " · Resident")}</span><span>${esc(report.userEmail)}</span></div></div></div></section>` : ""}
@@ -346,52 +473,63 @@ function reportDetail(report, role) {
 }
 
 function upcomingSchedule(area = currentUser.area) {
-  return sortedSchedules(data.schedules).find((schedule) =>
-    (!area || schedule.area === area || currentUser.role !== "resident") &&
-    schedule.date >= todayISO() &&
-    !["Cancelled", "Completed"].includes(schedule.status),
+  return sortedSchedules(data.schedules).find(
+    (schedule) =>
+      (!area || schedule.area === area || currentUser.role !== "resident") &&
+      schedule.date >= todayISO() &&
+      !["Cancelled", "Completed"].includes(schedule.status),
   );
 }
 
 function scheduleHistoryMarkup(history = []) {
-  if (!history.length) return `<div class="empty-state"><strong>No status changes recorded</strong>Updates will appear here as the barangay works through this pickup.</div>`;
-  return `<ol class="timeline">${[...history].reverse().map((item, index) => {
-    const transition = item.previousStatus ? `${item.previousStatus} → ${item.status}` : item.status;
-    const replacement = item.status === "Rescheduled" && item.replacementDate
-      ? `<span>Replacement pickup: ${esc(dateLabel(item.replacementDate, { weekday: "long", month: "long", day: "numeric" }))}, ${esc(item.replacementStart || "")}–${esc(item.replacementEnd || "")}</span>`
-      : "";
-    return `<li class="timeline-item ${index === 0 ? "" : "future"}"><span class="timeline-dot" aria-hidden="true"></span><div class="timeline-copy"><strong>${esc(transition)}</strong>${replacement}<span>${esc(item.note || "Status updated.")}${item.actorName ? ` · By ${esc(item.actorName)}` : ""} · ${esc(dateTimeLabel(item.at))}</span></div></li>`;
-  }).join("")}</ol>`;
+  if (!history.length)
+    return `<div class="empty-state"><strong>No status changes recorded</strong>Updates will appear here as the barangay works through this pickup.</div>`;
+  return `<ol class="timeline">${[...history]
+    .reverse()
+    .map((item, index) => {
+      const transition = item.previousStatus ? `${item.previousStatus} → ${item.status}` : item.status;
+      const replacement =
+        item.status === "Rescheduled" && item.replacementDate
+          ? `<span>Replacement pickup: ${esc(dateLabel(item.replacementDate, { weekday: "long", month: "long", day: "numeric" }))}, ${esc(item.replacementStart || "")}–${esc(item.replacementEnd || "")}</span>`
+          : "";
+      return `<li class="timeline-item ${index === 0 ? "" : "future"}"><span class="timeline-dot" aria-hidden="true"></span><div class="timeline-copy"><strong>${esc(transition)}</strong>${replacement}<span>${esc(item.note || "Status updated.")}${item.actorName ? ` · By ${esc(item.actorName)}` : ""} · ${esc(dateTimeLabel(item.at))}</span></div></li>`;
+    })
+    .join("")}</ol>`;
 }
 
 function scheduleRows(schedules, canEdit = false) {
-  if (!schedules.length) return `<div class="empty-state"><strong>No collection schedules</strong>Schedules for this area will appear here when the barangay posts them.</div>`;
+  if (!schedules.length)
+    return `<div class="empty-state"><strong>No collection schedules</strong>Schedules for this area will appear here when the barangay posts them.</div>`;
   return `<div class="records" data-page-size="10" role="table" aria-label="Collection schedule">
     <div class="record-row record-head schedule-record-head" role="row"><span role="columnheader">Area and service</span><span role="columnheader">Collection date</span><span role="columnheader">Collection window</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>
-    ${schedules.map((schedule) => {
-      const latest = (schedule.history || []).at(-1);
-      const statusDetail = schedule.status === "Rescheduled" && latest?.replacementDate
-        ? `<span class="record-secondary">Moved from ${esc(dateLabel(latest.previousDate || schedule.date))} to ${esc(dateLabel(latest.replacementDate))}</span>`
-        : ["Delayed", "Cancelled"].includes(schedule.status) && latest?.note
-          ? `<span class="record-secondary">${esc(latest.note)}</span>`
-          : "";
-      return `<div class="record-row schedule-record filter-item" role="row" data-search="${esc(`${schedule.id} ${schedule.area} ${schedule.zone} ${schedule.wasteType} ${schedule.status}`.toLowerCase())}">
+    ${schedules
+      .map((schedule) => {
+        const latest = (schedule.history || []).at(-1);
+        const statusDetail =
+          schedule.status === "Rescheduled" && latest?.replacementDate
+            ? `<span class="record-secondary">Moved from ${esc(dateLabel(latest.previousDate || schedule.date))} to ${esc(dateLabel(latest.replacementDate))}</span>`
+            : ["Delayed", "Cancelled"].includes(schedule.status) && latest?.note
+              ? `<span class="record-secondary">${esc(latest.note)}</span>`
+              : "";
+        return `<div class="record-row schedule-record filter-item" role="row" data-search="${esc(`${schedule.id} ${schedule.area} ${schedule.zone} ${schedule.wasteType} ${schedule.status}`.toLowerCase())}">
       <div role="cell"><strong class="record-primary">${esc(schedule.wasteType)}</strong><span class="record-secondary">${esc(schedule.area)} · ${esc(schedule.zone)}</span></div>
       <div class="record-date" role="cell" data-label="Collection date">${esc(dateLabel(schedule.date))}<span class="record-secondary">${esc(new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "long" }).format(asDate(schedule.date)))}</span></div>
       <div class="record-meta" role="cell" data-label="Collection window">${esc(schedule.start)} – ${esc(schedule.end)}<span class="record-secondary">${esc(schedule.team)}</span></div>
       <div role="cell" data-label="Status">${statusPill(schedule.status)}${statusDetail}</div>
       <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-schedule" data-id="${esc(schedule.id)}">Details</button>${canEdit ? `<button class="button secondary small" type="button" data-action="edit-schedule" data-id="${esc(schedule.id)}">Edit</button>` : `<span class="record-meta">${esc(schedule.frequency)}</span>`}</div>
     </div>`;
-    }).join("")}</div>`;
+      })
+      .join("")}</div>`;
 }
 
 function dashboardResident() {
   const reports = userReports();
   const next = upcomingSchedule(currentUser.area);
   const latest = sortedReports(reports)
-    .sort((a, b) =>
-      Number(["Submitted", "Under Review"].includes(b.status)) - Number(["Submitted", "Under Review"].includes(a.status)) ||
-      asDate(b.updatedAt) - asDate(a.updatedAt)
+    .sort(
+      (a, b) =>
+        Number(["Submitted", "Under Review"].includes(b.status)) - Number(["Submitted", "Under Review"].includes(a.status)) ||
+        asDate(b.updatedAt) - asDate(a.updatedAt),
     )
     .slice(0, 4);
   const actions = linkButton(`${icon("plus")} Report a concern`, routeUrl("resident", "report"), "");
@@ -412,9 +550,10 @@ function dashboardResident() {
 function canManageCalendarEvents() {
   const permission = "manageSchedules";
   const override = data.accountOverrides?.[currentUser?.email];
-  const allowed = override && Object.hasOwn(override, permission)
-    ? Boolean(override[permission])
-    : Boolean(data.permissions?.[currentUser?.role]?.[permission]);
+  const allowed =
+    override && Object.hasOwn(override, permission)
+      ? Boolean(override[permission])
+      : Boolean(data.permissions?.[currentUser?.role]?.[permission]);
   return Boolean(allowed) && ["official", "administrator"].includes(currentUser?.role);
 }
 
@@ -447,7 +586,12 @@ function calendarPage() {
         latitude: item.latitude ?? null,
         longitude: item.longitude ?? null,
       })),
-    ...schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`, kind: "Collection" })),
+    ...schedules.map((item) => ({
+      date: item.date,
+      title: `${item.wasteType} collection`,
+      detail: `${item.start}–${item.end} · ${item.area} · ${item.zone}`,
+      kind: "Collection",
+    })),
     ...activeEvents,
   ];
   const byDate = new Map();
@@ -457,7 +601,20 @@ function calendarPage() {
     byDate.get(event.date).push(event);
   }
 
-  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
   const firstDay = new Date(calendarYear, calendarMonth, 1);
   const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
   const startWeekday = firstDay.getDay();
@@ -471,31 +628,46 @@ function calendarPage() {
   while (cells.length % 7 !== 0) cells.push(null);
 
   const today = todayISO();
-  const grid = cells.map((cell) => {
-    if (!cell) return `<div class="calendar-cell calendar-cell--blank" aria-hidden="true"></div>`;
-    const hasEvents = cell.events.length > 0;
-    const pending = cell.events.some((event) => event.status === "pending");
-    const classes = [
-      "calendar-cell",
-      hasEvents ? "calendar-cell--has-events" : "",
-      pending ? "calendar-cell--pending" : "",
-      cell.date === today ? "calendar-cell--today" : "",
-      cell.date === calendarSelectedDate ? "calendar-cell--selected" : "",
-    ].filter(Boolean).join(" ");
-    const cellEvents = cell.events.slice(0, 2).map((event) => `<span class="calendar-cell-event${event.status === "pending" ? " calendar-cell-event--pending" : ""}">${esc(event.title)}</span>`).join("");
-    const more = cell.events.length > 2 ? `<span class="calendar-cell-more">+${cell.events.length - 2} more</span>` : "";
-    const detailsHint = hasEvents ? `, ${cell.events.length} event${cell.events.length === 1 ? "" : "s"}; double-click to view details` : "";
-    const viewHint = hasEvents ? `<span class="calendar-cell-view" aria-hidden="true" title="Double-click to view event details">${icon("arrow", "calendar-cell-view-icon")}</span>` : "";
-    return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}${detailsHint}"><span class="calendar-day-number">${cell.day}</span>${hasEvents ? `<span class="calendar-cell-events">${cellEvents}${more}</span>` : ""}${viewHint}</button>`;
-  }).join("");
+  const grid = cells
+    .map((cell) => {
+      if (!cell) return `<div class="calendar-cell calendar-cell--blank" aria-hidden="true"></div>`;
+      const hasEvents = cell.events.length > 0;
+      const pending = cell.events.some((event) => event.status === "pending");
+      const classes = [
+        "calendar-cell",
+        hasEvents ? "calendar-cell--has-events" : "",
+        pending ? "calendar-cell--pending" : "",
+        cell.date === today ? "calendar-cell--today" : "",
+        cell.date === calendarSelectedDate ? "calendar-cell--selected" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const cellEvents = cell.events
+        .slice(0, 2)
+        .map(
+          (event) =>
+            `<span class="calendar-cell-event${event.status === "pending" ? " calendar-cell-event--pending" : ""}">${esc(event.title)}</span>`,
+        )
+        .join("");
+      const more = cell.events.length > 2 ? `<span class="calendar-cell-more">+${cell.events.length - 2} more</span>` : "";
+      const detailsHint = hasEvents
+        ? `, ${cell.events.length} event${cell.events.length === 1 ? "" : "s"}; double-click to view details`
+        : "";
+      const viewHint = hasEvents
+        ? `<span class="calendar-cell-view" aria-hidden="true" title="Double-click to view event details">${icon("arrow", "calendar-cell-view-icon")}</span>`
+        : "";
+      return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}${detailsHint}"><span class="calendar-day-number">${cell.day}</span>${hasEvents ? `<span class="calendar-cell-events">${cellEvents}${more}</span>` : ""}${viewHint}</button>`;
+    })
+    .join("");
 
-  const eventMeta = (event) => event.kind === "Event"
-    ? `<div class="calendar-event-meta">${statusPill(calendarStatusLabel(event.status))}${event.createdByName ? `<span>Requested by ${esc(event.createdByName)}</span>` : ""}</div>`
-    : event.kind === "Announcement" && event.isEvent
-      ? `<div class="calendar-event-meta">${announcementEventMarkup(event)}</div>`
-      : "";
+  const eventMeta = (event) =>
+    event.kind === "Event"
+      ? `<div class="calendar-event-meta">${statusPill(calendarStatusLabel(event.status))}${event.createdByName ? `<span>Requested by ${esc(event.createdByName)}</span>` : ""}</div>`
+      : event.kind === "Announcement" && event.isEvent
+        ? `<div class="calendar-event-meta">${announcementEventMarkup(event)}</div>`
+        : "";
 
-  const selectedEvents = calendarSelectedDate ? (byDate.get(calendarSelectedDate) || []) : [];
+  const selectedEvents = calendarSelectedDate ? byDate.get(calendarSelectedDate) || [] : [];
   const canAddHere = canManage && calendarSelectedDate && calendarSelectedDate >= today;
   const addHere = canAddHere
     ? `<button class="button small" type="button" data-action="add-calendar-event" data-date="${esc(calendarSelectedDate)}">${icon("plus")} Add event</button>`
@@ -504,34 +676,54 @@ function calendarPage() {
     ? `<div class="calendar-details"><div class="calendar-details-head"><h3>${esc(dateLabel(calendarSelectedDate, { weekday: "long", month: "long", day: "numeric", year: "numeric" }))}</h3>${addHere}</div>${selectedEvents.length ? selectedEvents.map((event) => `<div class="calendar-event"><div class="calendar-date"><strong>${esc(event.kind)}</strong></div><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p>${eventMeta(event)}</div></div>`).join("") : `<div class="empty-state"><strong>No events</strong>Nothing is scheduled on this date.${canManage && calendarSelectedDate >= today ? " Use Add event to request one." : ""}</div>`}</div>`
     : `<div class="calendar-details"><p class="muted small">Select a date to see event details.${canManage ? " Use Add event there to request an event." : ""}</p></div>`;
 
-  const upcoming = activeEvents.concat(
-    data.announcements
-      .filter((item) => item.approvalStatus === "approved")
-      .map((item) => ({
-        id: String(item.id),
+  const upcoming = activeEvents
+    .concat(
+      data.announcements
+        .filter((item) => item.approvalStatus === "approved")
+        .map((item) => ({
+          id: String(item.id),
+          date: item.date,
+          title: item.title,
+          detail: item.detail,
+          kind: "Announcement",
+          status: item.approvalStatus,
+          isEvent: Boolean(item.isEvent),
+          latitude: item.latitude ?? null,
+          longitude: item.longitude ?? null,
+        })),
+      schedules.map((item) => ({
         date: item.date,
-        title: item.title,
-        detail: item.detail,
-        kind: "Announcement",
-        status: item.approvalStatus,
-        isEvent: Boolean(item.isEvent),
-        latitude: item.latitude ?? null,
-        longitude: item.longitude ?? null,
+        title: `${item.wasteType} collection`,
+        detail: `${item.start}–${item.end} · ${item.area}`,
+        kind: "Collection",
+        status: "approved",
       })),
-    schedules.map((item) => ({ date: item.date, title: `${item.wasteType} collection`, detail: `${item.start}–${item.end} · ${item.area}`, kind: "Collection", status: "approved" })),
-  ).filter((event) => event.date && event.date >= today).sort((a, b) => asDate(a.date) - asDate(b.date)).slice(0, 10);
+    )
+    .filter((event) => event.date && event.date >= today)
+    .sort((a, b) => asDate(a.date) - asDate(b.date))
+    .slice(0, 10);
   const upcomingList = upcoming.length
-    ? upcoming.map((event) => `<article class="calendar-event"><div class="calendar-date"><strong>${esc(dateLabel(event.date, { day: "numeric", month: "short" }))}</strong><span>${esc(event.kind)}</span></div><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p>${eventMeta(event)}</div></article>`).join("")
+    ? upcoming
+        .map(
+          (event) =>
+            `<article class="calendar-event"><div class="calendar-date"><strong>${esc(dateLabel(event.date, { day: "numeric", month: "short" }))}</strong><span>${esc(event.kind)}</span></div><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p>${eventMeta(event)}</div></article>`,
+        )
+        .join("")
     : `<div class="empty-state"><strong>No upcoming events</strong>Announcements and collection schedules will appear here.</div>`;
 
   const myRequests = calendarEvents.filter((event) => event.status !== "approved" && event.createdBy === currentUser?.id);
-  const requestRow = (event) => `<article class="calendar-request"><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p><span class="record-secondary">${esc(dateLabel(event.date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}${event.createdByName ? ` · Requested by ${esc(event.createdByName)}` : ""}</span>${event.status === "declined" && event.declineReason ? `<span class="calendar-event-reason">Reason: ${esc(event.declineReason)}</span>` : ""}</div>${statusPill(calendarStatusLabel(event.status))}</article>`;
-  const requestsPanel = currentUser?.role === "official"
-    ? panel("Your event requests", myRequests.length
-      ? `<div class="calendar-requests">${myRequests.map(requestRow).join("")}</div>`
-      : `<div class="empty-state"><strong>No requests yet</strong>Events you request appear here until the administrator reviews them.</div>`,
-      { subtitle: "Events you requested that are waiting for approval or were declined." })
-    : "";
+  const requestRow = (event) =>
+    `<article class="calendar-request"><div><h4>${esc(event.title)}</h4><p>${esc(event.detail)}</p><span class="record-secondary">${esc(dateLabel(event.date, { weekday: "short", month: "short", day: "numeric", year: "numeric" }))}${event.createdByName ? ` · Requested by ${esc(event.createdByName)}` : ""}</span>${event.status === "declined" && event.declineReason ? `<span class="calendar-event-reason">Reason: ${esc(event.declineReason)}</span>` : ""}</div>${statusPill(calendarStatusLabel(event.status))}</article>`;
+  const requestsPanel =
+    currentUser?.role === "official"
+      ? panel(
+          "Your event requests",
+          myRequests.length
+            ? `<div class="calendar-requests">${myRequests.map(requestRow).join("")}</div>`
+            : `<div class="empty-state"><strong>No requests yet</strong>Events you request appear here until the administrator reviews them.</div>`,
+          { subtitle: "Events you requested that are waiting for approval or were declined." },
+        )
+      : "";
 
   const body = `
     <div class="content-stack">
@@ -557,14 +749,16 @@ function calendarPage() {
   return page(currentUser?.role || "resident", "calendar", body, headingAction);
 }
 
-
 function dashboardOfficial() {
   const open = data.reports.filter((report) => report.status !== "Resolved");
   const pending = open.filter((report) => report.status === "Submitted" || report.status === "Under Review");
-  const latest = [...open].sort((a, b) =>
-    Number(["Submitted", "Under Review"].includes(b.status)) - Number(["Submitted", "Under Review"].includes(a.status)) ||
-    asDate(b.updatedAt) - asDate(a.updatedAt),
-  ).slice(0, 5);
+  const latest = [...open]
+    .sort(
+      (a, b) =>
+        Number(["Submitted", "Under Review"].includes(b.status)) - Number(["Submitted", "Under Review"].includes(a.status)) ||
+        asDate(b.updatedAt) - asDate(a.updatedAt),
+    )
+    .slice(0, 5);
   const next = upcomingSchedule("");
   const body = `
     <div class="grid-main-side">
@@ -573,7 +767,17 @@ function dashboardOfficial() {
         ${panel("Collection service", next ? `<div class="account-summary"><span class="item-mark">${icon("calendar")}</span><div><strong>${esc(next.area)} · ${esc(next.wasteType)}</strong><span>${esc(dateLabel(next.date, { weekday: "long", month: "short", day: "numeric" }))} · ${esc(next.start)}–${esc(next.end)}</span><span>${esc(next.zone)} · ${esc(next.team)}</span></div></div><div class="status-line mt-16">${statusPill(next.status)}</div><div class="form-actions">${linkButton("Manage schedules", routeUrl("official", "collection"), "secondary", "small")}</div>` : `<div class="empty-state">No future collections are scheduled.</div>`)}
       </div>
       <div class="content-stack">
-        ${panel("Team activity", `<div class="activity-list">${data.activities.slice(0, 3).map((item) => `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("concern") ? "flag" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.detail)} · ${esc(dateTimeLabel(item.at))}</span></div></div>`).join("")}</div>`, { action: `<a href="${routeUrl("official", "history")}">Report history</a>` })}
+        ${panel(
+          "Team activity",
+          `<div class="activity-list">${data.activities
+            .slice(0, 3)
+            .map(
+              (item) =>
+                `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("concern") ? "flag" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.detail)} · ${esc(dateTimeLabel(item.at))}</span></div></div>`,
+            )
+            .join("")}</div>`,
+          { action: `<a href="${routeUrl("official", "history")}">Report history</a>` },
+        )}
       </div>
     </div>`;
   return page("official", "dashboard", body);
@@ -592,7 +796,19 @@ function dashboardAdmin() {
           ${panel("Open concerns", `<ul class="plain-list"><li><span>Reports needing attention</span><strong class="num">${openReports}</strong></li></ul><div class="form-actions">${linkButton("View community reports", routeUrl("administrator", "reports"), "secondary", "small")}</div>`, { subtitle: "Resident concerns not yet resolved" })}
         </div>
         <div class="content-stack">
-          ${panel("Recent activity", `<div class="activity-list">${data.activities.slice(0, 6).map((item) => `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("account") ? "users" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.actor)} · ${esc(item.detail)}</span></div><span class="item-end">${esc(dateTimeLabel(item.at))}</span></div>`).join("")}</div><div class="form-actions">${linkButton("View activity log", routeUrl("administrator", "activity"), "secondary", "small")}</div>`, { subtitle: "Latest changes in this workspace" })}
+          ${panel(
+            "Recent activity",
+            `<div class="activity-list">${data.activities
+              .slice(0, 6)
+              .map(
+                (item) =>
+                  `<div class="activity-item"><span class="item-mark">${icon(item.action.toLowerCase().includes("account") ? "users" : "activity")}</span><div class="item-copy"><strong>${esc(item.action)}</strong><span>${esc(item.actor)} · ${esc(item.detail)}</span></div><span class="item-end">${esc(dateTimeLabel(item.at))}</span></div>`,
+              )
+              .join(
+                "",
+              )}</div><div class="form-actions">${linkButton("View activity log", routeUrl("administrator", "activity"), "secondary", "small")}</div>`,
+            { subtitle: "Latest changes in this workspace" },
+          )}
         </div>
       </div>
     </div>`;
@@ -612,7 +828,13 @@ function settingsPage() {
     ["Role management", "Workspace permissions", "shield", "roles"],
     ["Email", "SMTP email setup", "mail", "email"],
   ];
-  const rows = (items) => items.map(([title, description, iconName, pageName]) => `<a class="settings-row" href="${routeUrl("administrator", pageName)}"><span class="settings-row-icon">${icon(iconName)}</span><span class="settings-row-copy"><strong>${esc(title)}</strong><small>${esc(description)}</small></span><span class="settings-row-arrow">${icon("arrow")}</span></a>`).join("");
+  const rows = (items) =>
+    items
+      .map(
+        ([title, description, iconName, pageName]) =>
+          `<a class="settings-row" href="${routeUrl("administrator", pageName)}"><span class="settings-row-icon">${icon(iconName)}</span><span class="settings-row-copy"><strong>${esc(title)}</strong><small>${esc(description)}</small></span><span class="settings-row-arrow">${icon("arrow")}</span></a>`,
+      )
+      .join("");
   const body = `<div class="settings-layout"><section class="settings-section"><h2>Account</h2><div class="settings-list">${rows(accountItems)}</div></section><section class="settings-section"><h2>Workspace</h2><div class="settings-list">${rows(workspaceItems)}</div></section></div>`;
   return page("administrator", "settings", body);
 }
@@ -642,26 +864,50 @@ function collectionResident() {
 }
 
 function locationsPage() {
-  const locationRows = data.locations.map((location) => `<div class="record-row filter-item" role="row" data-search="${esc(`${location.area} ${location.barangay} ${location.street} ${location.purok} ${location.landmark}`.toLowerCase())}">
+  const locationRows = data.locations
+    .map(
+      (
+        location,
+      ) => `<div class="record-row filter-item" role="row" data-search="${esc(`${location.area} ${location.barangay} ${location.street} ${location.purok} ${location.landmark}`.toLowerCase())}">
     <div role="cell"><strong class="record-primary">${esc(location.area)}</strong><span class="record-secondary">${esc(location.barangay)}</span></div>
     <div class="record-meta" role="cell" data-label="Street">${esc(location.street || "—")}</div>
     <div class="record-meta" role="cell" data-label="Purok">${esc(location.purok)}</div>
     <div class="record-meta" role="cell" data-label="Landmark">${esc(location.landmark || "—")}</div>
     <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="edit-location" data-id="${esc(location.id)}">Edit</button></div>
-  </div>`).join("");
-  const recyclingRows = data.recyclingLocations.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.name} ${item.barangay} ${item.street} ${item.materials}`.toLowerCase())}">
+  </div>`,
+    )
+    .join("");
+  const recyclingRows = data.recyclingLocations
+    .map(
+      (
+        item,
+      ) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.name} ${item.barangay} ${item.street} ${item.materials}`.toLowerCase())}">
     <div role="cell"><strong class="record-primary">${esc(item.name)}</strong><span class="record-secondary">${esc(item.materials)}</span></div>
     <div class="record-meta" role="cell" data-label="Location">${esc([item.street, item.purok, item.barangay].filter(Boolean).join(", "))}</div>
     <div class="record-meta" role="cell" data-label="Contact">${esc(item.phone || "—")}</div>
     <div role="cell" data-label="Visibility">${statusPill(item.active ? "active" : "inactive", item.active ? "Visible" : "Hidden")}</div>
     <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="edit-recycling" data-id="${esc(item.id)}">Edit</button></div>
-  </div>`).join("");
+  </div>`,
+    )
+    .join("");
   const body = `<div class="content-stack">
-    ${panel("Resident areas", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search community locations</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>
+    ${panel(
+      "Resident areas",
+      `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search community locations</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>
       <div class="records mt-16" data-page-size="10" role="table" aria-label="Community areas"><div class="record-row record-head" role="row"><span role="columnheader">Area and barangay</span><span role="columnheader">Street</span><span role="columnheader">Purok</span><span role="columnheader">Landmark</span><span role="columnheader">Action</span></div>${locationRows || `<div class="empty-state"><strong>No areas configured</strong>Add an area before residents register or file reports.</div>`}</div>`,
-      { subtitle: "Manage the areas residents can select for accounts, reports, and collection schedules.", action: actionButton(`${icon("plus")} Add area`, "add-location", "small") })}
-    ${panel("Recycling and junkshop directory", `<div class="records" data-page-size="10" role="table" aria-label="Recycling locations"><div class="record-row record-head" role="row"><span role="columnheader">Business or site</span><span role="columnheader">Location</span><span role="columnheader">Contact</span><span role="columnheader">Visibility</span><span role="columnheader">Action</span></div>${recyclingRows || `<div class="empty-state"><strong>No directory listings</strong>Add verified recycling or junkshop information for residents.</div>`}</div>`,
-      { subtitle: "Only active listings appear in the resident directory.", action: actionButton(`${icon("plus")} Add listing`, "add-recycling", "small") })}
+      {
+        subtitle: "Manage the areas residents can select for accounts, reports, and collection schedules.",
+        action: actionButton(`${icon("plus")} Add area`, "add-location", "small"),
+      },
+    )}
+    ${panel(
+      "Recycling and junkshop directory",
+      `<div class="records" data-page-size="10" role="table" aria-label="Recycling locations"><div class="record-row record-head" role="row"><span role="columnheader">Business or site</span><span role="columnheader">Location</span><span role="columnheader">Contact</span><span role="columnheader">Visibility</span><span role="columnheader">Action</span></div>${recyclingRows || `<div class="empty-state"><strong>No directory listings</strong>Add verified recycling or junkshop information for residents.</div>`}</div>`,
+      {
+        subtitle: "Only active listings appear in the resident directory.",
+        action: actionButton(`${icon("plus")} Add listing`, "add-recycling", "small"),
+      },
+    )}
   </div>`;
   return page("administrator", "locations", body);
 }
@@ -676,16 +922,29 @@ function announcementEventMarkup(item) {
 function announcementsPage(role) {
   const isManager = role === "official" || role === "administrator";
   const announcements = [...data.announcements].sort((a, b) => asDate(b.date) - asDate(a.date));
-  const statusLabel = (item) => item.approvalStatus === "pending" ? "Pending approval" : item.approvalStatus === "declined" ? "Declined" : "Published";
-  const rows = announcements.map((item) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.title} ${item.detail} ${item.isEvent ? "event" : ""}`.toLowerCase())}">
+  const statusLabel = (item) =>
+    item.approvalStatus === "pending" ? "Pending approval" : item.approvalStatus === "declined" ? "Declined" : "Published";
+  const rows = announcements
+    .map(
+      (
+        item,
+      ) => `<div class="record-row filter-item" role="row" data-search="${esc(`${item.title} ${item.detail} ${item.isEvent ? "event" : ""}`.toLowerCase())}">
     <div role="cell"><strong class="record-primary">${esc(item.title)}</strong>${item.isEvent ? `<div class="announcement-event-meta">${announcementEventMarkup(item)}</div>` : ""}<span class="record-secondary">${esc(item.detail)}</span></div>
     <div class="record-date" role="cell" data-label="Publish date">${esc(dateLabel(item.date))}</div>
     ${isManager ? `<div class="record-actions" role="cell" data-label=""><span class="record-secondary">${statusLabel(item)}${item.approvalStatus === "declined" && item.declineReason ? ` · ${esc(item.declineReason)}` : ""}</span><button class="button secondary small" type="button" data-action="edit-announcement" data-id="${esc(item.id)}">Edit</button>${role === "administrator" && item.approvalStatus === "pending" ? `<a class="text-button" href="${routeUrl("administrator", "approvals")}">Review in approval queue</a>` : ""}</div>` : ""}
-  </div>`).join("");
+  </div>`,
+    )
+    .join("");
   const body = `<div class="content-stack">
-    ${panel("Community announcements", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search announcements</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>
+    ${panel(
+      "Community announcements",
+      `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search announcements</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>
       <div class="records mt-16" data-page-size="10" role="table" aria-label="Announcements"><div class="record-row record-head" role="row"><span role="columnheader">Announcement</span><span role="columnheader">Date</span>${isManager ? '<span role="columnheader">Action</span>' : ""}</div>${rows || `<div class="empty-state"><strong>No announcements yet</strong>Updates published by barangay staff will appear here.</div>`}</div>`,
-      { subtitle: isManager ? "Create or update a notice for residents and staff." : "Service information shared by barangay staff.", action: isManager ? actionButton(`${icon("plus")} New announcement`, "add-announcement", "small") : "" })}
+      {
+        subtitle: isManager ? "Create or update a notice for residents and staff." : "Service information shared by barangay staff.",
+        action: isManager ? actionButton(`${icon("plus")} New announcement`, "add-announcement", "small") : "",
+      },
+    )}
   </div>`;
   return page(role, "announcements", body);
 }
@@ -734,19 +993,21 @@ function analyticsPage() {
   for (const report of reports) {
     byArea[report.area] = (byArea[report.area] || 0) + 1;
   }
-  const areaRows = Object.entries(byArea)
-    .sort((a, b) => b[1] - a[1])
-    .map(([area, count]) => `<li><span>${esc(area)}</span><strong class="num">${count}</strong></li>`)
-    .join("") || "<li><span>No reports</span></li>";
+  const areaRows =
+    Object.entries(byArea)
+      .sort((a, b) => b[1] - a[1])
+      .map(([area, count]) => `<li><span>${esc(area)}</span><strong class="num">${count}</strong></li>`)
+      .join("") || "<li><span>No reports</span></li>";
 
   const byCategory = {};
   for (const report of reports) {
     byCategory[report.category] = (byCategory[report.category] || 0) + 1;
   }
-  const categoryRows = Object.entries(byCategory)
-    .sort((a, b) => b[1] - a[1])
-    .map(([cat, count]) => `<li><span>${esc(cat)}</span><strong class="num">${count}</strong></li>`)
-    .join("") || "<li><span>No reports</span></li>";
+  const categoryRows =
+    Object.entries(byCategory)
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, count]) => `<li><span>${esc(cat)}</span><strong class="num">${count}</strong></li>`)
+      .join("") || "<li><span>No reports</span></li>";
 
   const completedCollections = schedules.filter((s) => s.status === "Completed").length;
   const cancelledCollections = schedules.filter((s) => s.status === "Cancelled").length;
@@ -754,15 +1015,14 @@ function analyticsPage() {
   const completionRate = totalWithOutcome ? Math.round((completedCollections / totalWithOutcome) * 100) : 0;
   const cancellationRate = totalWithOutcome ? Math.round((cancelledCollections / totalWithOutcome) * 100) : 0;
 
-  const workloadRows = officials
-    .map((official) => {
-      const assigned = reports.filter((r) => r.assignedTo?.id === official.id).length;
-      const resolved = reports.filter(
-        (r) => r.assignedTo?.id === official.id && r.status === "Resolved",
-      ).length;
-      return `<tr><td>${esc(official.name)}</td><td>${assigned}</td><td>${resolved}</td></tr>`;
-    })
-    .join("") || "<tr><td colspan=3>No active officials</td></tr>";
+  const workloadRows =
+    officials
+      .map((official) => {
+        const assigned = reports.filter((r) => r.assignedTo?.id === official.id).length;
+        const resolved = reports.filter((r) => r.assignedTo?.id === official.id && r.status === "Resolved").length;
+        return `<tr><td>${esc(official.name)}</td><td>${assigned}</td><td>${resolved}</td></tr>`;
+      })
+      .join("") || "<tr><td colspan=3>No active officials</td></tr>";
 
   const months = [];
   for (let i = 5; i >= 0; i -= 1) {
@@ -773,9 +1033,7 @@ function analyticsPage() {
     const m = monthKey(report.submittedAt);
     monthly[m] = (monthly[m] || 0) + 1;
   }
-  const trendRows = months
-    .map((m) => `<tr><td>${m}</td><td>${monthly[m] || 0}</td></tr>`)
-    .join("");
+  const trendRows = months.map((m) => `<tr><td>${m}</td><td>${monthly[m] || 0}</td></tr>`).join("");
 
   const body = `<div class="content-stack">
     ${statsStrip([
@@ -805,16 +1063,27 @@ function analyticsPage() {
   return page("administrator", "analytics", body);
 }
 
-
-
 function collectionOfficial() {
   const schedules = sortedSchedules(data.schedules);
   const body = `
     <div class="content-stack">
       ${statsStrip([
-        stat("Upcoming collections", schedules.filter((item) => item.date >= todayISO() && !["Cancelled", "Completed"].includes(item.status)).length, "Across all listed areas"),
-        stat("In progress", schedules.filter((item) => ["On the way", "Collecting"].includes(item.status)).length, "Current service status"),
-        stat("Service changes", schedules.filter((item) => ["Delayed", "Cancelled", "Rescheduled"].includes(item.status)).length, "Review resident notices", schedules.some((item) => ["Delayed", "Cancelled"].includes(item.status)) ? "warning" : ""),
+        stat(
+          "Upcoming collections",
+          schedules.filter((item) => item.date >= todayISO() && !["Cancelled", "Completed"].includes(item.status)).length,
+          "Across all listed areas",
+        ),
+        stat(
+          "In progress",
+          schedules.filter((item) => ["On the way", "Collecting"].includes(item.status)).length,
+          "Current service status",
+        ),
+        stat(
+          "Service changes",
+          schedules.filter((item) => ["Delayed", "Cancelled", "Rescheduled"].includes(item.status)).length,
+          "Review resident notices",
+          schedules.some((item) => ["Delayed", "Cancelled"].includes(item.status)) ? "warning" : "",
+        ),
         stat("Collection areas", new Set(schedules.map((item) => item.area)).size, "Areas with schedules"),
       ])}
       ${panel("Collection schedules", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search schedules</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>${scheduleRows(schedules, true)}`, { subtitle: "Edit an existing schedule or add a collection", action: actionButton(`${icon("plus")} Add schedule`, "add-schedule", "small") })}
@@ -837,7 +1106,9 @@ function reportFormMarkup() {
         <div class="wizard-step ${reportDraft?.step === "review" ? "done" : "current"}"><strong>${reportDraft?.step === "review" ? icon("check") : "1"}</strong><span>Concern details</span></div><span class="wizard-divider"></span>
         <div class="wizard-step ${reportDraft?.step === "review" ? "current" : ""}"><strong>2</strong><span>Review & submit</span></div>
       </div>
-      ${reportDraft?.step === "review" ? `
+      ${
+        reportDraft?.step === "review"
+          ? `
         <div class="content-stack">
           <div class="notice-bar"><span>Concern</span><strong>${esc(draft.category)}</strong></div>
           <div class="notice-bar"><span>Priority</span><strong>${esc(draft.priority || "Medium")}</strong></div>
@@ -847,7 +1118,8 @@ function reportFormMarkup() {
           <div class="form-field"><span class="field-help">Description</span><p class="report-draft-description">${esc(draft.description)}</p></div>
           <div><span class="field-help">Photos</span>${uploadPhotos.length ? `<div class="photo-preview">${uploadPhotos.map((photo) => `<div class="photo-thumb"><img src="${esc(photo.previewUrl)}" alt="${esc(photo.name)}"></div>`).join("")}</div>` : `<p class="muted small">No photos attached.</p>`}</div>
           <div class="form-actions"><button class="button secondary" type="button" data-action="edit-report-draft">Edit details</button><button class="button" type="button" data-action="submit-report">Submit concern</button></div>
-        </div>` : `
+        </div>`
+          : `
         <form id="report-draft-form" class="form-stack">
           <div class="form-grid">
             ${selectField("Concern category", "category", CATEGORIES, draft.category || "", { required: true, placeholder: "Choose a concern type" })}
@@ -871,7 +1143,8 @@ function reportFormMarkup() {
             <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${esc(photo.previewUrl)}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
           </div>
           <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
-        </form>`}
+        </form>`
+      }
     </div></section>`;
 }
 
@@ -887,30 +1160,32 @@ function reportsPage(role, view) {
   const canFilter = (role === "resident" || role === "administrator") && view === "reports";
   const allowedFilters = officialQueue ? [...STATUSES.slice(0, -1)] : canFilter ? ["all", ...STATUSES] : [];
   const activeFilter = allowedFilters.includes(reportFilter) ? reportFilter : "all";
-  const filtered = sortedReports(officialQueue || canFilter
-    ? userRows.filter((report) => activeFilter === "all"
-      ? true
-      : report.status === activeFilter)
-    : userRows);
-  const title = view === "history" ? "Report history" : role === "resident" ? "My reports" : role === "administrator" ? "Community reports" : "Concern queue";
-  const subtitle = view === "history"
-    ? "A complete record of submitted concerns and their latest updates."
-    : pageTitle(role, view)[1];
+  const filtered = sortedReports(
+    officialQueue || canFilter ? userRows.filter((report) => (activeFilter === "all" ? true : report.status === activeFilter)) : userRows,
+  );
+  const title =
+    view === "history"
+      ? "Report history"
+      : role === "resident"
+        ? "My reports"
+        : role === "administrator"
+          ? "Community reports"
+          : "Concern queue";
+  const subtitle = view === "history" ? "A complete record of submitted concerns and their latest updates." : pageTitle(role, view)[1];
   const showResolvedSeparately = !canFilter || activeFilter === "all";
   const activeRows = view === "history" || !showResolvedSeparately ? filtered : filtered.filter((report) => report.status !== "Resolved");
   const resolvedRows = view === "history" || !showResolvedSeparately ? [] : filtered.filter((report) => report.status === "Resolved");
-  const primaryAction = role === "resident"
-    ? linkButton(`${icon("plus")} Report a concern`, routeUrl("resident", "report"), "")
-    : "";
-  const exportActions = role === "resident"
-    ? view === "reports"
-      ? `<button class="button secondary small" type="button" data-action="export-reports">${icon("download")} Export reports</button>`
+  const primaryAction = role === "resident" ? linkButton(`${icon("plus")} Report a concern`, routeUrl("resident", "report"), "") : "";
+  const exportActions =
+    role === "resident"
+      ? view === "reports"
+        ? `<button class="button secondary small" type="button" data-action="export-reports">${icon("download")} Export reports</button>`
+        : view === "history"
+          ? `<button class="button secondary small" type="button" data-action="export-report-history">${icon("download")} Export history</button>`
+          : ""
       : view === "history"
         ? `<button class="button secondary small" type="button" data-action="export-report-history">${icon("download")} Export history</button>`
-        : ""
-    : view === "history"
-      ? `<button class="button secondary small" type="button" data-action="export-report-history">${icon("download")} Export history</button>`
-      : `<button class="button secondary small" type="button" data-action="export-reports">${icon("download")} Export reports</button>`;
+        : `<button class="button secondary small" type="button" data-action="export-reports">${icon("download")} Export reports</button>`;
   const body = `
     <div class="content-stack">
       ${panel(role === "official" && view === "history" ? "Report activity" : view === "history" ? "Past and current concerns" : role === "official" ? "Concern queue" : "Reports", `${role === "official" && view === "history" ? "" : view === "reports" ? reportFilters(userRows, activeFilter) : officialQueue ? officialReportFilters(userRows, activeFilter) : ""}${searchToolbar(role === "official" && view === "history" ? "Search report activity" : undefined)}<div class="mt-16" data-report-table>${role === "official" && view === "history" ? reportHistoryRows(userRows) : reportRows(view === "history" ? filtered : activeRows, role)}</div>${resolvedRows.length && view !== "history" ? `<div class="section-heading mt-20"><div><h2>Resolved concerns</h2><p>${resolvedRows.length} marked as addressed</p></div></div><div data-report-table>${reportRows(resolvedRows, role)}</div>` : ""}`, { subtitle: role === "resident" && view === "reports" ? "" : subtitle, action: exportActions })}
@@ -927,12 +1202,17 @@ function notificationsPage(role) {
   const body = `
     <div class="content-stack">
       <section class="notification-summary"><div><span class="eyebrow">Updates</span><h2>Stay in the loop</h2><p>Important changes to your reports and community services.</p></div><div class="notification-summary-count"><strong>${unread}</strong><span>unread</span></div></section>
-      ${panel("Notification inbox", `<div class="notification-toolbar"><div class="filter-row" role="group" aria-label="Filter notifications"><button type="button" class="filter-button ${notificationFilter === "all" ? "selected" : ""}" data-action="filter-notifications" data-value="all" aria-pressed="${notificationFilter === "all"}">All <span class="filter-count">${notifications.length}</span></button><button type="button" class="filter-button ${notificationFilter === "unread" ? "selected" : ""}" data-action="filter-notifications" data-value="unread" aria-pressed="${notificationFilter === "unread"}">Unread <span class="filter-count">${unread}</span></button></div>${notifications.some((item) => !item.read) ? actionButton("Mark all read", "mark-all-read", "tertiary", "small") : ""}</div><div class="notification-breakdown"><span>${reportUpdates} report updates</span><span>${serviceUpdates} service updates</span></div>
-        <div class="notification-list">${visible.length ? visible.map((item) => `<article class="notification-item ${item.read ? "" : "notification-unread"}"><span class="notification-icon">${icon(item.reportId ? "clipboard" : "bell")}</span><div class="notification-content"><div class="notification-title"><strong>${esc(item.title)}</strong>${item.read ? "" : `<span class="notification-unread-label">New</span>`}</div><p>${esc(item.body)}</p><div class="notification-meta"><span>${esc(dateTimeLabel(item.createdAt))}</span>${item.reportId ? `<button type="button" class="text-button" data-action="view-notification-report" data-id="${esc(item.reportId)}">View report</button>` : ""}${role === "administrator" && /needs approval/i.test(item.title) ? `<a class="text-button" href="${routeUrl("administrator", "approvals")}">Open approval queue</a>` : ""}</div></div>${item.read ? `<span class="notification-state">Read</span>` : `<button class="button secondary small notification-read-button" type="button" data-action="mark-read" data-id="${esc(item.id)}">Mark read</button>`}</article>`).join("") : `<div class="empty-state"><strong>All caught up</strong>There are no ${notificationFilter === "unread" ? "unread " : ""}updates for this account.</div>`}</div>`, { subtitle: "Your latest account and community updates" })}
+      ${panel(
+        "Notification inbox",
+        `<div class="notification-toolbar"><div class="filter-row" role="group" aria-label="Filter notifications"><button type="button" class="filter-button ${notificationFilter === "all" ? "selected" : ""}" data-action="filter-notifications" data-value="all" aria-pressed="${notificationFilter === "all"}">All <span class="filter-count">${notifications.length}</span></button><button type="button" class="filter-button ${notificationFilter === "unread" ? "selected" : ""}" data-action="filter-notifications" data-value="unread" aria-pressed="${notificationFilter === "unread"}">Unread <span class="filter-count">${unread}</span></button></div>${notifications.some((item) => !item.read) ? actionButton("Mark all read", "mark-all-read", "tertiary", "small") : ""}</div><div class="notification-breakdown"><span>${reportUpdates} report updates</span><span>${serviceUpdates} service updates</span></div>
+        <div class="notification-list">${visible.length ? visible.map((item) => `<article class="notification-item ${item.read ? "" : "notification-unread"}"><span class="notification-icon">${icon(item.reportId ? "clipboard" : "bell")}</span><div class="notification-content"><div class="notification-title"><strong>${esc(item.title)}</strong>${item.read ? "" : `<span class="notification-unread-label">New</span>`}</div><p>${esc(item.body)}</p><div class="notification-meta"><span>${esc(dateTimeLabel(item.createdAt))}</span>${item.reportId ? `<button type="button" class="text-button" data-action="view-notification-report" data-id="${esc(item.reportId)}">View report</button>` : ""}${role === "administrator" && /needs approval/i.test(item.title) ? `<a class="text-button" href="${routeUrl("administrator", "approvals")}">Open approval queue</a>` : ""}</div></div>${item.read ? `<span class="notification-state">Read</span>` : `<button class="button secondary small notification-read-button" type="button" data-action="mark-read" data-id="${esc(item.id)}">Mark read</button>`}</article>`).join("") : `<div class="empty-state"><strong>All caught up</strong>There are no ${notificationFilter === "unread" ? "unread " : ""}updates for this account.</div>`}</div>`,
+        { subtitle: "Your latest account and community updates" },
+      )}
     </div>`;
-  const reviewAction = role === "administrator"
-    ? `<a class="button secondary small" href="${routeUrl("administrator", "approvals")}">${icon("check")} Approval queue</a>`
-    : "";
+  const reviewAction =
+    role === "administrator"
+      ? `<a class="button secondary small" href="${routeUrl("administrator", "approvals")}">${icon("check")} Approval queue</a>`
+      : "";
   return page(role, "notifications", body, reviewAction);
 }
 
@@ -941,7 +1221,9 @@ function approvalsPage() {
   const pendingAnnouncements = data.announcements.filter((item) => item.approvalStatus === "pending");
   const total = pendingEvents.length + pendingAnnouncements.length;
 
-  const eventRows = pendingEvents.map((event) => `<article class="approval-row">
+  const eventRows = pendingEvents
+    .map(
+      (event) => `<article class="approval-row">
     <div class="approval-copy">
       <span class="approval-tag">Event</span>
       <h4>${esc(event.title)}</h4>
@@ -952,9 +1234,13 @@ function approvalsPage() {
       <button class="button small" type="button" data-action="approve-calendar-event" data-id="${esc(event.id)}">Approve</button>
       <button class="button danger small" type="button" data-action="decline-calendar-event" data-id="${esc(event.id)}">Reject</button>
     </div>
-  </article>`).join("");
+  </article>`,
+    )
+    .join("");
 
-  const announcementRows = pendingAnnouncements.map((item) => `<article class="approval-row">
+  const announcementRows = pendingAnnouncements
+    .map(
+      (item) => `<article class="approval-row">
     <div class="approval-copy">
       <span class="approval-tag">Announcement</span>
       <h4>${esc(item.title)}</h4>
@@ -966,7 +1252,9 @@ function approvalsPage() {
       <button class="button small" type="button" data-action="approve-announcement" data-id="${esc(item.id)}">Approve</button>
       <button class="button danger small" type="button" data-action="decline-announcement" data-id="${esc(item.id)}">Reject</button>
     </div>
-  </article>`).join("");
+  </article>`,
+    )
+    .join("");
 
   const body = `<div class="content-stack">
     ${statsStrip([
@@ -985,9 +1273,9 @@ function profilePage(role) {
   const recoveryVerified = Boolean(currentUser.recoveryEmailVerified);
   const recoveryHelp = !recoveryEmail
     ? "Password reset links are sent here. You must confirm the address before links are sent."
-    : (recoveryVerified
+    : recoveryVerified
       ? "Verified. Password reset links are sent to this address."
-      : "Not verified. Save your profile to send a verification link to this address.");
+      : "Not verified. Save your profile to send a verification link to this address.";
   const body = `
     <div class="profile-layout">
       <div class="content-stack">
@@ -1029,13 +1317,19 @@ function profilePage(role) {
 
 function userRowsMarkup(users) {
   if (!users.length) return `<div class="empty-state"><strong>No accounts match</strong>Try another name, email, role, or status.</div>`;
-  return `<div class="records" data-page-size="10" role="table" aria-label="User accounts"><div class="record-row record-head user-record-head" role="row"><span role="columnheader">Account</span><span role="columnheader">Role</span><span role="columnheader">Area</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>${users.map((user) => `<div class="record-row user-record filter-item" role="row" data-search="${esc(`${user.name} ${user.email} ${ROLES[user.role]} ${user.area} ${user.status}`.toLowerCase())}">
+  return `<div class="records" data-page-size="10" role="table" aria-label="User accounts"><div class="record-row record-head user-record-head" role="row"><span role="columnheader">Account</span><span role="columnheader">Role</span><span role="columnheader">Area</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>${users
+    .map(
+      (
+        user,
+      ) => `<div class="record-row user-record filter-item" role="row" data-search="${esc(`${user.name} ${user.email} ${ROLES[user.role]} ${user.area} ${user.status}`.toLowerCase())}">
     <div class="identity" role="cell">${userAvatar(user)}<span><strong class="record-primary">${esc(user.name)}</strong><span class="record-secondary">${esc(user.email)}</span>${user.resetRequested ? `<span class="record-secondary" style="color:var(--warning,#b45309)">Reset requested</span>` : ""}</span></div>
     <div class="record-meta" role="cell" data-label="Role">${esc(ROLES[user.role] || user.role)}</div>
     <div class="record-meta" role="cell" data-label="Area">${esc(user.area || "—")}</div>
     <div role="cell" data-label="Status">${statusPill(user.status || "Active")}</div>
     <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="edit-user" data-id="${esc(user.email)}">Edit</button></div>
-  </div>`).join("")}</div>`;
+  </div>`,
+    )
+    .join("")}</div>`;
 }
 
 function usersPage() {
@@ -1046,7 +1340,20 @@ function usersPage() {
         stat("All accounts", data.users.length, "In this workspace"),
         ...counts.slice(0, 3).map(([role, count]) => stat(ROLES[role], count, "Accounts in workspace")),
       ])}
-      ${panel("Accounts", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search by name or email</span><input class="input" type="search" data-search-input autocomplete="off"></label><select class="select" data-user-role-filter aria-label="Filter accounts by role"><option value="all">All roles</option>${Object.entries(ROLES).map(([role, label]) => `<option value="${esc(role)}">${esc(label)}</option>`).join("")}</select><select class="select" data-user-status-filter aria-label="Filter accounts by status"><option value="all">All statuses</option><option>Active</option><option>Inactive</option></select></div><div class="mt-16" data-user-table>${userRowsMarkup([...data.users].sort((a, b) => a.name.localeCompare(b.name)))}</div>`, { subtitle: "Manage accounts without changing role capabilities.", action: actionButton(`${icon("plus")} Add user`, "add-user", "small") })}
+      ${panel(
+        "Accounts",
+        `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search by name or email</span><input class="input" type="search" data-search-input autocomplete="off"></label><select class="select" data-user-role-filter aria-label="Filter accounts by role"><option value="all">All roles</option>${Object.entries(
+          ROLES,
+        )
+          .map(([role, label]) => `<option value="${esc(role)}">${esc(label)}</option>`)
+          .join(
+            "",
+          )}</select><select class="select" data-user-status-filter aria-label="Filter accounts by status"><option value="all">All statuses</option><option>Active</option><option>Inactive</option></select></div><div class="mt-16" data-user-table>${userRowsMarkup([...data.users].sort((a, b) => a.name.localeCompare(b.name)))}</div>`,
+        {
+          subtitle: "Manage accounts without changing role capabilities.",
+          action: actionButton(`${icon("plus")} Add user`, "add-user", "small"),
+        },
+      )}
     </div>`;
   return page("administrator", "users", body);
 }
@@ -1058,39 +1365,50 @@ function rolesPage() {
   if (!Object.hasOwn(permissionOpenGroups, selectedRole)) {
     permissionOpenGroups[selectedRole] = [...new Set(PERMISSION_DEFS.map(({ group }) => group))];
   }
-  const isDirty = (role) => Boolean(permissionDrafts[role] && PERMISSION_DEFS.some(({ id }) =>
-    permissionDrafts[role][id] !== Boolean(data.permissions[role]?.[id]),
-  ));
-  const dirtyCount = PERMISSION_DEFS.filter(({ id }) =>
-    permissionDrafts[selectedRole][id] !== Boolean(data.permissions[selectedRole]?.[id]),
+  const isDirty = (role) =>
+    Boolean(
+      permissionDrafts[role] && PERMISSION_DEFS.some(({ id }) => permissionDrafts[role][id] !== Boolean(data.permissions[role]?.[id])),
+    );
+  const dirtyCount = PERMISSION_DEFS.filter(
+    ({ id }) => permissionDrafts[selectedRole][id] !== Boolean(data.permissions[selectedRole]?.[id]),
   ).length;
   const openGroups = permissionOpenGroups[selectedRole];
   const officialAccounts = (data.users || []).filter((user) => user.role === "official" && user.status === "Active");
 
-  const roleTabs = roles.map((role) => `
+  const roleTabs = roles
+    .map(
+      (role) => `
     <button class="permission-role-button" type="button" data-action="select-permission-role" data-role="${esc(role)}" aria-pressed="${role === selectedRole}">
       <span>${esc(ROLES[role])}</span>${isDirty(role) ? '<span class="permission-unsaved">Unsaved</span>' : ""}
     </button>
-  `).join("");
+  `,
+    )
+    .join("");
 
-  const roleDefaults = [...new Set(PERMISSION_DEFS.map(({ group }) => group))].map((group) => {
-    const items = PERMISSION_DEFS.filter((permission) => permission.group === group);
-    return `<details class="permission-group" data-permission-group="${esc(group)}" ${openGroups.includes(group) ? "open" : ""}>
-      <summary><span>${esc(group)}</span><span class="permission-group-count">${items.filter(p => Boolean(permissionDrafts[selectedRole]?.[p.id])).length} of ${items.length} enabled</span></summary>
-      <div class="permission-list">${items.map((permission) => {
-        const enabled = Boolean(permissionDrafts[selectedRole]?.[permission.id]);
-        return `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}</small></span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${esc(`${ROLES[selectedRole]} · ${permission.label}`)}" data-action="toggle-permission" data-permission="${esc(permission.id)}"></button></div>`;
-      }).join("")}</div>
+  const roleDefaults = [...new Set(PERMISSION_DEFS.map(({ group }) => group))]
+    .map((group) => {
+      const items = PERMISSION_DEFS.filter((permission) => permission.group === group);
+      return `<details class="permission-group" data-permission-group="${esc(group)}" ${openGroups.includes(group) ? "open" : ""}>
+      <summary><span>${esc(group)}</span><span class="permission-group-count">${items.filter((p) => Boolean(permissionDrafts[selectedRole]?.[p.id])).length} of ${items.length} enabled</span></summary>
+      <div class="permission-list">${items
+        .map((permission) => {
+          const enabled = Boolean(permissionDrafts[selectedRole]?.[permission.id]);
+          return `<div class="permission-row"><span class="permission-copy"><strong>${esc(permission.label)}</strong><small>${esc(permission.description)}</small></span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${esc(`${ROLES[selectedRole]} · ${permission.label}`)}" data-action="toggle-permission" data-permission="${esc(permission.id)}"></button></div>`;
+        })
+        .join("")}</div>
     </details>`;
-  }).join("");
+    })
+    .join("");
 
   const saveDisabled = dirtyCount === 0;
 
-  const permissionAccounts = officialAccounts.length ? officialAccounts.map((official) => {
-    const override = data.accountOverrides?.[official.email] || {};
-    const effective = effectivePermissions(official, data);
-    const overrideCount = Object.keys(override).length;
-    return `<details class="permission-account">
+  const permissionAccounts = officialAccounts.length
+    ? officialAccounts
+        .map((official) => {
+          const override = data.accountOverrides?.[official.email] || {};
+          const effective = effectivePermissions(official, data);
+          const overrideCount = Object.keys(override).length;
+          return `<details class="permission-account">
       <summary class="permission-account-head">
         <span class="permission-copy">
           <strong>${esc(official.name)}</strong>
@@ -1108,15 +1426,21 @@ function rolesPage() {
       }).join("")}</div>
       <div class="permission-account-foot">${overrideCount ? `<button class="button secondary small" type="button" data-action="reset-account-permissions" data-email="${esc(official.email)}">Reset all to role default</button>` : `<span class="permission-empty">No overrides — using role defaults</span>`}</div>
     </details>`;
-  }).join("") : `<div class="empty-state"><strong>No official accounts</strong>Add official accounts in User management to assign per-account overrides.</div>`;
+        })
+        .join("")
+    : `<div class="empty-state"><strong>No official accounts</strong>Add official accounts in User management to assign per-account overrides.</div>`;
 
-  const effectiveTable = officialAccounts.length ? `<table class="permission-effective-table">
-    <thead><tr><th>Account</th>${PERMISSION_DEFS.map(p => `<th title="${esc(p.description)}">${esc(p.label)}</th>`).join("")}</tr></thead>
-    <tbody>${officialAccounts.map(official => {
-      const effective = effectivePermissions(official, data);
-      return `<tr><td><strong>${esc(official.name)}</strong><br><small>${esc(official.email)}</small></td>${PERMISSION_DEFS.map(p => `<td><span class="permission-cell-state" data-effective="${effective[p.id]}">${effective[p.id] ? "On" : "Off"}</span></td>`).join("")}</tr>`;
-    }).join("")}</tbody>
-  </table>` : `<div class="empty-state"><strong>No effective permissions to show</strong>Add official accounts to see computed effective permissions.</div>`;
+  const effectiveTable = officialAccounts.length
+    ? `<table class="permission-effective-table">
+    <thead><tr><th>Account</th>${PERMISSION_DEFS.map((p) => `<th title="${esc(p.description)}">${esc(p.label)}</th>`).join("")}</tr></thead>
+    <tbody>${officialAccounts
+      .map((official) => {
+        const effective = effectivePermissions(official, data);
+        return `<tr><td><strong>${esc(official.name)}</strong><br><small>${esc(official.email)}</small></td>${PERMISSION_DEFS.map((p) => `<td><span class="permission-cell-state" data-effective="${effective[p.id]}">${effective[p.id] ? "On" : "Off"}</span></td>`).join("")}</tr>`;
+      })
+      .join("")}</tbody>
+  </table>`
+    : `<div class="empty-state"><strong>No effective permissions to show</strong>Add official accounts to see computed effective permissions.</div>`;
 
   const body = `
     <div class="content-stack">
@@ -1154,8 +1478,9 @@ function rolesPage() {
 }
 
 function rememberOpenPermissionGroups() {
-  permissionOpenGroups[selectedPermissionRole] = [...app.querySelectorAll(".permission-group[open]")]
-    .map((group) => group.dataset.permissionGroup);
+  permissionOpenGroups[selectedPermissionRole] = [...app.querySelectorAll(".permission-group[open]")].map(
+    (group) => group.dataset.permissionGroup,
+  );
 }
 
 function hasUnsavedPermissionChanges() {
@@ -1165,8 +1490,9 @@ function hasUnsavedPermissionChanges() {
 }
 
 function confirmLeaveWithUnsavedPermissions() {
-  return !hasUnsavedPermissionChanges() || window.confirm(
-    "You have unsaved role permission changes. Leave without saving? Your changes will be discarded.",
+  return (
+    !hasUnsavedPermissionChanges() ||
+    window.confirm("You have unsaved role permission changes. Leave without saving? Your changes will be discarded.")
   );
 }
 
@@ -1187,22 +1513,35 @@ function activityResultsMarkup() {
     ])}
     <div class="records mt-16" role="table" aria-label="Activity log">
       <div class="record-row record-head activity-record-head" role="row"><span role="columnheader">Person and activity</span><span role="columnheader">Date and time</span><span role="columnheader">Workspace</span><span role="columnheader">Result</span><span role="columnheader"></span></div>
-      ${rows.map((item) => `<div class="record-row activity-record" role="row">
+      ${
+        rows
+          .map(
+            (item) => `<div class="record-row activity-record" role="row">
         <div role="cell"><strong class="record-primary">${esc(item.action)}</strong><span class="record-secondary">${esc(item.actor)} · ${esc(item.detail)}</span>${item.source === "archived" ? `<span class="record-secondary">Archived ${esc(dateTimeLabel(item.archivedAt))}</span>` : ""}</div>
         <div class="record-date" role="cell" data-label="Date and time">${esc(dateTimeLabel(item.at))}</div>
         <div class="record-meta" role="cell" data-label="Workspace">${esc(roleLabel(item.role))}</div>
         <div role="cell" data-label="Result">${statusPill(item.result === "Failed" ? "cancelled" : "active", item.result)}</div>
         <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-activity" data-id="${esc(item.id)}">Details</button></div>
-      </div>`).join("") || `<div class="empty-state"><strong>No activity matches these filters</strong>Change or clear the filters to see more records.</div>`}
+      </div>`,
+          )
+          .join("") ||
+        `<div class="empty-state"><strong>No activity matches these filters</strong>Change or clear the filters to see more records.</div>`
+      }
     </div>
     ${pageCount > 1 ? `<nav class="pagination" aria-label="Activity log pages"><button class="button secondary small" type="button" data-action="activity-page" data-direction="-1" ${page <= 1 ? "disabled" : ""}>Previous</button><span class="pagination-status" aria-live="polite">Page ${page} of ${pageCount} · ${total} records</span><button class="button secondary small" type="button" data-action="activity-page" data-direction="1" ${page >= pageCount ? "disabled" : ""}>Next</button></nav>` : ""}`;
 }
 
 function activityLogPage() {
-  const sources = [["all", "Current and archived"], ["current", "Current only"], ["archived", "Archived only"]];
+  const sources = [
+    ["all", "Current and archived"],
+    ["current", "Current only"],
+    ["archived", "Archived only"],
+  ];
   const body = `
     <div class="content-stack">
-      ${panel("Activity Log", `<form id="activity-filter-form" class="form-grid">
+      ${panel(
+        "Activity Log",
+        `<form id="activity-filter-form" class="form-grid">
         <div class="form-field"><label for="activity-from">From date</label><input class="input" id="activity-from" name="from" type="date" value="${esc(activityFilters.from)}"></div>
         <div class="form-field"><label for="activity-to">To date</label><input class="input" id="activity-to" name="to" type="date" value="${esc(activityFilters.to)}"></div>
         <div class="form-field"><label for="activity-actor">Actor</label><input class="input" id="activity-actor" name="actor" type="search" value="${esc(activityFilters.actor)}" placeholder="Name or system"></div>
@@ -1212,7 +1551,9 @@ function activityLogPage() {
         <div class="form-field"><label for="activity-source">Records</label><select class="select" id="activity-source" name="source">${sources.map(([value, label]) => `<option value="${value}"${activityFilters.source === value ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>
         <div class="form-field span-all"><div class="form-actions"><button class="button" type="submit">Apply filters</button><button class="button secondary" type="button" data-action="clear-activity-filters">Clear</button><button class="button secondary" type="button" data-action="export-activity-log">${icon("download")} Export CSV</button></div></div>
       </form>
-      <div id="activity-results">${activityResultsMarkup()}</div>`, { subtitle: "Every retained action and security event" })}
+      <div id="activity-results">${activityResultsMarkup()}</div>`,
+        { subtitle: "Every retained action and security event" },
+      )}
     </div>`;
   return page("administrator", "activity", body);
 }

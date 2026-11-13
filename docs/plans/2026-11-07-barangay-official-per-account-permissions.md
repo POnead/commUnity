@@ -4,7 +4,7 @@
 
 **Goal:** Remove role-permission editing from the Role management page for the `resident` and `administrator` roles, and give the `official` (Barangay official) role per-account permission overrides so multiple official accounts can hold different permission sets.
 
-**Architecture:** Keep the existing role-based permission engine (`data.permissions[role][permission]` persisted via `/api/state`) as the *default* layer, and add an account-level override layer keyed by user email/id for officials. Effective permission = override (if set) else role default.
+**Architecture:** Keep the existing role-based permission engine (`data.permissions[role][permission]` persisted via `/api/state`) as the _default_ layer, and add an account-level override layer keyed by user email/id for officials. Effective permission = override (if set) else role default.
 
 **Tech Stack:** Plain browser JS (`app-core.js`, `app-views.js`, `app.js`), Node server (`server.mjs`), PGlite persistence via `/api/state`.
 
@@ -25,6 +25,7 @@
 **Files:** `app-views.js` (rolesPage), `app.js` (toggle/draft handlers).
 
 **Steps:**
+
 1. In `rolesPage`, render toggle controls only for the `official` role; for `resident`/`administrator`, render read-only rows (or hide the toggle column entirely).
 2. In `handleAction` `toggle-permission`, no-op/throw for `resident`/`administrator` (or remove branch).
 3. Keep `save-permission-draft` working for `official` only; for others, disable save / no-op.
@@ -35,6 +36,7 @@
 **Files:** `app-core.js` (state shape/defaults), `app-views.js` (UI), `app.js` (draft/save), `server.mjs` (state validation + persistence), `server.test.mjs` (tests).
 
 **Steps:**
+
 1. Extend state: `data.accountOverrides = { [userEmail]: { permissionId: boolean } }` (only for official accounts; optional shape).
 2. Effective permission helper: `effectivePermission(user, permissionId)` = override[user.email]?.[permissionId] ?? data.permissions[user.role]?.[permissionId].
 3. Use effective permission in `canOpenPage`/nav gating for officials.
@@ -44,6 +46,7 @@
 **Files:** `app-views.js` (users page or roles page), `app.js` (handlers/drafts).
 
 **Steps:**
+
 1. In User management (`usersPage`) or a new section in roles page, list active official accounts with per-account toggles for relevant permissions (e.g., manageReports, manageSchedules, manageAnnouncements).
 2. Draft per account; save persists via `/api/state` (`data.accountOverrides`).
 
@@ -52,6 +55,7 @@
 **Files:** `server.test.mjs`.
 
 **Steps:**
+
 1. Test that role permission validation still accepts the new state shape (or that official overrides persist through `/api/state`).
 2. Run `npm test` → all pass.
 

@@ -1444,6 +1444,46 @@ test("administrators can record legitimate workspace activity", async () => {
   }
 });
 
+test("administrators can record legitimate community and account management activity", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-activity-suite-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const adminName = state.data.users.find((item) => item.role === "administrator")?.name || "Portal administrator";
+    const legitimateActions = [
+      ["Added a community location", "Purok 1 · Palsara"],
+      ["Updated a community location", "Purok 2 · Palsara"],
+      ["Removed a community location", "LOC-1 · Palsara"],
+      ["Added a recycling directory listing", "Recycling Hub · Palsara"],
+      ["Updated a recycling directory listing", "Recycling Hub · Palsara"],
+      ["Removed a recycling directory listing", "RRL-1 · Palsara"],
+      ["Updated user account", `${adminName} · admin@example.test`],
+      ["Changed role permission", "official · manageReports"],
+    ];
+    for (const [action, detail] of legitimateActions) {
+      const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+      const legitimate = structuredClone(state.data);
+      legitimate.activities.push({
+        id: `ACT-admin-legit-${action.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        actor: adminName,
+        role: "administrator",
+        action,
+        detail,
+        at: new Date().toISOString(),
+        result: "Success",
+      });
+      const saved = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: legitimate } });
+      assert.equal(saved.status, 200, await saved.text());
+      const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", [`ACT-admin-legit-${action.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`]);
+      assert.equal(stored.rows[0].count, 1, `the legitimate activity is stored: ${action}`);
+    }
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("officials can record legitimate removal of a collection schedule", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-official-activity-"));
   const app = await startServer(dataDir);
@@ -1465,6 +1505,38 @@ test("officials can record legitimate removal of a collection schedule", async (
     assert.equal(saved.status, 200, await saved.text());
     const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-official-legit-0001"]);
     assert.equal(stored.rows[0].count, 1, "the legitimate official activity is stored");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("officials cannot record administrator-only activity through the state save", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-official-admin-activity-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie, "official-admin-activity@example.test", "Official Admin Activity");
+    const state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const unauthorized = structuredClone(state.data);
+    unauthorized.activities.push({
+      id: "ACT-official-admin-0001",
+      actor: "Official Admin Activity",
+      role: "official",
+      action: "Added a community location",
+      detail: "Purok 1 · Palsara",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const rejected = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: state.revision, data: unauthorized },
+    });
+    assert.equal(rejected.status, 403, await rejected.text());
+
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-official-admin-0001"]);
+    assert.equal(stored.rows[0].count, 0, "an official cannot record an administrator-only activity");
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });

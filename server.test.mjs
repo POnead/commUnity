@@ -1418,6 +1418,59 @@ test("administrators cannot forge activity log entries through the state save", 
   }
 });
 
+test("administrators can record legitimate workspace activity", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-activity-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const legitimate = structuredClone(state.data);
+    legitimate.activities.push({
+      id: "ACT-admin-legit-0001",
+      actor: state.data.users.find((item) => item.role === "administrator")?.name || "Portal administrator",
+      role: "administrator",
+      action: "Added a community location",
+      detail: "Purok 1 · Palsara",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const saved = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: state.revision, data: legitimate } });
+    assert.equal(saved.status, 200, await saved.text());
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-admin-legit-0001"]);
+    assert.equal(stored.rows[0].count, 1, "the legitimate administrator activity is stored");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("officials can record legitimate removal of a collection schedule", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-official-activity-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie, "activity-official-2@example.test", "Activity Official 2");
+    const state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const legitimate = structuredClone(state.data);
+    legitimate.activities.push({
+      id: "ACT-official-legit-0001",
+      actor: "Activity Official 2",
+      role: "official",
+      action: "Removed a collection schedule",
+      detail: "SCHED-1 · Purok 2",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const saved = await api(app, "/api/state", { method: "PUT", cookie: officialCookie, body: { revision: state.revision, data: legitimate } });
+    assert.equal(saved.status, 200, await saved.text());
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-official-legit-0001"]);
+    assert.equal(stored.rows[0].count, 1, "the legitimate official activity is stored");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("the server stamps activity timestamps, not the browser", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-activity-time-"));
   const app = await startServer(dataDir);

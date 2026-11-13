@@ -1255,6 +1255,7 @@ const OFFICIAL_ACTIVITY_ACTIONS = new Set([
   "Changed a collection status",
   "Updated a collection schedule",
   "Added a collection schedule",
+  "Removed a collection schedule",
 ]);
 const ADMIN_ACTIVITY_ACTIONS = new Set([
   ...OFFICIAL_ACTIVITY_ACTIONS,
@@ -1264,6 +1265,7 @@ const ADMIN_ACTIVITY_ACTIONS = new Set([
   "Set recovery email",
   "Removed recovery email",
   "Updated profile information",
+  "Updated user account",
   "Deactivated user account",
   "Reactivated user account",
   "Submitted an announcement",
@@ -1274,6 +1276,13 @@ const ADMIN_ACTIVITY_ACTIONS = new Set([
   "Removed an announcement",
   "Approved a calendar event",
   "Declined a calendar event",
+  "Added a community location",
+  "Updated a community location",
+  "Removed a community location",
+  "Added a recycling directory listing",
+  "Updated a recycling directory listing",
+  "Removed a recycling directory listing",
+  "Changed role permission",
 ]);
 
 function activityActionsFor(user) {

@@ -97,6 +97,7 @@ import {
   profilePage,
   usersPage,
   rolesPage,
+  photoPreviewMarkup,
   rememberOpenPermissionGroups,
   hasUnsavedPermissionChanges,
   confirmLeaveWithUnsavedPermissions,
@@ -1344,6 +1345,11 @@ async function saveAnnouncement(form) {
   setMapState({ announcementMapElement: null });
   setMapState({ announcementMapMarker: null });
   setState({ modalState: null });
+  if (result.data) {
+    setState({ data: result.data });
+    if (result.revision) setState({ dataRevision: result.revision });
+    setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  }
   render();
   toast(
     needsApproval
@@ -2578,7 +2584,10 @@ async function handleAction(button, clickEvent) {
     submitReportDraft().catch((error) => toast(error.message, "error"));
   } else if (action === "remove-photo") {
     uploadPhotos.splice(Number(button.dataset.index), 1);
-    render();
+    // Refresh only the preview row so an in-progress report form is not rebuilt.
+    const preview = app.querySelector("#photo-preview");
+    if (preview) preview.innerHTML = photoPreviewMarkup();
+    else render();
   }
 }
 
@@ -2700,7 +2709,10 @@ async function handlePhotoSelection(input) {
     for (const file of files) prepared.push(await compressPhoto(file));
     uploadPhotos.push(...prepared);
     input.value = "";
-    render();
+    // Refresh only the preview row so an in-progress report form is not rebuilt.
+    const preview = app.querySelector("#photo-preview");
+    if (preview) preview.innerHTML = photoPreviewMarkup();
+    else render();
   } catch (error) {
     console.error("CommUnity could not prepare the selected report photo.", error);
     toast(error.message, "error");

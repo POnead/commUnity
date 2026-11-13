@@ -430,6 +430,15 @@ export function timelineMarkup(history) {
     .join("")}</ol>`;
 }
 
+export function photoPreviewMarkup(photos = uploadPhotos) {
+  return photos
+    .map(
+      (photo, index) =>
+        `<div class="photo-thumb"><img src="${esc(photo.previewUrl)}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`,
+    )
+    .join("");
+}
+
 export function reportDetail(report, role) {
   const isResident = role === "resident";
   const nextStatuses = report.status === "Resolved" ? [] : REPORT_TRANSITIONS[report.status] || [];
@@ -1195,7 +1204,7 @@ export function reportFormMarkup() {
               </div>
             </div>
             <div class="form-field span-all"><label for="description">Describe what happened *</label><textarea class="textarea" id="description" name="description" required minlength="12" maxlength="1200">${esc(draft.description || "")}</textarea></div>
-            <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${uploadPhotos.map((photo, index) => `<div class="photo-thumb"><img src="${esc(photo.previewUrl)}" alt="${esc(photo.name)}"><button type="button" data-action="remove-photo" data-index="${index}" aria-label="Remove ${esc(photo.name)}">${icon("close")}</button></div>`).join("")}</div></span></div>
+            <div class="form-field span-all"><span class="field"><label for="report-photos">Attach photos (optional)</label><label class="upload-box" for="report-photos">${icon("image")}<strong>Choose photos from this device</strong><input class="visually-hidden" id="report-photos" name="photos" type="file" accept="image/jpeg,image/png" multiple></label><div class="photo-preview" id="photo-preview">${photoPreviewMarkup()}</div></span></div>
           </div>
           <div class="form-actions"><a class="button secondary" href="${routeUrl("resident", "dashboard")}">Cancel</a><button class="button" type="submit">Review report ${icon("arrow")}</button></div>
         </form>`

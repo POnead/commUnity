@@ -368,6 +368,16 @@ async function loadLocalData() {
       lastPersistedSnapshot = "";
       return false;
     }
+    if (currentUser.requiresPasswordChange) {
+      // A temporary password may only reach the password-change dialog, so the
+      // server refuses /api/state until it is replaced. Start from the empty
+      // shell; updatePassword() loads the real state once the change succeeds.
+      data = emptyState();
+      dataRevision = 0;
+      lastPersistedSnapshot = "";
+      communityOfficialHours = [];
+      return true;
+    }
     const response = await fetch("/api/state");
     const stored = await response.json();
     if (!response.ok) throw new Error(stored.error || "CommUnity could not load your information.");

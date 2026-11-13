@@ -5180,6 +5180,105 @@ test("administrator password reset succeeds and delivers the temporary password 
   }
 });
 
+test("a temporary password reaches only the password change until it is replaced", async () => {
+  const smtpServer = await startSmtpSink();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forced-pw-"));
+  const app = await startServer(dataDir, {
+    smtpHost: "127.0.0.1",
+    smtpPort: String(smtpServer.address().port),
+    smtpUser: "smtp-user",
+    smtpPass: "smtp-pass",
+    smtpFrom: "CommUnity <noreply@example.test>",
+  });
+  try {
+    const admin = await signIn(app);
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Temp Resident",
+        email: "temp-resident@example.test",
+        area: "Purok 1",
+        password: "Original-Password-1!",
+        confirmPassword: "Original-Password-1!",
+      },
+    });
+    const reset = await api(app, "/api/users/password-reset", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "temp-resident@example.test" },
+    });
+    assert.equal(reset.status, 200);
+    const temporaryPassword = mailText(smtpServer.messages.at(-1))
+      .match(/temporary CommUnity password is: (\S+)/)?.[1];
+    assert.ok(temporaryPassword, "the temporary password must be delivered");
+
+    const tempSignIn = await signIn(app, "temp-resident@example.test", temporaryPassword);
+    assert.equal(tempSignIn.response.status, 200);
+    assert.equal(tempSignIn.result.user.requiresPasswordChange, true);
+    const cookie = tempSignIn.cookie;
+
+    // The session check still answers so the interface can keep the dialog up.
+    const session = await api(app, "/api/session", { cookie });
+    assert.equal(session.status, 200);
+    assert.equal((await session.json()).user.requiresPasswordChange, true);
+
+    // Everything else is refused at the dispatcher, reads and writes alike.
+    const state = await api(app, "/api/state", { cookie });
+    assert.equal(state.status, 403);
+    assert.match((await state.json()).error, /Change your password/);
+    const unread = await api(app, "/api/community/unread-count", { cookie });
+    assert.ok(unread.status !== 200, "protected endpoints stay unreachable while the flag is set");
+    const save = await api(app, "/api/state", { method: "PUT", cookie, body: { data: {}, revision: 0 } });
+    assert.ok(save.status !== 200, "protected writes stay unreachable while the flag is set");
+
+    // The first refusal is audited as a security event attributed to the account holder.
+    const denials = await app.db.query(
+      "SELECT count(*)::integer AS count FROM activities WHERE action='Authorization denied' AND actor=$1",
+      ["Temp Resident"],
+    );
+    assert.ok(Number(denials.rows[0].count) >= 1, "a bypass attempt must be audited");
+
+    // Signing out stays available from the dialog.
+    const secondSignIn = await signIn(app, "temp-resident@example.test", temporaryPassword);
+    assert.equal(secondSignIn.response.status, 200);
+    const signOut = await api(app, "/api/auth/logout", { method: "POST", cookie: secondSignIn.cookie });
+    assert.equal(signOut.status, 200);
+
+    // The change itself must still verify the current (temporary) password.
+    const wrongCurrent = await api(app, "/api/auth/password", {
+      method: "POST",
+      cookie,
+      body: { currentPassword: "Not-The-Temporary-1!", newPassword: "Replaced-Password-1!", confirmPassword: "Replaced-Password-1!" },
+    });
+    assert.equal(wrongCurrent.status, 400);
+    const unchanged = await app.db.query(
+      "SELECT requires_password_change FROM users WHERE email=$1",
+      ["temp-resident@example.test"],
+    );
+    assert.equal(unchanged.rows[0].requires_password_change, true);
+
+    const change = await api(app, "/api/auth/password", {
+      method: "POST",
+      cookie,
+      body: { currentPassword: temporaryPassword, newPassword: "Replaced-Password-1!", confirmPassword: "Replaced-Password-1!" },
+    });
+    assert.equal(change.status, 200);
+    const cleared = await app.db.query(
+      "SELECT requires_password_change FROM users WHERE email=$1",
+      ["temp-resident@example.test"],
+    );
+    assert.equal(cleared.rows[0].requires_password_change, false);
+
+    // The session used for the change survives, and the portal is reachable again.
+    const restored = await api(app, "/api/state", { cookie });
+    assert.equal(restored.status, 200);
+  } finally {
+    await app.close();
+    smtpServer.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 async function setupVerifiedRecovery(app, smtpServer, accountEmail, recoveryEmail) {
   await api(app, "/api/auth/register", {
     method: "POST",

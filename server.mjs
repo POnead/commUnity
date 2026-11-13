@@ -2148,6 +2148,16 @@ const apiHandlers = new Map([
   ["community", handleCommunity],
 ]);
 
+// While a temporary password is in force, only these calls may leave the
+// password-change dialog: the change itself, signing out, and the session check
+// the interface uses to keep the dialog and its flag current.
+function passwordChangeRequestAllowed(request, url) {
+  if (url.pathname === "/api/auth/password") return request.method === "POST";
+  if (url.pathname === "/api/auth/logout") return request.method === "POST";
+  if (url.pathname === "/api/session") return request.method === "GET";
+  return false;
+}
+
 // Audit policy for failed requests:
 //   - A 403 (authorization denied) is always recorded as a security event. A request with
 //     no session is attributed to the "system" actor, which the activities table accepts.
@@ -2176,6 +2186,13 @@ async function handleApi(request, response, db, options) {
       return;
     }
     user = await getSessionUser(request, db);
+    // A temporary password exists only to reach the password-change dialog. The
+    // check lives here in the central dispatcher so no handler has to remember
+    // it: until the password is replaced, the session can change the password,
+    // sign out, or read its own session — nothing else.
+    if (user?.requiresPasswordChange && !passwordChangeRequestAllowed(request, url)) {
+      throw new HttpError(403, "Change your password before using CommUnity.");
+    }
     const handler = apiHandlers.get(url.pathname.split("/")[2]);
     if (!handler) {
       sendJson(response, 404, { error: "API endpoint not found." });

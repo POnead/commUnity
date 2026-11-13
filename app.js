@@ -1353,6 +1353,7 @@ async function updatePassword(form) {
   data = state.data;
   dataRevision = state.revision;
   currentUser = state.user;
+  await loadCommunityOfficialHours();
   lastPersistedSnapshot = JSON.stringify(data);
   form.reset();
   toast("Password updated.", "success");
@@ -1406,11 +1407,26 @@ async function login(emailInput, password, remember = false) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Those sign-in details do not match an active account.");
+  currentUser = result.user || null;
+  if (!currentUser) throw new Error("Signed in, but CommUnity could not load your information.");
+  forcedPasswordDismissed = false;
+  if (currentUser.requiresPasswordChange) {
+    // The server answers only the password change until the temporary password is
+    // replaced, so load the empty shell and let the forced dialog run first. The
+    // real state loads inside updatePassword() once the change succeeds.
+    data = emptyState();
+    dataRevision = 0;
+    lastPersistedSnapshot = "";
+    communityOfficialHours = [];
+    window.location.hash = routeUrl(currentUser.role, "dashboard");
+    render();
+    announceSessionChange();
+    return;
+  }
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "Signed in, but CommUnity could not load your information.");
   currentUser = state.user || result.user;
-  forcedPasswordDismissed = false;
   data = state.data;
   dataRevision = state.revision;
   await loadCommunityOfficialHours();

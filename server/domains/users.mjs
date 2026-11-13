@@ -285,7 +285,15 @@ export async function handleUsers(request, response, db, options, user) {
   if (profilePhotoMatch && request.method === "GET") {
     requireRole(user, ROLES);
     const requestedId = decodeURIComponent(profilePhotoMatch[1]);
-    if (requestedId !== user.id && user.role !== "administrator") {
+    // Residents can see their own photo, administrators can see every photo,
+    // and officials can see resident photos (they handle the concern queue the
+    // residents file into). Staff-to-staff photos stay administrator-only.
+    let allowed = requestedId === user.id || user.role === "administrator";
+    if (!allowed && user.role === "official") {
+      const target = await db.query("SELECT role FROM users WHERE id=$1", [requestedId]);
+      allowed = target.rows[0]?.role === "resident";
+    }
+    if (!allowed) {
       throw new HttpError(403, "You cannot view this profile photo.");
     }
     let image = null;

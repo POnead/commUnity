@@ -116,6 +116,13 @@ export async function readFullState(db, user = null) {
       [user.id],
     );
     state.users = users.rows;
+  } else if (user.role === "official") {
+    // Officials handle the concern queue: they see each resident's basic account card and
+    // photo, never phone numbers, working hours, recovery emails, or staff accounts.
+    const users = await db.query(
+      `SELECT id, email, name, area, role, status, photo_url AS "photoUrl" FROM users WHERE role='resident' ORDER BY joined_at, email`,
+    );
+    state.users = users.rows;
   }
 
   const reports = await db.query(
@@ -306,10 +313,28 @@ export function stateForRole(state, user) {
       : user.role === "official" && Object.hasOwn(overrides, ownEmail)
         ? { [ownEmail]: overrides[ownEmail] }
         : {};
+  // Officials handle the concern queue, so they see each resident's basic
+  // account card and photo — never phone numbers, working hours, recovery
+  // emails, availability, or staff accounts.
+  const residentCard = (item) => ({
+    id: item.id,
+    email: item.email,
+    name: item.name,
+    area: item.area,
+    role: item.role,
+    status: item.status,
+    photoUrl: item.photoUrl,
+  });
+  const users =
+    user.role === "administrator"
+      ? state.users
+      : user.role === "resident"
+        ? state.users.filter((item) => item.id === user.id)
+        : state.users.filter((item) => item.role === "resident").map(residentCard);
   return {
     ...state,
     accountOverrides,
-    users: user.role === "administrator" ? state.users : user.role === "resident" ? state.users.filter((item) => item.id === user.id) : [],
+    users,
     reports: user.role === "resident" ? state.reports.filter((item) => item.userEmail === user.email) : state.reports,
     notifications: state.notifications.filter((item) => item.targetEmail === user.email),
     activities: user.role === "administrator" ? state.activities : [],
@@ -414,8 +439,11 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         );
       }
     } else if (user.role === "official") {
+      // Officials are never allowed to change accounts, so the client's copy of
+      // the account list is discarded and rebuilt from the fresh database read.
+      // That way a stale or hand-edited echo can't block a legitimate update.
+      after.users = visibleBefore.users;
       if (
-        after.users.length ||
         !jsonEqual(visibleBefore.permissions, after.permissions) ||
         !jsonEqual(visibleBefore.accountOverrides || {}, after.accountOverrides || {}) ||
         !jsonEqual(visibleBefore.announcements, after.announcements) ||

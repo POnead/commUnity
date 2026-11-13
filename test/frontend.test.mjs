@@ -113,6 +113,44 @@ test("staff can adjust a report's priority from the concern detail page, residen
   assert.doesNotMatch(residentDetail, /id="report-priority-form"/);
 });
 
+test("the reported-by panel shows the reporter's photo when one exists, initials otherwise", async () => {
+  const report = freshBaseReport({
+    photos: [],
+    latitude: null,
+    longitude: null,
+    name: "Resident Example",
+    userEmail: "resident@example.test",
+    priority: "Medium",
+    history: [{ status: "Submitted", at: "2026-11-01T10:00:00.000Z", note: "Report received." }],
+  });
+  const workspace = (photoUrl) => ({
+    version: 1,
+    users: [{ id: "r1", name: "Resident Example", email: "resident@example.test", role: "resident", status: "Active", photoUrl }],
+    reports: [],
+    schedules: [],
+    notifications: [],
+    activities: [],
+    announcements: [],
+    calendarEvents: [],
+    locations: [],
+    recyclingLocations: [],
+    permissions: {},
+    accountOverrides: {},
+  });
+
+  core.__setTestState({
+    currentUser: { id: "official-one", name: "Official One", email: "official@example.test", role: "official" },
+    data: workspace("/api/profile-photo/r1"),
+  });
+  const withPhoto = views.reportDetail(report, "official");
+  assert.match(withPhoto, /<img src="\/api\/profile-photo\/r1"/, "the reporter's photo renders when one exists");
+
+  core.__setTestState({ data: workspace("") });
+  const withoutPhoto = views.reportDetail(report, "official");
+  assert.doesNotMatch(withoutPhoto, /<img src="\/api\/profile-photo\//, "no photo is rendered without one");
+  assert.match(withoutPhoto, />RE</, "initials are the fallback");
+});
+
 test("renders community-wide official hours on the resident dashboard", async () => {
   core.__setTestState({
     currentUser: { role: "resident", area: "Purok 1", email: "resident@example.test" },

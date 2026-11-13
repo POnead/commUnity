@@ -524,7 +524,7 @@ export function reportDetail(report, role) {
           }
         </div>
         <div class="content-stack">
-          ${role !== "resident" ? `<section class="panel"><header class="panel-head"><div><h2>Reported by</h2></div></header><div class="panel-body"><div class="account-summary">${userAvatar({ name: report.name })}<div><strong>${esc(report.name)}</strong><span>${esc((getUser(report.userEmail)?.area || report.area) + " · Resident")}</span><span>${esc(report.userEmail)}</span></div></div></div></section>` : ""}
+          ${role !== "resident" ? `<section class="panel"><header class="panel-head"><div><h2>Reported by</h2></div></header><div class="panel-body"><div class="account-summary">${userAvatar(getUser(report.userEmail) || { name: report.name })}<div><strong>${esc(report.name)}</strong><span>${esc((getUser(report.userEmail)?.area || report.area) + " · Resident")}</span><span>${esc(report.userEmail)}</span></div></div></div></section>` : ""}
           ${role === "official" ? panel("Assignment", `<div class="inline-between"><span>${report.assignedTo ? `Assigned to ${esc(report.assignedTo.name)}` : "Unassigned"}</span>${reportAssignmentAction(report)}</div>`) : ""}
           ${priorityForm}
           <section class="panel"><header class="panel-head"><div><h2>Status history</h2></div></header><div class="panel-body">${timelineMarkup(report.history)}</div></section>

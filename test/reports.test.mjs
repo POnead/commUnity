@@ -258,7 +258,12 @@ test("enforces official report and schedule permissions and sends resident notif
     assert.equal(signedIn.response.status, 200);
     const officialCookie = signedIn.cookie;
     let officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
-    assert.equal(officialState.data.users.length, 0);
+    // Officials see resident account cards (photos for the report queue), never staff
+    // accounts and never private fields such as phone numbers or recovery emails.
+    assert.equal(officialState.data.users.length, 2);
+    assert.ok(officialState.data.users.every((item) => item.role === "resident"));
+    assert.ok(officialState.data.users.every((item) => !("phone" in item)));
+    assert.ok(officialState.data.users.every((item) => !("recoveryEmail" in item)));
     assert.equal(officialState.data.reports.length, 1);
     assert.equal(officialState.data.reports[0].latitude, null);
     assert.equal(officialState.data.reports[0].longitude, null);

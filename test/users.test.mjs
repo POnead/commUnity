@@ -608,3 +608,60 @@ test("a second profile photo replaces the first instead of deleting it", async (
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("officials and administrators can view a resident's profile photo; staff-to-staff stays administrator-only", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-photo-access-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const subject = await registerResident(app, "photo-subject@example.test", "Photo Subject");
+    const uploaded = await uploadPhoto(app, "/api/profile-photo", subject.cookie, TEST_JPEG);
+    assert.equal(uploaded.status, 201);
+    const { photoUrl } = await uploaded.json();
+    assert.ok(photoUrl, "an uploaded photo must come back with a URL");
+
+    const otherResident = await registerResident(app, "photo-other@example.test", "Other Resident");
+    const residentAttempt = await fetch(`${app.origin}${photoUrl}`, {
+      headers: { Origin: app.origin, Cookie: otherResident.cookie },
+    });
+    assert.equal(residentAttempt.status, 403, "a resident must not view another account's photo");
+
+    const adminAttempt = await fetch(`${app.origin}${photoUrl}`, {
+      headers: { Origin: app.origin, Cookie: admin.cookie },
+    });
+    assert.equal(adminAttempt.status, 200, "an administrator can view the resident photo");
+    assert.match(adminAttempt.headers.get("content-type"), /image\//);
+    const adminBytes = new Uint8Array(await adminAttempt.arrayBuffer());
+    assert.ok(adminBytes.length > 2 && adminBytes[0] === 0xff && adminBytes[1] === 0xd8, "serves the JPEG bytes");
+
+    const officialCookie = await createOfficial(app, admin.cookie, "photo-viewer@example.test", "Photo Viewer");
+    const officialAttempt = await fetch(`${app.origin}${photoUrl}`, {
+      headers: { Origin: app.origin, Cookie: officialCookie },
+    });
+    assert.equal(officialAttempt.status, 200, "an official can view the resident photo");
+
+    // Staff-to-staff photos remain administrator-only.
+    const secondOfficial = await createOfficial(app, admin.cookie, "photo-viewer-two@example.test", "Photo Viewer Two");
+    const ownUpload = await uploadPhoto(app, "/api/profile-photo", officialCookie, TEST_JPEG);
+    assert.equal(ownUpload.status, 201);
+    const officialPhotoUrl = (await ownUpload.json()).photoUrl;
+    const staffAttempt = await fetch(`${app.origin}${officialPhotoUrl}`, {
+      headers: { Origin: app.origin, Cookie: secondOfficial },
+    });
+    assert.equal(staffAttempt.status, 403, "an official must not view another staff member's photo");
+
+    // Officials receive the resident's minimal account card, not the full list.
+    const state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const listed = (state.data?.users || []).find((item) => item.email === "photo-subject@example.test");
+    assert.ok(listed, "the official sees the resident's account card");
+    assert.equal(listed.photoUrl, photoUrl, "the official state carries the resident's photo URL");
+    assert.equal(listed.phone, undefined, "the official state must not expose phone numbers");
+    assert.equal(listed.recoveryEmail, undefined, "the official state must not expose recovery emails");
+    assert.equal(listed.availableDays, undefined, "the official state must not expose availability");
+    const staffListed = (state.data?.users || []).find((item) => item.role === "official");
+    assert.equal(staffListed, undefined, "the official state must not list staff accounts");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

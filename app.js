@@ -1865,7 +1865,10 @@ function initializeReportMap() {
       reportMap.setView(PALSARA_CENTER, 13);
     }
   } else {
-    setReportMapPin(reportMapSelection);
+    setReportMapPin({
+      lat: reportMapSelection.latitude,
+      lng: reportMapSelection.longitude,
+    });
   }
 }
 
@@ -1955,7 +1958,12 @@ function initializeAnnouncementMap() {
   } else {
     announcementMap.invalidateSize();
   }
-  if (announcementMapSelection) setAnnouncementMapPin(announcementMapSelection);
+  if (announcementMapSelection) {
+    setAnnouncementMapPin({
+      lat: announcementMapSelection.latitude,
+      lng: announcementMapSelection.longitude,
+    });
+  }
 }
 
 function setCalendarEventMapPin(position) {
@@ -2002,7 +2010,12 @@ function initializeCalendarEventMap() {
   } else {
     calendarEventMap.invalidateSize();
   }
-  if (calendarEventMapSelection) setCalendarEventMapPin(calendarEventMapSelection);
+  if (calendarEventMapSelection) {
+    setCalendarEventMapPin({
+      lat: calendarEventMapSelection.latitude,
+      lng: calendarEventMapSelection.longitude,
+    });
+  }
 }
 
 function initializeAnnouncementDetailMap() {

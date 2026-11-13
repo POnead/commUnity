@@ -52,12 +52,6 @@ const AREA_COORDINATES = {
   "Purok 5": [14.0300, 121.0980],
   "Main Road": [14.0200, 121.0800],
 };
-const EMERGENCY_HOTLINES = [
-  ["Barangay emergency desk", "(042) 123-4567"],
-  ["Police", "911"],
-  ["Fire and rescue", "911"],
-  ["Health center", "0917 000 0000"],
-];
 function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
 }

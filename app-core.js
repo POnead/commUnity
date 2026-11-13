@@ -283,29 +283,59 @@ function emptyState() {
   };
 }
 
+// The browser's base snapshot and the server's current state can differ in
+// server-owned rows (a collection reminder, a pruned notification) without the
+// user's change being stale. Compare everything except notifications to decide
+// whether a revision conflict is safe to retry.
+function stateMatchesIgnoringNotifications(left, right) {
+  if (!left || !right) return false;
+  const { notifications: _left, ...leftRest } = left;
+  const { notifications: _right, ...rightRest } = right;
+  return JSON.stringify(leftRest) === JSON.stringify(rightRest);
+}
+
 async function localSave() {
-  try {
-    const snapshot = JSON.stringify(data);
-    const response = await fetch("/api/state", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data, revision: dataRevision }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "CommUnity could not save this change.");
-    dataRevision = result.revision;
-    data = result.data;
-    currentUser = result.user;
-    lastPersistedSnapshot = JSON.stringify(data);
-    announceSessionChange();
-    return true;
-  } catch (error) {
-    console.error("CommUnity could not save data.", error);
-    if (lastPersistedSnapshot) {
-      data = JSON.parse(lastPersistedSnapshot);
+  let refreshed = false;
+  while (true) {
+    try {
+      const snapshot = JSON.stringify(data);
+      const response = await fetch("/api/state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data, revision: dataRevision }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        // Background jobs and other sessions share one revision counter, so a
+        // server-created notification can advance it while this browser works.
+        // When the server's state is otherwise unchanged, adopt the new revision
+        // and retry once; the server still re-validates every field.
+        if (response.status === 409 && !refreshed) {
+          const stateResponse = await fetch("/api/state");
+          const state = await stateResponse.json();
+          if (stateResponse.ok && state.revision !== dataRevision &&
+              stateMatchesIgnoringNotifications(state.data, JSON.parse(lastPersistedSnapshot || "null"))) {
+            dataRevision = state.revision;
+            refreshed = true;
+            continue;
+          }
+        }
+        throw new Error(result.error || "CommUnity could not save this change.");
+      }
+      dataRevision = result.revision;
+      data = result.data;
+      currentUser = result.user;
+      lastPersistedSnapshot = JSON.stringify(data);
+      announceSessionChange();
+      return true;
+    } catch (error) {
+      console.error("CommUnity could not save data.", error);
+      if (lastPersistedSnapshot) {
+        data = JSON.parse(lastPersistedSnapshot);
+      }
+      toast(error.message || "Your change could not be saved. Check that the CommUnity server is running, then try again.", "error");
+      return false;
     }
-    toast(error.message || "Your change could not be saved. Check that the CommUnity server is running, then try again.", "error");
-    return false;
   }
 }
 

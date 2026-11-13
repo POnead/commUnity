@@ -431,7 +431,7 @@ function modalMarkup() {
   const workingHours = parseWorkingHours(user?.workingHours);
   const availableDays = Array.isArray(user?.availableDays) ? user.availableDays : DEFAULT_OFFICIAL_DAYS;
   const body = `<form id="user-form" class="modal-form"><input type="hidden" name="originalEmail" value="${esc(user?.email || "")}">
-  <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", accountAreas, selectedArea, { required: true, labels: locationAreaLabels(), placeholder: selectedArea ? "" : "Choose a managed location" })}${selectField("Role", "role", Object.keys(ROLES), accountRole, { required: true, labels: ROLES })}${selectField("Account status", "status", ["Active", "Inactive"], user?.status || "Active", { required: true })}<div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-start">Working hours start</label><select class="select" id="working-hours-start" name="workingHoursStart" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.start)}</select></div><div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-end">Working hours end</label><select class="select" id="working-hours-end" name="workingHoursEnd" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.end)}</select></div><fieldset class="availability-field span-all" ${accountRole !== "official" ? "hidden" : ""}><legend>Available days</legend><p class="availability-help">Choose the days this official is available.</p><div class="availability-days">${availableDayOptions(availableDays)}</div></fieldset>${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
+  <div class="modal-form-fields"><div class="form-grid">${inputField("Full name", "name", user?.name || "", { required: true })}${inputField("Email address", "email", user?.email || "", { type: "email", required: true, autocomplete: "email" })}${inputField("Contact number", "phone", user?.phone || "", { type: "tel", placeholder: "Optional" })}${selectField("Area", "area", accountAreas, selectedArea, { required: true, labels: locationAreaLabels(), placeholder: selectedArea ? "" : "Choose a managed location" })}${selectField("Role", "role", Object.keys(ROLES), accountRole, { required: true, labels: ROLES })}${!user ? selectField("Account status", "status", ["Active", "Inactive"], "Active", { required: true }) : ""}<div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-start">Working hours start</label><select class="select" id="working-hours-start" name="workingHoursStart" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.start)}</select></div><div class="form-field" ${accountRole !== "official" ? "hidden" : ""}><label for="working-hours-end">Working hours end</label><select class="select" id="working-hours-end" name="workingHoursEnd" ${accountRole !== "official" ? "disabled" : "required"}>${workingTimeOptions(workingHours.end)}</select></div><fieldset class="availability-field span-all" ${accountRole !== "official" ? "hidden" : ""}><legend>Available days</legend><p class="availability-help">Choose the days this official is available.</p><div class="availability-days">${availableDayOptions(availableDays)}</div></fieldset>${user ? "" : inputField("Initial password", "password", "", { type: "password", required: true, minLength: 8, help: "Choose a unique password with at least 8 characters." })}</div></div>
     <div class="form-actions">${user && user.email !== currentUser.email ? `<button class="button secondary" type="button" data-action="reset-user-password" data-id="${esc(user.email)}">${user.resetRequested ? "Approve &amp; Generate" : "Reset password"}</button><button class="button ${user.status === "Active" ? "danger" : "secondary"}" type="button" data-action="toggle-user" data-id="${esc(user.email)}">${user.status === "Active" ? "Deactivate account" : "Reactivate account"}</button>` : ""}<button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${user ? "Save account" : "Add account"}</button></div></form>`;
   return makeModal(user ? "Edit account" : "Add account", body);
 }
@@ -1523,9 +1523,13 @@ async function addOrEditUser(form) {
   const status = String(form.get("status") || "");
   const existing = originalEmail ? getUser(originalEmail) : null;
   if (originalEmail && !existing) throw new Error("This account could not be found. Refresh the user list and try again.");
+  // Account status changes of an existing account must go through the dedicated
+  // deactivate/reactivate endpoints, which revoke the account's sessions. The
+  // account editor never changes an existing account's status.
+  const accountStatus = existing ? existing.status : status;
   if (name.length < 2) throw new Error("Enter the account holder's name.");
   if (!Object.hasOwn(ROLES, role)) throw new Error("Select a valid account role.");
-  if (!["Active", "Inactive"].includes(status)) throw new Error("Select a valid account status.");
+  if (!existing && !["Active", "Inactive"].includes(status)) throw new Error("Select a valid account status.");
   if (role === "resident" && !data.locations.some((location) => location.area === area)) {
     throw new Error("Choose a resident area from the managed community locations.");
   }
@@ -1553,7 +1557,7 @@ async function addOrEditUser(form) {
   if (area.length < 2) throw new Error("Enter an area for this account.");
   const password = existing ? "" : String(form.get("password") || "");
   if (!existing && password.length < 8) throw new Error("Use an initial password with at least 8 characters.");
-  if (existing?.email === currentUser.email && (role !== "administrator" || status !== "Active")) throw new Error("You cannot remove your own administrator access or deactivate your account.");
+  if (existing?.email === currentUser.email && (role !== "administrator" || accountStatus !== "Active")) throw new Error("You cannot remove your own administrator access or deactivate your account.");
   const confirmed = await confirmAction({
     title: existing ? "Save account?" : "Create account?",
     message: existing
@@ -1564,7 +1568,7 @@ async function addOrEditUser(form) {
   if (!confirmed) return;
   if (existing) {
     const oldEmail = existing.email;
-    Object.assign(existing, { name, email, role, area, status, workingHours: savedWorkingHours, availableDays: savedAvailableDays, phone: String(form.get("phone") || "").trim() });
+    Object.assign(existing, { name, email, role, area, status: accountStatus, workingHours: savedWorkingHours, availableDays: savedAvailableDays, phone: String(form.get("phone") || "").trim() });
     data.reports.filter((report) => report.userEmail === oldEmail).forEach((report) => { report.name = name; });
     if (oldEmail !== email) {
       data.notifications.forEach((item) => { if (item.targetEmail === oldEmail) item.targetEmail = email; });
@@ -1605,12 +1609,21 @@ async function toggleAccount(email) {
       confirmLabel: "Reactivate",
     });
     if (!confirmed) return;
-    user.status = "Active";
-    addActivity("Reactivated user account", `${user.name} · ${ROLES[user.role]}`);
-    if (!await localSave()) return;
+    const response = await fetch("/api/users/reactivate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "The account could not be reactivated.");
+    const stateResponse = await fetch("/api/state");
+    const state = await stateResponse.json();
+    if (!stateResponse.ok) throw new Error(state.error || "The account was reactivated, but the user list could not be refreshed.");
+    data = state.data;
+    dataRevision = state.revision;
+    currentUser = state.user;
+    lastPersistedSnapshot = JSON.stringify(data);
     modalState = null;
     render();
-    toast(`${user.name}'s account is ${user.status.toLowerCase()}.`, "success");
+    announceSessionChange();
+    const reactivated = getUser(email);
+    toast(`${reactivated.name}'s account is ${reactivated.status.toLowerCase()}.`, "success");
     return;
   }
   showModal("deactivate", email);
@@ -1631,13 +1644,21 @@ async function deactivateAccount(email, reason) {
   const response = await fetch("/api/users/deactivate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, reason: trimmedReason }) });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The account could not be deactivated.");
-  user.status = "Inactive";
-  user.deactivationReason = trimmedReason;
-  addActivity("Deactivated user account", `${user.name} · ${ROLES[user.role]}`);
-  if (!await localSave()) return;
+  // The server revoked this account's sessions in the same transaction. Refresh
+  // state from the server instead of saving the local copy, so the account
+  // editor can never replay an old status change through /api/state.
+  const stateResponse = await fetch("/api/state");
+  const state = await stateResponse.json();
+  if (!stateResponse.ok) throw new Error(state.error || "The account was deactivated, but the user list could not be refreshed.");
+  data = state.data;
+  dataRevision = state.revision;
+  currentUser = state.user;
+  lastPersistedSnapshot = JSON.stringify(data);
   modalState = null;
   render();
-  toast(`${user.name}'s account is ${user.status.toLowerCase()}.`, "success");
+  announceSessionChange();
+  const deactivated = getUser(email);
+  toast(`${deactivated.name}'s account is ${deactivated.status.toLowerCase()}.`, "success");
 }
 
 function openReport(id) {

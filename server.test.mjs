@@ -10,6 +10,7 @@ import {
   archiveOldActivities,
   createCommunityServer,
   pruneExpiredAuthState,
+  pruneOldNotifications,
   requestClientAddress,
   runScheduleReminders,
   sweepOrphanUploads,
@@ -1123,6 +1124,308 @@ test("allows unrelated account updates when a resident has a legacy unmanaged ar
       body: { revision: refreshed.revision, data: refreshed.data },
     });
     assert.equal(rejectedAreaChange.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("deactivating an account revokes all of its sessions in the same transaction", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-deactivate-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Deactivation Target",
+        email: "deactivate-target@example.test",
+        area: "Purok 1",
+        password: "A-unique-target-password!",
+        confirmPassword: "A-unique-target-password!",
+      },
+    });
+    const target = await signIn(app, "deactivate-target@example.test", "A-unique-target-password!");
+    assert.equal(target.response.status, 200);
+
+    // Registering issues a remember-me session; signing in adds another.
+    const sessionsBefore = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["deactivate-target@example.test"],
+    );
+    assert.equal(sessionsBefore.rows[0].count, 2);
+
+    const deactivated = await api(app, "/api/users/deactivate", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "deactivate-target@example.test", reason: "No longer part of the community." },
+    });
+    assert.equal(deactivated.status, 200);
+    assert.equal((await deactivated.json()).ok, true);
+
+    const account = await app.db.query("SELECT status, deactivation_reason FROM users WHERE email=$1", [
+      "deactivate-target@example.test",
+    ]);
+    assert.equal(account.rows[0].status, "Inactive");
+    assert.equal(account.rows[0].deactivation_reason, "No longer part of the community.");
+
+    // Sessions are revoked in the same transaction as deactivation.
+    const sessionsAfter = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["deactivate-target@example.test"],
+    );
+    assert.equal(sessionsAfter.rows[0].count, 0);
+
+    // The old session can no longer authenticate the account.
+    const oldSession = await api(app, "/api/session", { cookie: target.cookie });
+    assert.equal((await oldSession.json()).user, null);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("reactivating an account does not resurrect its revoked sessions", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reactivate-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Reactivation Target",
+        email: "reactivate-target@example.test",
+        area: "Purok 1",
+        password: "A-unique-target-password!",
+        confirmPassword: "A-unique-target-password!",
+      },
+    });
+    const target = await signIn(app, "reactivate-target@example.test", "A-unique-target-password!");
+    assert.equal(target.response.status, 200);
+
+    const deactivated = await api(app, "/api/users/deactivate", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "reactivate-target@example.test", reason: "Temporary leave." },
+    });
+    assert.equal(deactivated.status, 200);
+
+    let sessions = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reactivate-target@example.test"],
+    );
+    assert.equal(sessions.rows[0].count, 0, "deactivation must revoke sessions before reactivation");
+
+    const reactivated = await api(app, "/api/users/reactivate", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "reactivate-target@example.test" },
+    });
+    assert.equal(reactivated.status, 200);
+
+    const restored = await app.db.query("SELECT status, deactivation_reason FROM users WHERE email=$1", [
+      "reactivate-target@example.test",
+    ]);
+    assert.equal(restored.rows[0].status, "Active");
+    assert.equal(restored.rows[0].deactivation_reason, "");
+
+    // No old session is valid again: the count stays at zero.
+    sessions = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reactivate-target@example.test"],
+    );
+    assert.equal(sessions.rows[0].count, 0);
+    const oldSession = await api(app, "/api/session", { cookie: target.cookie });
+    assert.equal((await oldSession.json()).user, null);
+
+    // The account holder can sign in again, which issues a fresh session.
+    const fresh = await signIn(app, "reactivate-target@example.test", "A-unique-target-password!");
+    assert.equal(fresh.response.status, 200);
+    const sessionsAgain = await app.db.query(
+      "SELECT count(*)::integer AS count FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)",
+      ["reactivate-target@example.test"],
+    );
+    assert.equal(sessionsAgain.rows[0].count, 1);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("the account editor cannot change an account's status through /api/state", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-editor-status-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Status Target",
+        email: "status-target@example.test",
+        area: "Purok 1",
+        password: "A-unique-target-password!",
+        confirmPassword: "A-unique-target-password!",
+      },
+    });
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const target = state.data.users.find((account) => account.email === "status-target@example.test");
+    assert.ok(target);
+    assert.equal(target.status, "Active");
+
+    const tampered = structuredClone(state.data);
+    tampered.users.find((account) => account.email === "status-target@example.test").status = "Inactive";
+    const rejected = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: tampered },
+    });
+    assert.equal(rejected.status, 403, await rejected.text());
+
+    // The account is still active: the editor could not deactivate it.
+    const untouched = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const persisted = untouched.data.users.find((account) => account.email === "status-target@example.test");
+    assert.equal(persisted.status, "Active");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("residents cannot forge activity log entries through the account editor", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forge-resident-"));
+  const app = await startServer(dataDir);
+  try {
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Forger Resident",
+        email: "forger-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    const resident = await signIn(app, "forger-resident@example.test", "A-unique-resident-password!");
+    assert.equal(resident.response.status, 200);
+
+    const state = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    const forged = structuredClone(state.data);
+    forged.activities.push({
+      id: "A-forged-delete",
+      actor: "Forger Resident",
+      role: "resident",
+      action: "Deleted a report",
+      detail: "RPT-999 · I deleted this report.",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const rejected = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: state.revision, data: forged },
+    });
+    assert.equal(rejected.status, 403, await rejected.text());
+
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action=$1", ["Deleted a report"]);
+    assert.equal(stored.rows[0].count, 0, "a resident cannot fabricate a deletion event");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("officials cannot forge activity log entries through the account editor", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forge-official-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    await api(app, "/api/users", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        name: "Forger Official",
+        email: "forger-official@example.test",
+        area: "Palsara",
+        role: "official",
+        status: "Active",
+        availableDays: ["Monday"],
+        workingHours: "Monday, 8:00 AM-5:00 PM",
+        password: "A-unique-official-password!",
+      },
+    });
+    const official = await signIn(app, "forger-official@example.test", "A-unique-official-password!");
+    assert.equal(official.response.status, 200);
+
+    const state = await api(app, "/api/state", { cookie: official.cookie }).then((response) => response.json());
+    const forged = structuredClone(state.data);
+    forged.activities.push({
+      id: "A-forged-priority",
+      actor: "Forger Official",
+      role: "official",
+      action: "Changed report priority",
+      detail: "RPT-999 · Low to Critical",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const rejected = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: official.cookie,
+      body: { revision: state.revision, data: forged },
+    });
+    assert.equal(rejected.status, 403, await rejected.text());
+
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action=$1", ["Changed report priority"]);
+    assert.equal(stored.rows[0].count, 0, "an official cannot fabricate a priority change through state sync");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("the server stamps activity timestamps, not the browser", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-activity-time-"));
+  const app = await startServer(dataDir);
+  try {
+    await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Timestamp Resident",
+        email: "timestamp-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-resident-password!",
+        confirmPassword: "A-unique-resident-password!",
+      },
+    });
+    const resident = await signIn(app, "timestamp-resident@example.test", "A-unique-resident-password!");
+    assert.equal(resident.response.status, 200);
+
+    const state = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    const backdated = structuredClone(state.data);
+    backdated.activities.push({
+      id: "A-backdated",
+      actor: "Timestamp Resident",
+      role: "resident",
+      action: "Submitted a concern",
+      detail: "RPT-1 · backdated by the client",
+      at: new Date("2020-01-01T00:00:00.000Z").toISOString(),
+      result: "Success",
+    });
+    const created = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: state.revision, data: backdated },
+    });
+    assert.equal(created.status, 200);
+
+    const stored = await app.db.query("SELECT at FROM activities WHERE id=$1", ["A-backdated"]);
+    assert.equal(stored.rows.length, 1, "the whitelisted activity was stored");
+    const storedAt = new Date(stored.rows[0].at).getTime();
+    assert.ok(storedAt > new Date("2021-01-01").getTime(), "the server stamp overwrote the client timestamp");
+    assert.ok(Math.abs(storedAt - Date.now()) < 60000, "the stored time is near now");
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -2729,6 +3032,243 @@ test("uses the barangay time zone for calendar days, new accounts and collection
   }
 });
 
+test("a resident save survives a collection reminder the server created after the browser's read", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reminder-save-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    const resident = await registerResident(app, "reminder-resident@example.test", "Reminder Resident");
+
+    const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    officialState.data.schedules.push({
+      id: "GCS-reminder-save",
+      area: "Purok 2",
+      zone: "Zone A",
+      date: manilaDate(1),
+      wasteType: "Recyclables",
+      start: "6:00 AM",
+      end: "9:00 AM",
+      frequency: "Weekly",
+      team: "Team A",
+      status: "Scheduled",
+    });
+    const scheduleSaved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: officialState.data },
+    });
+    assert.equal(scheduleSaved.status, 200);
+
+    // The resident reads state before the reminder job runs.
+    const residentState = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    assert.equal(await runScheduleReminders(app.db), 1, "the reminder matches the barangay's tomorrow");
+
+    // The resident submits a concern from the pre-reminder snapshot, carrying
+    // the current revision after a resync but without the reminder in its own
+    // notification list. That difference is server work, not a forged update.
+    const data = structuredClone(residentState.data);
+    const now = new Date().toISOString();
+    data.reports.push({
+      id: "RPT-reminder-save",
+      userEmail: resident.email,
+      name: resident.name,
+      category: "Flooding",
+      title: "Reminder save drainage",
+      area: "Purok 2",
+      barangay: "Palsara",
+      locationDetail: "Near the chapel",
+      latitude: 14.01799,
+      longitude: 121.09465,
+      description: "Water pools near the chapel after rain.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
+    });
+    data.activities.push({
+      id: "A-reminder-save",
+      actor: resident.name,
+      role: "resident",
+      action: "Submitted a concern",
+      detail: "RPT-reminder-save · Reminder save drainage",
+      at: now,
+      result: "Success",
+    });
+    const currentRevision = Number((await app.db.query("SELECT revision FROM app_meta WHERE id=1")).rows[0].revision);
+    const response = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: currentRevision, data },
+    });
+    const savedState = await response.json();
+    assert.equal(response.status, 200, savedState.error || "the save should be accepted");
+
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM notifications WHERE title='Collection reminder'");
+    assert.equal(stored.rows[0].count, 1, "the reminder is neither lost nor duplicated");
+    assert.ok(savedState.data.notifications.some((item) => item.title === "Collection reminder"),
+      "the resynced state includes the server-created reminder");
+    assert.ok(savedState.data.reports.some((item) => item.id === "RPT-reminder-save"),
+      "the concern the resident submitted is stored");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an unchanged resident save survives the 90-day notification prune", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-prune-save-"));
+  const app = await startServer(dataDir);
+  try {
+    const resident = await registerResident(app, "prune-resident@example.test", "Prune Resident");
+    await app.db.query(`
+      INSERT INTO notifications (id, target_email, report_id, title, body, created_at, read)
+      VALUES ('N-old', $1, NULL, 'Old notice', 'This notice is pruned.', now() - interval '100 days', false)
+    `, [resident.email]);
+
+    const state = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    assert.equal(state.data.notifications.some((item) => item.id === "N-old"), true,
+      "the browser's copy still holds the notice the job is about to prune");
+
+    assert.equal(await pruneOldNotifications(app.db), 1, "the old notice is pruned");
+
+    // The browser saves with the current revision but its list still names the
+    // pruned row; the server must not treat that as a forged update.
+    const currentRevision = Number((await app.db.query("SELECT revision FROM app_meta WHERE id=1")).rows[0].revision);
+    const response = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: currentRevision, data: state.data },
+    });
+    assert.equal(response.status, 200, await response.text());
+
+    const stored = await app.db.query("SELECT count(*)::integer AS count FROM notifications WHERE target_email=$1", [resident.email]);
+    assert.equal(stored.rows[0].count, 0, "the pruned notice stays pruned");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("an administrator save cannot resurrect a record the archive job moved", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-archive-save-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+
+    // The record is written after the browser's read, then archived, so the
+    // browser's activity list names a row the live log no longer has.
+    await app.db.query(`
+      INSERT INTO activities (id, actor, role, action, detail, at, result)
+      VALUES ('OLD-ARCH', 'system', 'system', 'Old event', 'old', now() - interval '100 days', 'Success')
+    `);
+    await archiveOldActivities(app.db);
+
+    const currentRevision = Number((await app.db.query("SELECT revision FROM app_meta WHERE id=1")).rows[0].revision);
+    const response = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: currentRevision, data: state.data },
+    });
+    assert.equal(response.status, 200, await response.text());
+
+    const live = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id='OLD-ARCH'");
+    assert.equal(live.rows[0].count, 0, "an archived record stays archived");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("background notification and archive jobs advance the shared revision only when state changes", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-revision-jobs-"));
+  const app = await startServer(dataDir);
+  try {
+    const revision = async () => Number((await app.db.query("SELECT revision FROM app_meta WHERE id=1")).rows[0].revision);
+
+    let before = await revision();
+    assert.equal(await runScheduleReminders(app.db), 0);
+    assert.equal(await revision(), before, "an idle reminder run does not advance the revision");
+
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie);
+    await registerResident(app, "revision-resident@example.test", "Revision Resident");
+    const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    officialState.data.schedules.push({
+      id: "GCS-revision",
+      area: "Purok 2",
+      zone: "Zone A",
+      date: manilaDate(1),
+      wasteType: "Recyclables",
+      start: "6:00 AM",
+      end: "9:00 AM",
+      frequency: "Weekly",
+      team: "Team A",
+      status: "Scheduled",
+    });
+    const scheduleSaved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: officialCookie,
+      body: { revision: officialState.revision, data: officialState.data },
+    });
+    assert.equal(scheduleSaved.status, 200);
+
+    before = await revision();
+    assert.equal(await runScheduleReminders(app.db), 1);
+    assert.equal(await revision(), before + 1, "a created reminder advances the revision");
+    assert.equal(await runScheduleReminders(app.db), 0);
+    assert.equal(await revision(), before + 1, "a repeat reminder run does not advance the revision");
+
+    await archiveOldActivities(app.db);
+    before = await revision();
+    await archiveOldActivities(app.db);
+    assert.equal(await revision(), before, "archiving nothing does not advance the revision");
+    await app.db.query(`
+      INSERT INTO activities (id, actor, role, action, detail, at, result)
+      VALUES ('OLD-REV', 'system', 'system', 'Old event', 'old', now() - interval '100 days', 'Success')
+    `);
+    before = await revision();
+    await archiveOldActivities(app.db);
+    assert.equal(await revision(), before + 1, "archiving a record advances the revision");
+    await archiveOldActivities(app.db);
+    assert.equal(await revision(), before + 1, "a repeat archive run does not advance the revision");
+
+    before = await revision();
+    assert.equal(await pruneOldNotifications(app.db), 0);
+    assert.equal(await revision(), before, "pruning nothing does not advance the revision");
+    await app.db.query(`
+      INSERT INTO notifications (id, target_email, report_id, title, body, created_at, read)
+      VALUES ('N-REV', 'admin@example.test', NULL, 'Old', 'old', now() - interval '100 days', false)
+    `);
+    before = await revision();
+    assert.equal(await pruneOldNotifications(app.db), 1);
+    assert.equal(await revision(), before + 1, "pruning a notification advances the revision");
+
+    before = await revision();
+    const resetRequest = await api(app, "/api/auth/password-reset-request", {
+      method: "POST",
+      body: { email: "revision-resident@example.test" },
+    });
+    assert.equal(resetRequest.status, 202);
+    assert.equal(await revision(), before + 1, "a password reset request advances the revision");
+
+    before = await revision();
+    const adminReset = await api(app, "/api/auth/request-admin-reset", {
+      method: "POST",
+      body: { email: "revision-resident@example.test" },
+    });
+    assert.equal(adminReset.status, 200);
+    assert.equal(await revision(), before + 1, "an administrator reset request advances the revision");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 async function registerResident(app, email, name) {
   const registered = await api(app, "/api/auth/register", {
     method: "POST",
@@ -3361,6 +3901,12 @@ test("an existing database is upgraded to backfill the recorded resolution and f
       { status: "Under Review", at: moments.underReview, note: "A barangay official is reviewing this report.", actorRole: "official" },
       { status: "In Progress", at: moments.inProgress, note: "The crew is scheduled to patch the road.", actorRole: "official" },
     ]);
+
+    // A version older than the service-target columns stores no cycle start:
+    // make the stored values unknown so the upgrade has to recover them from
+    // the status history, in the same order the deadlines are backfilled.
+    await first.db.query("ALTER TABLE reports ALTER COLUMN service_cycle_started_at DROP NOT NULL");
+    await first.db.query("UPDATE reports SET service_cycle_started_at=NULL WHERE id LIKE 'R-LEGACY-%'");
   } finally {
     await first.close();
   }
@@ -3369,7 +3915,9 @@ test("an existing database is upgraded to backfill the recorded resolution and f
   const second = await startServer(dataDir);
   try {
     const rows = await second.db.query(
-      "SELECT id, responded_at AS \"respondedAt\", resolved_at AS \"resolvedAt\", service_cycle_started_at AS \"serviceCycleStartedAt\" FROM reports WHERE id LIKE 'R-LEGACY-%' ORDER BY id",
+      `SELECT id, responded_at AS "respondedAt", resolved_at AS "resolvedAt", service_cycle_started_at AS "serviceCycleStartedAt",
+              response_deadline AS "responseDeadline", resolution_deadline AS "resolutionDeadline"
+         FROM reports WHERE id LIKE 'R-LEGACY-%' ORDER BY id`,
     );
     const stored = new Map(rows.rows.map((row) => [row.id, row]));
     const at = (value) => (value instanceof Date ? value.toISOString() : value);
@@ -3412,6 +3960,19 @@ test("an existing database is upgraded to backfill the recorded resolution and f
     assert.equal(at(stored.get("R-LEGACY-06").serviceCycleStartedAt), moments.submitted.toISOString(),
       "an answered-but-unresolved concern starts its cycle at submission");
 
+    // Deadlines are anchored on the recovered service cycle, so a reopened
+    // legacy concern measures from its reopening, not its original submission
+    // (Medium priority: response after 3 days, resolution after 14).
+    assert.equal(at(stored.get("R-LEGACY-03").responseDeadline),
+      new Date(moments.reopened.getTime() + 3 * 86400000).toISOString(),
+      "a reopened legacy concern's response deadline follows the reopening");
+    assert.equal(at(stored.get("R-LEGACY-03").resolutionDeadline),
+      new Date(moments.reopened.getTime() + 14 * 86400000).toISOString(),
+      "a reopened legacy concern's resolution deadline follows the reopening");
+    assert.equal(at(stored.get("R-LEGACY-01").responseDeadline),
+      new Date(moments.submitted.getTime() + 3 * 86400000).toISOString(),
+      "a never-reopened legacy concern's deadlines still follow the submission");
+
     // The recovered moments reach the concern detail the resident and staff read.
     const admin = await signIn(second);
     const state = await api(second, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
@@ -3452,6 +4013,400 @@ test("account overrides deny schedules and announcements and malformed overrides
     assert.equal((await setOverrides({})).status, 200);
     const allowedAgain = await api(app, "/api/announcements", { method: "POST", cookie: officialCookie, body: { title: "Allowed notice", detail: "Access restored.", date: new Date().toISOString().slice(0, 10) } });
     assert.equal(allowedAgain.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("permission overrides are visible only to their administrator, owner and no one else", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-override-visibility-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const firstCookie = await createOfficial(app, admin.cookie, "first-official@example.test", "First Official");
+    const secondCookie = await createOfficial(app, admin.cookie, "second-official@example.test", "Second Official");
+    const resident = await registerResident(app, "override-resident@example.test", "Override Resident");
+
+    const adminState = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    adminState.data.accountOverrides = {
+      "first-official@example.test": { manageReports: false },
+      "second-official@example.test": { manageSchedules: false },
+    };
+    const overrideSave = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: adminState.revision, data: adminState.data },
+    });
+    assert.equal(overrideSave.status, 200, await overrideSave.text());
+
+    // The administrator manages every official's overrides.
+    const reloaded = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    assert.deepEqual(reloaded.data.accountOverrides, {
+      "first-official@example.test": { manageReports: false },
+      "second-official@example.test": { manageSchedules: false },
+    });
+
+    // An official receives their own overrides and nobody else's, so a colleague's
+    // email address and access settings never leave the server for them.
+    const first = await api(app, "/api/state", { cookie: firstCookie }).then((r) => r.json());
+    assert.deepEqual(first.data.accountOverrides, { "first-official@example.test": { manageReports: false } });
+    assert.equal(first.data.accountOverrides["second-official@example.test"], undefined);
+
+    const second = await api(app, "/api/state", { cookie: secondCookie }).then((r) => r.json());
+    assert.deepEqual(second.data.accountOverrides, { "second-official@example.test": { manageSchedules: false } });
+
+    // Residents receive none.
+    const residentState = await api(app, "/api/state", { cookie: resident.cookie }).then((r) => r.json());
+    assert.deepEqual(residentState.data.accountOverrides, {});
+
+    // An official's own workspace save still works with the restricted copy.
+    const noOpSave = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: firstCookie,
+      body: { revision: first.revision, data: first.data },
+    });
+    assert.equal(noOpSave.status, 200, await noOpSave.text());
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a resident cannot submit a concern whose first history entry claims another status", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forged-history-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "forged-history@example.test", "Forged History");
+    const state = await api(app, "/api/state", { cookie }).then((r) => r.json());
+    const now = new Date().toISOString();
+    const data = structuredClone(state.data);
+    data.reports.push({
+      id: "RPT-forged-open",
+      userEmail: email,
+      name,
+      category: "Flooding",
+      title: "Forged first entry",
+      area: "Purok 2",
+      barangay: "Palsara",
+      locationDetail: "Near the school",
+      latitude: 14.01799,
+      longitude: 121.09465,
+      description: "Water pools near the school entrance after rain.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Resolved", at: now, note: "The road has been patched.", actorName: "Official One", actorRole: "official" }],
+    });
+    const attempt = await api(app, "/api/state", { method: "PUT", cookie, body: { revision: state.revision, data } });
+    assert.equal(attempt.status, 403, await attempt.text());
+    const reloaded = await api(app, "/api/state", { cookie }).then((r) => r.json());
+    assert.equal(reloaded.data.reports.some((report) => report.id === "RPT-forged-open"), false,
+      "a concern claiming a first entry it never earned is not stored");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("editing an official's email keeps their permission overrides with the account", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-override-move-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    await createOfficial(app, admin.cookie, "moveable@example.test", "Moveable Official");
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    state.data.accountOverrides = { "moveable@example.test": { manageReports: false } };
+    const overrideSave = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(overrideSave.status, 200, await overrideSave.text());
+
+    // The workspace still keys the override by the old address when the
+    // account's email is edited; the save must follow the account, not fail.
+    const reloaded = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const data = structuredClone(reloaded.data);
+    const official = data.users.find((account) => account.email === "moveable@example.test");
+    official.email = "moved@example.test";
+    const rename = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: reloaded.revision, data },
+    });
+    assert.equal(rename.status, 200, await rename.text());
+
+    const after = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    assert.deepEqual(after.data.accountOverrides, { "moved@example.test": { manageReports: false } });
+    const stored = await app.db.query("SELECT permission_overrides AS overrides FROM users WHERE email='moved@example.test'");
+    assert.deepEqual(stored.rows[0].overrides, { manageReports: false });
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("demoting an official clears their permission overrides", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-override-demote-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    await createOfficial(app, admin.cookie, "demotable@example.test", "Demotable Official");
+
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    state.data.accountOverrides = { "demotable@example.test": { manageReports: false } };
+    const overrideSave = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(overrideSave.status, 200, await overrideSave.text());
+
+    const reloaded = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const data = structuredClone(reloaded.data);
+    const official = data.users.find((account) => account.email === "demotable@example.test");
+    official.role = "resident";
+    official.area = "Purok 1";
+    const demotion = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: reloaded.revision, data },
+    });
+    assert.equal(demotion.status, 200, await demotion.text());
+
+    // The stale override key is dropped rather than failing the save, and the
+    // stored overrides are cleared so the demoted account keeps no elevation.
+    const after = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    assert.deepEqual(after.data.accountOverrides, {});
+    const stored = await app.db.query("SELECT permission_overrides AS overrides, role FROM users WHERE email='demotable@example.test'");
+    assert.deepEqual(stored.rows[0].overrides, {});
+    assert.equal(stored.rows[0].role, "resident");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("confirmation and reopening text is length-limited", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-confirm-caps-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "caps-resident@example.test", "Caps Resident");
+    const reportId = await seedReport(app, { cookie, email, name }, { idSuffix: "caps", priority: "Medium" });
+
+    const now = new Date().toISOString();
+    await app.db.query("UPDATE reports SET status='Resolved', updated_at=$1 WHERE id=$2", [now, reportId]);
+    await app.db.query(
+      "INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES ($1,$2,$3,$4,$5,$6,'administrator')",
+      [reportId, 1, "Resolved", now, "Concern resolved.", "Portal administrator"],
+    );
+
+    const longNote = "x".repeat(501);
+    const longConfirm = await api(app, "/api/community/report-confirm", { method: "POST", cookie, body: { reportId, note: longNote } });
+    assert.equal(longConfirm.status, 400);
+    assert.match((await longConfirm.json()).error ?? "", /500/);
+
+    const confirm = await api(app, "/api/community/report-confirm", { method: "POST", cookie, body: { reportId, note: "Thank you, it is fixed." } });
+    assert.equal(confirm.status, 200, await confirm.text());
+
+    const longReason = "y".repeat(501);
+    const longReopen = await api(app, "/api/community/report-reopen", { method: "POST", cookie, body: { reportId, reason: longReason } });
+    assert.equal(longReopen.status, 400);
+    assert.match((await longReopen.json()).error ?? "", /500/);
+
+    const reopen = await api(app, "/api/community/report-reopen", { method: "POST", cookie, body: { reportId, reason: "The pothole returned after one week." } });
+    assert.equal(reopen.status, 200, await reopen.text());
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("photos cannot be uploaded for a concern that is already on file", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-photo-existing-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "photo-existing@example.test", "Photo Existing");
+    const reportId = await seedReport(app, { cookie, email, name }, { idSuffix: "existing", priority: "Medium" });
+
+    // The concern is already on file, so its photos were registered by the
+    // submission: another upload would leak an unservable file on disk.
+    const attempt = await uploadPhoto(app, `/api/report-photos?reportId=${reportId}`, cookie, TEST_JPEG);
+    assert.equal(attempt.status, 409);
+
+    // The draft flow still works while the concern has not been submitted.
+    const draft = await uploadPhoto(app, "/api/report-photos?reportId=R-DRAFTPHOTO", cookie, TEST_JPEG);
+    assert.equal(draft.status, 201, await draft.text());
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a reset link cannot set two passwords when concurrent requests race", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reset-race-"));
+  const app = await startServer(dataDir);
+  try {
+    const email = "race-resident@example.test";
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: { name: "Race Resident", email, area: "Purok 1", password: "A-unique-resident-password!", confirmPassword: "A-unique-resident-password!" },
+    });
+    assert.equal(registered.status, 201);
+    const rawToken = "race-reset-token-0123456789abcdef";
+    const tokenHash = createHash("sha256").update(rawToken).digest("hex");
+    await app.db.query(
+      "INSERT INTO password_reset_tokens(user_id, token_hash, expires_at) SELECT id, $1, now() + interval '30 minutes' FROM users WHERE email=$2",
+      [tokenHash, email],
+    );
+
+    // Two browsers following the same link at the same time: the token must be
+    // consumed by one of them, so only one password change can ever happen.
+    const [first, second] = await Promise.all([
+      api(app, "/api/auth/reset-password", { method: "POST", body: { token: rawToken, newPassword: "A-first-race-password-1!" } }),
+      api(app, "/api/auth/reset-password", { method: "POST", body: { token: rawToken, newPassword: "A-second-race-password-2!" } }),
+    ]);
+    assert.notDeepEqual([first.status, second.status], [200, 200],
+      "both requests must not report success for one link");
+    const remaining = await app.db.query("SELECT count(*)::integer AS count FROM password_reset_tokens");
+    assert.equal(remaining.rows[0].count, 0, "the link is consumed even by the request that loses the race");
+    const firstTry = await api(app, "/api/auth/login", { method: "POST", body: { email, password: "A-first-race-password-1!" } });
+    const secondTry = await api(app, "/api/auth/login", { method: "POST", body: { email, password: "A-second-race-password-2!" } });
+    assert.deepEqual([firstTry.status, secondTry.status].sort(), [200, 401],
+      "exactly one of the two submitted passwords is now in effect");
+
+    // The consumed link does not work again on its own either.
+    const reuse = await api(app, "/api/auth/reset-password", { method: "POST", body: { token: rawToken, newPassword: "A-third-race-password-3!" } });
+    assert.equal(reuse.status, 400);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("deactivating an account revokes its session in the same stroke, and reactivation restores access", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-deactivate-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie, "deactivate-me@example.test", "Deactivate Me");
+    assert.equal((await api(app, "/api/state", { cookie: officialCookie })).status, 200);
+
+    const missingReason = await api(app, "/api/users/deactivate", { method: "POST", cookie: admin.cookie, body: { email: "deactivate-me@example.test", reason: "   " } });
+    assert.equal(missingReason.status, 400);
+    const selfDeactivate = await api(app, "/api/users/deactivate", { method: "POST", cookie: admin.cookie, body: { email: ADMIN_EMAIL, reason: "Trying to lock myself out." } });
+    assert.equal(selfDeactivate.status, 400);
+    const unknown = await api(app, "/api/users/deactivate", { method: "POST", cookie: admin.cookie, body: { email: "nobody@example.test", reason: "No such account." } });
+    assert.equal(unknown.status, 404);
+
+    const deactivate = await api(app, "/api/users/deactivate", { method: "POST", cookie: admin.cookie, body: { email: "deactivate-me@example.test", reason: "No longer serving the barangay." } });
+    assert.equal(deactivate.status, 200, await deactivate.text());
+
+    // The revocation is not a separate step that can fail on its own: the
+    // account's session is gone the moment the status change commits.
+    const revoked = await api(app, "/api/state", { cookie: officialCookie });
+    assert.equal(revoked.status, 401);
+
+    const log = await api(app, "/api/community/activity", { cookie: admin.cookie }).then((r) => r.json());
+    assert.ok(log.activities.some((item) => item.action === "Deactivated user account" && item.detail.includes("deactivate-me@example.test")),
+      "the deactivation is recorded in the Activity Log");
+
+    const reactivate = await api(app, "/api/users/reactivate", { method: "POST", cookie: admin.cookie, body: { email: "deactivate-me@example.test" } });
+    assert.equal(reactivate.status, 200, await reactivate.text());
+    const again = await api(app, "/api/users/reactivate", { method: "POST", cookie: admin.cookie, body: { email: "deactivate-me@example.test" } });
+    assert.equal(again.status, 404, "an active account cannot be reactivated");
+
+    const signedIn = await signIn(app, "deactivate-me@example.test", "A-unique-official-password!");
+    assert.equal(signedIn.response.status, 200);
+    assert.equal((await api(app, "/api/state", { cookie: signedIn.cookie })).status, 200,
+      "the reactivated account can sign in and use the workspace again");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a forged Activity Log entry cannot be appended and existing history cannot be altered", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forged-activity-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const officialCookie = await createOfficial(app, admin.cookie, "activity-official@example.test", "Activity Official");
+
+    // An official cannot record an action the server never observed them take:
+    // account administration is not in an official's allowed action set.
+    const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((r) => r.json());
+    const forged = structuredClone(officialState.data);
+    forged.activities.push({
+      id: "ACT-forged-0001",
+      actor: "Activity Official",
+      role: "official",
+      action: "Deactivated user account",
+      detail: "The official removed an account they never touched.",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const forgedAttempt = await api(app, "/api/state", { method: "PUT", cookie: officialCookie, body: { revision: officialState.revision, data: forged } });
+    assert.equal(forgedAttempt.status, 403);
+
+    // Neither can they record a permitted action under someone else's name:
+    // the server stamps the authenticated account as the actor.
+    const impersonated = structuredClone(officialState.data);
+    impersonated.activities.push({
+      id: "ACT-forged-0002",
+      actor: "Portal Administrator",
+      role: "official",
+      action: "Claimed a concern",
+      detail: "Claimed in the administrator's name.",
+      at: new Date().toISOString(),
+      result: "Success",
+    });
+    const impersonatedAttempt = await api(app, "/api/state", { method: "PUT", cookie: officialCookie, body: { revision: officialState.revision, data: impersonated } });
+    assert.equal(impersonatedAttempt.status, 400);
+
+    // The administrator cannot rewrite a row the server already recorded.
+    const adminState = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    assert.ok(adminState.data.activities.length > 0, "the workspace has recorded activity");
+    const altered = structuredClone(adminState.data);
+    altered.activities[0].detail = "Rewritten by the browser.";
+    const alteredAttempt = await api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision: adminState.revision, data: altered } });
+    assert.equal(alteredAttempt.status, 403);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("confirming and reopening a concern are recorded in the Activity Log", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-confirm-log-"));
+  const app = await startServer(dataDir);
+  try {
+    const { cookie, email, name } = await registerResident(app, "log-resident@example.test", "Log Resident");
+    const reportId = await seedReport(app, { cookie, email, name }, { idSuffix: "log", priority: "Medium" });
+
+    const now = new Date().toISOString();
+    await app.db.query("UPDATE reports SET status='Resolved', updated_at=$1 WHERE id=$2", [now, reportId]);
+    await app.db.query(
+      "INSERT INTO report_history(report_id,position,status,at,note,actor_name,actor_role) VALUES ($1,$2,$3,$4,$5,$6,'administrator')",
+      [reportId, 1, "Resolved", now, "Concern resolved.", "Portal administrator"],
+    );
+
+    const confirm = await api(app, "/api/community/report-confirm", { method: "POST", cookie, body: { reportId, note: "It is fixed." } });
+    assert.equal(confirm.status, 200, await confirm.text());
+    const reopen = await api(app, "/api/community/report-reopen", { method: "POST", cookie, body: { reportId, reason: "The pothole returned after one week." } });
+    assert.equal(reopen.status, 200, await reopen.text());
+
+    const admin = await signIn(app);
+    const log = await api(app, "/api/community/activity", { cookie: admin.cookie }).then((r) => r.json());
+    assert.ok(log.activities.some((item) => item.action === "Confirmed concern as addressed" && item.detail.includes(reportId)),
+      "the confirmation reaches the Activity Log with the concern reference");
+    assert.ok(log.activities.some((item) => item.action === "Requested concern reopening" && item.detail.includes("The pothole returned after one week.")),
+      "the reopening reaches the Activity Log with the resident's reason");
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -3998,6 +4953,97 @@ test("the activity log page browses the server page with filters and a detail ac
   assert.match(html, /36 records/);
   assert.match(html, /data-action="view-activity"/);
   assert.match(html, /data-action="activity-page"/);
+});
+
+function stubJsonResponse(status, body) {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+test("the browser retries a save once when only server-owned notifications moved", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const base = {
+    version: 1, users: [], reports: [], schedules: [], activities: [], permissions: {}, accountOverrides: {},
+    announcements: [], calendarEvents: [], locations: [], recyclingLocations: [],
+    notifications: [{ id: "N-1", targetEmail: "r@example.test", reportId: "", title: "Old", body: "b", createdAt: "2026-01-01T00:00:00.000Z", read: false }],
+  };
+  // A reminder the server created while the resident worked, so the browser's
+  // list is one row behind the database.
+  const fresh = structuredClone(base);
+  fresh.notifications.unshift({ id: "N-2", targetEmail: "r@example.test", reportId: "", title: "Collection reminder", body: "b", createdAt: "2026-01-02T00:00:00.000Z", read: false });
+  const saved = structuredClone(fresh);
+
+  const calls = [];
+  let putAttempts = 0;
+  const context = createContext({
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    console,
+    fetch: async (url, options = {}) => {
+      calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+      if (options.method === "PUT") {
+        putAttempts += 1;
+        if (putAttempts === 1) return stubJsonResponse(409, { error: "Data changed in another session. Reload before saving." });
+        return stubJsonResponse(200, { revision: 8, data: saved, user: { role: "resident" } });
+      }
+      return stubJsonResponse(200, { data: fresh, revision: 7, user: { role: "resident" } });
+    },
+  });
+  runInContext(core, context);
+  context.toast = () => {};
+  runInContext(`
+    data = ${JSON.stringify(base)};
+    dataRevision = 6;
+    lastPersistedSnapshot = ${JSON.stringify(JSON.stringify(base))};
+    currentUser = { role: "resident", email: "r@example.test" };
+  `, context);
+
+  const outcome = await runInContext("localSave()", context);
+  assert.equal(outcome, true, "the save succeeds after the resync");
+  assert.equal(calls.length, 3, "one save attempt, one state refresh, one retry");
+  assert.equal(calls[0].body.revision, 6);
+  assert.equal(calls[2].body.revision, 7, "the retry carries the refreshed revision");
+  assert.equal(calls[2].body.data.notifications.some((item) => item.id === "N-1"), true, "the retry keeps the browser's own notification list");
+  const afterSave = runInContext("({ data, dataRevision })", context);
+  assert.equal(afterSave.dataRevision, 8, "the browser adopts the revision the save produced");
+  assert.equal(JSON.stringify(afterSave.data), JSON.stringify(saved), "the browser adopts the saved server state");
+});
+
+test("the browser does not retry a save when shared data moved with the revision", async () => {
+  const core = await readFile(new URL("./app-core.js", import.meta.url), "utf8");
+  const base = {
+    version: 1, users: [], reports: [], schedules: [], activities: [], permissions: {}, accountOverrides: {},
+    announcements: [], calendarEvents: [], locations: [], recyclingLocations: [], notifications: [],
+  };
+  const fresh = structuredClone(base);
+  fresh.schedules.push({ id: "GCS-other", area: "Purok 2", zone: "Zone A", date: "2026-01-02", wasteType: "Recyclables", start: "6:00 AM", end: "9:00 AM", frequency: "Weekly", team: "Team A", status: "Scheduled", history: [] });
+  const edited = structuredClone(base);
+  edited.reports.push({ id: "RPT-mine", userEmail: "r@example.test", title: "My concern" });
+
+  const calls = [];
+  const context = createContext({
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    console,
+    fetch: async (url, options = {}) => {
+      calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+      if (options.method === "PUT") return stubJsonResponse(409, { error: "Data changed in another session. Reload before saving." });
+      return stubJsonResponse(200, { data: fresh, revision: 7, user: { role: "resident" } });
+    },
+  });
+  runInContext(core, context);
+  context.toast = () => {};
+  runInContext(`
+    data = ${JSON.stringify(edited)};
+    dataRevision = 6;
+    lastPersistedSnapshot = ${JSON.stringify(JSON.stringify(base))};
+    currentUser = { role: "resident", email: "r@example.test" };
+  `, context);
+
+  const outcome = await runInContext("localSave()", context);
+  assert.equal(outcome, false, "the save is refused when shared data really moved");
+  assert.equal(calls.length, 2, "one save attempt and one state refresh, no blind retry");
+  const afterSave = runInContext("({ data })", context);
+  assert.equal(JSON.stringify(afterSave.data), JSON.stringify(base), "the browser rolls back to its last persisted snapshot");
 });
 
 test("administrator password reset rejects before changing the password when SMTP is not configured", async () => {

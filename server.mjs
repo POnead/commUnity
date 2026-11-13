@@ -840,12 +840,6 @@ async function migrate(db) {
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS responded_at timestamptz;
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolution_deadline timestamptz;
     ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
-    UPDATE reports SET response_deadline = submitted_at +
-      CASE priority WHEN 'High' THEN interval '1 day' WHEN 'Medium' THEN interval '3 days' ELSE interval '7 days' END
-    WHERE response_deadline IS NULL;
-    UPDATE reports SET resolution_deadline = submitted_at +
-      CASE priority WHEN 'High' THEN interval '7 days' WHEN 'Medium' THEN interval '14 days' ELSE interval '30 days' END
-    WHERE resolution_deadline IS NULL;
     -- A concern resolved or answered before these columns existed still has the
     -- moment in its status history: the resolution is the last Resolved entry a
     -- staff member recorded, and the first response is the first entry after the
@@ -878,6 +872,16 @@ async function migrate(db) {
     WHERE service_cycle_started_at IS NULL;
     ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET DEFAULT now();
     ALTER TABLE reports ALTER COLUMN service_cycle_started_at SET NOT NULL;
+    -- Deadlines are anchored on the service cycle, not the original submission:
+    -- a concern reopened before this version keeps measuring its targets from
+    -- the reopening. This runs after the cycle backfill above so a legacy
+    -- database without these columns recovers its cycle starts first.
+    UPDATE reports SET response_deadline = service_cycle_started_at +
+      CASE priority WHEN 'High' THEN interval '1 day' WHEN 'Medium' THEN interval '3 days' ELSE interval '7 days' END
+    WHERE response_deadline IS NULL;
+    UPDATE reports SET resolution_deadline = service_cycle_started_at +
+      CASE priority WHEN 'High' THEN interval '7 days' WHEN 'Medium' THEN interval '14 days' ELSE interval '30 days' END
+    WHERE resolution_deadline IS NULL;
     ALTER TABLE activities ADD COLUMN IF NOT EXISTS result_reason text NOT NULL DEFAULT '';
     ALTER TABLE activities ADD COLUMN IF NOT EXISTS affected_id text NOT NULL DEFAULT '';
     ALTER TABLE activities ADD COLUMN IF NOT EXISTS client_ip text NOT NULL DEFAULT '';
@@ -1112,8 +1116,19 @@ async function readFullState(db, user = null) {
 }
 
 function stateForRole(state, user) {
+  // Per-account permission overrides carry officials' email addresses, so they
+  // are administrative data: an administrator manages every official's
+  // overrides, an official needs only their own, and residents need none.
+  const overrides = state.accountOverrides || {};
+  const ownEmail = user.email.trim().toLowerCase();
+  const accountOverrides = user.role === "administrator"
+    ? overrides
+    : user.role === "official" && Object.hasOwn(overrides, ownEmail)
+      ? { [ownEmail]: overrides[ownEmail] }
+      : {};
   return {
     ...state,
+    accountOverrides,
     users: user.role === "administrator" ? state.users : user.role === "resident" ? state.users.filter((item) => item.id === user.id) : [],
     reports: user.role === "resident" ? state.reports.filter((item) => item.userEmail === user.email) : state.reports,
     notifications: state.notifications.filter((item) => item.targetEmail === user.email),
@@ -1211,11 +1226,31 @@ function validateSameOrigin(request, server, appOrigin) {
     (safeMethod ? (!request.headers.origin || request.headers.origin === requestOrigin) : request.headers.origin === requestOrigin);
 }
 
+// Residents and officials may only record activities the server can verify actually
+// happened. An administrator is trusted to manage the system and is not restricted
+// here (an administrator can perform the real actions directly in the database).
+const RESIDENT_ACTIVITY_ACTIONS = new Set(["Submitted a concern", "Submitted an urgent concern"]);
+const OFFICIAL_ACTIVITY_ACTIONS = new Set([
+  "Updated a report",
+  "Claimed a concern",
+  "Released a concern",
+  "Changed a collection status",
+  "Updated a collection schedule",
+  "Added a collection schedule",
+]);
+
+function activityActionsFor(user) {
+  if (user.role === "resident") return RESIDENT_ACTIVITY_ACTIONS;
+  if (user.role === "official") return OFFICIAL_ACTIVITY_ACTIONS;
+  return null;
+}
+
 function validateActivityAppend(oldItems, newItems, user) {
   // Activities are append-only. The server may write newer rows (a failed sign-in,
   // a refused request) between the client's read and its save, so match by id
   // instead of by position; a newer row at the front must not look like an edit.
   const oldById = new Map(oldItems.map((item) => [item.id, item]));
+  const allowedActions = activityActionsFor(user);
   for (const item of newItems) {
     const old = oldById.get(item?.id);
     if (old) {
@@ -1229,15 +1264,27 @@ function validateActivityAppend(oldItems, newItems, user) {
         typeof item.at !== "string" || Number.isNaN(Date.parse(item.at))) {
       throw new HttpError(400, "Activity entry is invalid.");
     }
+    if (allowedActions !== null && !allowedActions.has(item.action)) {
+      throw new HttpError(403, "You cannot record this activity.");
+    }
   }
 }
 
 function validateNotificationsReadOnly(oldItems, newItems, user) {
+  // The server writes notifications outside any browser save — collection
+  // reminders, password-reset notices — and the maintenance job prunes rows
+  // older than 90 days. None of that is part of the browser's intent, so the
+  // browser's list may be shorter (rows the server created) or longer (rows the
+  // server pruned) than the server's. Match by id instead of by length and only
+  // refuse items the browser may not touch.
   const oldById = new Map(oldItems.map((item) => [item.id, item]));
-  if (newItems.length !== oldItems.length) throw new HttpError(403, "Notifications can only be created by the server.");
   for (const item of newItems) {
+    if (!item || !validId(item.id) || item.targetEmail !== user.email) {
+      throw new HttpError(403, "You can only mark your own notifications as read.");
+    }
     const old = oldById.get(item.id);
-    if (!old || item.targetEmail !== user.email || old.targetEmail !== user.email ||
+    if (!old) continue; // created or pruned by the server after the browser's read
+    if (old.targetEmail !== user.email ||
         !jsonEqual({ ...old, read: false }, { ...item, read: false }) ||
         (old.read && !item.read)) {
       throw new HttpError(403, "You can only mark your own notifications as read.");
@@ -1279,6 +1326,10 @@ async function insertReport(db, report) {
   // fabricate the moment a concern was submitted.
   if (report.history.length > 0) {
     report.history[0].at = now;
+    // The first entry is the server's receipt record: it states that the
+    // concern was received, never a status or comment the browser invented.
+    report.history[0].status = "Submitted";
+    report.history[0].note = "Report received.";
   }
   for (const [position, item] of report.history.entries()) {
     await db.query("INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -1653,10 +1704,20 @@ async function syncRecyclingLocations(db, oldLocations, newLocations) {
 async function syncActivities(db, oldItems, newItems, user) {
   validateActivityAppend(oldItems, newItems, user);
   const oldIds = new Set(oldItems.map((item) => item.id));
-  for (const item of newItems) {
-    if (oldIds.has(item.id)) continue;
+  const appended = newItems.filter((item) => !oldIds.has(item.id));
+  if (!appended.length) return;
+  // The archive job may move a record out of the live log while the browser
+  // still holds it. Such a row is server history, not a client append, and must
+  // never be written back into the live table.
+  const archived = await db.query("SELECT id FROM activity_archive WHERE id = ANY($1::text[])", [appended.map((item) => item.id)]);
+  const archivedIds = new Set(archived.rows.map((row) => row.id));
+  // The server owns the activity clock: a client cannot backdate or forward-date
+  // an event, and the actor is always the authenticated account.
+  const at = new Date().toISOString();
+  for (const item of appended) {
+    if (archivedIds.has(item.id)) continue;
     await db.query("INSERT INTO activities (id,actor,role,action,detail,at,result) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING",
-      [item.id, item.actor, item.role, item.action, item.detail, item.at, item.result]);
+      [item.id, user.name, user.role, item.action, item.detail.slice(0, 1000), at, item.result.slice(0, 80)]);
   }
 }
 
@@ -1691,7 +1752,8 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           throw new HttpError(400, "A new report must include its barangay and street or landmark.");
         }
         await assertKnownArea(db, report.area, report.barangay || "");
-        if (report.userEmail !== user.email || report.status !== "Submitted" || report.history.length !== 1) {
+        if (report.userEmail !== user.email || report.status !== "Submitted" ||
+            report.history.length !== 1 || report.history[0].status !== "Submitted") {
           throw new HttpError(403, "Residents can only submit a new report for their own account.");
         }
       }
@@ -1854,9 +1916,17 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         if (old.id === user.id && (account.email !== old.email || account.role !== "administrator" || account.status !== "Active")) {
           throw new HttpError(403, "You cannot change your own administrator sign-in or access.");
         }
+        if (account.status !== old.status) {
+          throw new HttpError(403, "Account status cannot be changed through the account editor. Deactivate or reactivate the account from the user list instead.");
+        }
         await db.query("UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6,working_hours=$7,available_days=$8::jsonb WHERE id=$9",
           [account.email.trim().toLowerCase(), account.name.trim(), account.area.trim(), account.phone.trim(), account.role, account.status,
             String(account.workingHours || "Monday-Friday, 8:00 AM-5:00 PM").trim(), JSON.stringify(availableDays), account.id]);
+        // A demoted account must not keep per-account overrides: hasPermission
+        // applies them regardless of role, so they would still elevate access.
+        if (old.role === "official" && account.role !== "official") {
+          await db.query("UPDATE users SET permission_overrides='{}'::jsonb WHERE id=$1", [account.id]);
+        }
       }
       const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
       if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
@@ -1900,9 +1970,23 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         }
       }
       const nextOverrides = after.accountOverrides || {};
+      const beforeAccounts = new Map(before.users.map((account) => [account.id, account]));
       const officialEmails = new Set(after.users.filter((account) => account.role === "official").map((account) => account.email.trim().toLowerCase()));
-      for (const email of Object.keys(nextOverrides)) {
-        if (!officialEmails.has(email)) throw new HttpError(400, "Permission overrides can only target official accounts.");
+      // Overrides are keyed by email. Editing an official's email or demoting
+      // them leaves the old key behind, which would fail every later save;
+      // re-key a moved account and drop a demoted one instead of rejecting
+      // the whole workspace for a key the account left behind.
+      for (const email of Object.keys(nextOverrides).filter((key) => !officialEmails.has(key))) {
+        const moved = after.users.find((account) => {
+          const old = beforeAccounts.get(account.id);
+          return old && old.role === "official" && old.email.trim().toLowerCase() === email;
+        });
+        if (!moved) throw new HttpError(400, "Permission overrides can only target official accounts.");
+        const newEmail = moved.email.trim().toLowerCase();
+        if (moved.role === "official" && officialEmails.has(newEmail) && !Object.hasOwn(nextOverrides, newEmail)) {
+          nextOverrides[newEmail] = nextOverrides[email];
+        }
+        delete nextOverrides[email];
       }
       for (const account of after.users) {
         if (account.role !== "official") continue;
@@ -1948,6 +2032,9 @@ export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } =
     });
     created += 1;
   }
+  // Notifications are part of the shared state browsers sync against, so a
+  // background write must advance the same revision a browser save does.
+  if (created) await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
   return created;
 }
 
@@ -1955,14 +2042,25 @@ export async function archiveOldActivities(db) {
   // One transaction: a half-finished archive must never leave a row in both
   // tables, and ON CONFLICT makes a retry after a crash safe.
   await withTransaction(db, async (transaction) => {
-    await transaction.query(`
+    const moved = await transaction.query(`
       INSERT INTO activity_archive (id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, archived_at)
       SELECT id, actor, role, action, detail, at, result, result_reason, affected_id, client_ip, now()
       FROM activities WHERE at < now() - interval '90 days'
       ON CONFLICT (id) DO NOTHING
     `);
     await transaction.query("DELETE FROM activities WHERE at < now() - interval '90 days'");
+    // Archived records leave the live log administrators browse, so the shared
+    // revision advances with the archive.
+    if (moved.rowCount) await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
   });
+}
+
+// Notifications older than 90 days leave the shared state, so the shared
+// revision advances with the prune and open browsers resync on their next save.
+export async function pruneOldNotifications(db) {
+  const removed = await db.query("DELETE FROM notifications WHERE created_at < now() - interval '90 days'");
+  if (removed.rowCount) await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+  return removed.rowCount;
 }
 
 // Photo uploads happen before the report is saved, so an abandoned draft leaves a
@@ -2204,7 +2302,11 @@ async function handleAuth(request, response, db, options, user) {
     if (account.rows[0]) {
       await db.query("INSERT INTO password_reset_requests(user_id) VALUES($1)", [account.rows[0].id]);
       const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
-      for (const admin of admins.rows) await insertNotification(db, admin.email, "Password reset requested", `${email} requested a password reset.`);
+      if (admins.rows.length) {
+        for (const admin of admins.rows) await insertNotification(db, admin.email, "Password reset requested", `${email} requested a password reset.`);
+        // Administrator notifications are shared state, so the revision moves with them.
+        await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      }
     }
     sendJson(response, 202, { ok: true });
     return;
@@ -2277,9 +2379,14 @@ async function handleAuth(request, response, db, options, user) {
     if (email) {
       const account = await db.query("SELECT id FROM users WHERE email=$1 AND status='Active'", [email]);
       if (account.rows[0]) {
-        await db.query("UPDATE users SET reset_requested=true WHERE id=$1", [account.rows[0].id]);
-        const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
-        for (const admin of admins.rows) await insertNotification(db, admin.email, "Password reset requested", `${email} requested admin help to reset their password.`);
+        // The flag and the administrator notices are one change to shared state,
+        // so they land in one transaction that also advances the revision.
+        await withTransaction(db, async (transaction) => {
+          await transaction.query("UPDATE users SET reset_requested=true WHERE id=$1", [account.rows[0].id]);
+          const admins = await transaction.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+          for (const admin of admins.rows) await insertNotification(transaction, admin.email, "Password reset requested", `${email} requested admin help to reset their password.`);
+          await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+        });
       }
     }
     sendJson(response, 200, generic);
@@ -2292,16 +2399,31 @@ async function handleAuth(request, response, db, options, user) {
     validatePassword(newPassword);
     if (!token) throw new HttpError(400, "A valid reset token is required.");
     const tokenHash = hash(token);
-    const result = await db.query("SELECT user_id FROM password_reset_tokens WHERE token_hash=$1 AND expires_at > now()", [tokenHash]);
-    if (!result.rows.length) throw new HttpError(400, "This reset link is invalid or expired.");
-    const userId = result.rows[0].user_id;
+    // A cheap lookup rejects garbage links without opening a transaction; the
+    // authoritative consume happens inside it, so this cannot admit two wins.
+    const lookup = await db.query("SELECT user_id FROM password_reset_tokens WHERE token_hash=$1 AND expires_at > now()", [tokenHash]);
+    if (!lookup.rows.length) throw new HttpError(400, "This reset link is invalid or expired.");
+    const userId = lookup.rows[0].user_id;
     await withTransaction(db, async (transaction) => {
-      const db = transaction;
-      await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(newPassword), userId]);
-      await db.query("UPDATE users SET requires_password_change=false WHERE id=$1", [userId]);
-      await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [userId]);
-      await db.query("DELETE FROM web_sessions WHERE user_id=$1", [userId]);
-      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      // One account resets at a time. Locking the user row first gives every
+      // concurrent link for that account a single serialization point, so the
+      // token consumption and the purge of the account's remaining links can
+      // never interleave into a deadlock.
+      await transaction.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [userId]);
+      // Consuming is the delete itself: a second request sharing this link
+      // finds nothing left to consume and is rejected before any password is
+      // written. Exactly one consumed row is required.
+      const consumed = await transaction.query(
+        "DELETE FROM password_reset_tokens WHERE token_hash=$1 AND expires_at > now()",
+        [tokenHash],
+      );
+      if (Number(consumed.rowCount) !== 1) throw new HttpError(400, "This reset link is invalid or expired.");
+      // Any other outstanding links for the account stop working with it.
+      await transaction.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [userId]);
+      await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(newPassword), userId]);
+      await transaction.query("UPDATE users SET requires_password_change=false WHERE id=$1", [userId]);
+      await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [userId]);
+      await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });
     return;
@@ -2421,6 +2543,7 @@ async function handleCommunity(request, response, db, options, user) {
     requireJsonBody(request);
     const reportId = String(request.body.reportId || "");
     const note = String(request.body.note || "").trim();
+    if (note.length > 500) throw new HttpError(400, "Keep the confirmation note within 500 characters.");
     await withTransaction(db, async (transaction) => {
       const report = await transaction.query("SELECT id,status,user_email AS \"userEmail\" FROM reports WHERE id=$1 AND user_email=$2 FOR UPDATE", [reportId, user.email]);
       if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
@@ -2447,6 +2570,7 @@ async function handleCommunity(request, response, db, options, user) {
     const reportId = String(request.body.reportId || "");
     const reason = String(request.body.reason || "").trim();
     if (!reason) throw new HttpError(400, "Explain why the concern should be reopened.");
+    if (reason.length > 500) throw new HttpError(400, "Keep the reopening reason within 500 characters.");
     await withTransaction(db, async (transaction) => {
       const report = await transaction.query("SELECT id,status,user_email AS \"userEmail\",priority FROM reports WHERE id=$1 AND user_email=$2 FOR UPDATE", [reportId, user.email]);
       if (!report.rows.length) throw new HttpError(404, "This report could not be found.");
@@ -2674,11 +2798,33 @@ async function handleUsers(request, response, db, options, user) {
     const reason = String(request.body.reason || "").trim();
     if (!reason || reason.length > 500) throw new HttpError(400, "A deactivation reason is required.");
     if (email === user.email) throw new HttpError(400, "You cannot deactivate the administrator account you are using.");
-    const result = await db.query("UPDATE users SET status='Inactive', deactivation_reason=$1 WHERE email=$2", [reason, email]);
-    if (!result.rowCount) throw new HttpError(404, "The account could not be found.");
-    await db.query("DELETE FROM web_sessions WHERE user_id=(SELECT id FROM users WHERE email=$1)", [email]);
-    await insertActivity(db, user, "Deactivated user account", `${email} · ${reason}`);
-    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    // Deactivation and session revocation must succeed or fail together: an account
+    // that is inactive must not have a usable session left behind, in either order.
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      const result = await db.query("UPDATE users SET status='Inactive', deactivation_reason=$1 WHERE email=$2", [reason, email]);
+      if (!result.rowCount) throw new HttpError(404, "The account could not be found.");
+      const target = await db.query("SELECT id FROM users WHERE email=$1", [email]);
+      await db.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
+      await insertActivity(db, user, "Deactivated user account", `${email} · ${reason}`);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === "/api/users/reactivate" && request.method === "POST") {
+    requireRole(user, ["administrator"]);
+    requireJsonBody(request);
+    const email = String(request.body.email || "").trim().toLowerCase();
+    if (email === user.email) throw new HttpError(400, "You cannot reactivate the administrator account you are using.");
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      const result = await db.query("UPDATE users SET status='Active', deactivation_reason='' WHERE email=$1 AND status='Inactive'", [email]);
+      if (!result.rowCount) throw new HttpError(404, "The account could not be found or is not inactive.");
+      await insertActivity(db, user, "Reactivated user account", `${email}`);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -3039,9 +3185,13 @@ async function handleReportPhotos(request, response, db, options, user) {
     await recordAttempt(db, hash(`report-photo:${user.id}`), 20);
     const reportId = url.searchParams.get("reportId") || "";
     if (!validId(reportId)) throw new HttpError(400, "The report identifier is invalid.");
-    const owner = await db.query("SELECT user_email AS \"userEmail\" FROM reports WHERE id=$1", [reportId]);
-    if (owner.rows.length && owner.rows[0].userEmail !== user.email) {
-      throw new HttpError(403, "You can only attach photos to your own report.");
+    // Photos are uploaded while a concern is still a draft. A concern that is
+    // already on file cannot accept them: its photos were registered in
+    // report_photos by the submission itself, and an unregistered file would
+    // never be served and never be swept as an orphan.
+    const existing = await db.query("SELECT 1 FROM reports WHERE id=$1", [reportId]);
+    if (existing.rows.length) {
+      throw new HttpError(409, "This concern is already on file. Photos can only be attached while it is being submitted.");
     }
     const files = await readMultipart(request);
     if (!files.length) throw new HttpError(400, "Choose at least one JPG or PNG photo.");
@@ -3184,7 +3334,7 @@ export async function createCommunityServer({
   const reminderTimer = setInterval(() => {
     runScheduleReminders(db, { mailer: mailerState.mailer, smtpFrom: mailerState.settings.from, appOrigin }).catch((error) => logError("CommUnity could not create collection reminders.", error));
     pruneExpiredAuthState(db).catch((error) => logError("CommUnity could not prune expired authentication data.", error));
-    db.query("DELETE FROM notifications WHERE created_at < now() - interval '90 days'").catch((error) => logError("CommUnity could not prune old notifications.", error));
+    pruneOldNotifications(db).catch((error) => logError("CommUnity could not prune old notifications.", error));
     archiveOldActivities(db).catch((error) => logError("CommUnity could not archive or prune old activity records.", error));
     sweepOrphanUploads(db, uploadsDir).catch((error) => logError("CommUnity could not remove abandoned photo uploads.", error));
   }, 15 * 60 * 1000);

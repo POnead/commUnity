@@ -293,7 +293,9 @@ function reportDetail(report, role) {
       : `<p class="muted small">${isResident ? "You did not add a map pin." : "The resident did not include a map pin."} Use the barangay, area, and street or landmark details above to locate this concern.</p>`)
     : "";
   const priority = report.priority || "Medium";
-  const followUpLimit = FOLLOW_UP_LIMITS[priority] ?? FOLLOW_UP_LIMITS.Medium;
+  const followUpLimit = Object.hasOwn(FOLLOW_UP_LIMITS, priority)
+    ? FOLLOW_UP_LIMITS[priority]
+    : FOLLOW_UP_LIMITS.Medium;
   const followUpCount = Number(report.followUpCount || 0);
   const followUpRemaining = followUpLimit === null ? null : Math.max(0, followUpLimit - followUpCount);
   const followUpsOpen = report.status !== "Resolved" && (followUpLimit === null || followUpRemaining > 0);

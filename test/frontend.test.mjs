@@ -906,3 +906,68 @@ test("the browser does not retry a save when shared data moved with the revision
   const afterSave = runInContext("({ data })", context);
   assert.equal(JSON.stringify(afterSave.data), JSON.stringify(base), "the browser rolls back to its last persisted snapshot");
 });
+
+test("a High priority concern renders unlimited follow-ups, a Medium one shows the cap", async () => {
+  const views = await readFile(new URL("../app-views.js", import.meta.url), "utf8");
+  const context = {
+    STATUSES: ["Submitted", "Under Review", "In Progress", "Resolved"],
+    REPORT_TRANSITIONS: {
+      Submitted: ["Under Review"],
+      "Under Review": ["In Progress"],
+      "In Progress": ["Resolved"],
+      Resolved: [],
+    },
+    REPORT_PRIORITIES: ["High", "Medium", "Low"],
+    FOLLOW_UP_LIMITS: { High: null, Medium: 5, Low: 3 },
+    currentUser: { id: "resident-one", role: "resident", name: "Resident Example" },
+    esc: (value) => String(value ?? ""),
+    panel: (title, body) => `<section><h2>${title}</h2>${body}</section>`,
+    statusPill: (status) => `<span>${status}</span>`,
+    selectField: () => "",
+    reportAssignmentAction: () => "",
+    timelineMarkup: () => "",
+    initials: () => "",
+    dateTimeLabel: () => "",
+    dateLabel: () => "",
+    getUser: () => null,
+    page: (_role, _listPage, body) => body,
+  };
+  runInNewContext(views, context);
+  // The views file declares its own page/panel; override them after evaluation so
+  // the ROLES lookup inside page() is never reached.
+  context.panel = (title, body) => `<section><h2>${title}</h2>${body}</section>`;
+  context.page = (_role, _listPage, body) => body;
+
+  const report = {
+    id: "RPT-followup-limit",
+    title: "Blocked drainage",
+    category: "Drainage problem",
+    status: "Submitted",
+    description: "The drain is blocked beside the community hall.",
+    barangay: "Palsara",
+    area: "Purok 2",
+    locationDetail: "Beside the community hall",
+    latitude: null,
+    longitude: null,
+    submittedAt: "2026-11-01T10:00:00.000Z",
+    updatedAt: "2026-11-01T10:00:00.000Z",
+    history: [],
+    photos: [],
+    assignedTo: null,
+    name: "Resident Example",
+    userEmail: "resident@example.test",
+    followUpCount: 6,
+  };
+
+  const high = context.reportDetail({ ...report, priority: "High" }, "resident");
+  assert.match(high, /High priority · Unlimited follow-ups\./);
+  assert.match(high, /id="follow-up-form"/, "an urgent concern accepts follow-ups past the Medium cap");
+
+  const medium = context.reportDetail({ ...report, priority: "Medium" }, "resident");
+  assert.match(medium, /Medium priority · 0 of 5 follow-ups remaining\./);
+  assert.doesNotMatch(medium, /id="follow-up-form"/, "a Medium concern at five follow-ups closes the form");
+
+  const low = context.reportDetail({ ...report, priority: "Low", followUpCount: 3 }, "resident");
+  assert.match(low, /Low priority · 0 of 3 follow-ups remaining\./);
+  assert.doesNotMatch(low, /id="follow-up-form"/);
+});

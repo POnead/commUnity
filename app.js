@@ -794,7 +794,7 @@ async function reopenReport(reportId, reason) {
 }
 
 function followUpLimitFor(priority) {
-  return FOLLOW_UP_LIMITS[priority] ?? FOLLOW_UP_LIMITS.Medium;
+  return Object.hasOwn(FOLLOW_UP_LIMITS, priority) ? FOLLOW_UP_LIMITS[priority] : FOLLOW_UP_LIMITS.Medium;
 }
 
 async function submitFollowUp(form) {

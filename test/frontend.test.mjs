@@ -910,3 +910,141 @@ test("the live refresh adopts new state and re-renders, but leaves open forms al
   assert.deepEqual(calls, []);
   assert.equal(core.dataRevision, 9, "the open form keeps its data");
 });
+
+test("the automatic refresh defers while an inline form holds unsaved input", async () => {
+  const base = {
+    version: 1,
+    users: [],
+    reports: [],
+    schedules: [
+      {
+        id: "GCS-defer-1",
+        area: "Purok 2",
+        zone: "Zone A",
+        date: "2026-11-14",
+        wasteType: "Biodegradable",
+        start: "6:00 AM",
+        end: "9:00 AM",
+        frequency: "Weekly",
+        team: "Team A",
+        status: "Scheduled",
+        history: [],
+      },
+    ],
+    activities: [],
+    permissions: {},
+    accountOverrides: {},
+    announcements: [],
+    calendarEvents: [],
+    locations: [],
+    recyclingLocations: [],
+    notifications: [],
+  };
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).endsWith("/api/state/revision")) return stubJsonResponse(200, { revision: 9 });
+    return stubJsonResponse(200, {
+      data: structuredClone({
+        ...base,
+        schedules: [
+          ...base.schedules,
+          {
+            id: "GCS-defer-2",
+            area: "Purok 3",
+            zone: "Zone B",
+            date: "2026-11-15",
+            wasteType: "Recyclables",
+            start: "6:00 AM",
+            end: "9:00 AM",
+            frequency: "Weekly",
+            team: "Team B",
+            status: "Scheduled",
+            history: [],
+          },
+        ],
+      }),
+      revision: 9,
+      user: { id: "u", role: "resident", name: "Resident Example", email: "r@example.test", requiresPasswordChange: false },
+    });
+  };
+  core.__setTestState({
+    data: structuredClone(base),
+    dataRevision: 8,
+    lastPersistedSnapshot: JSON.stringify(base),
+    currentUser: { id: "u", role: "resident", name: "Resident Example", email: "r@example.test", requiresPasswordChange: false },
+    modalState: null,
+    permissionDrafts: {},
+    uploadPhotos: [],
+  });
+
+  const realQuerySelectorAll = globalThis.document.querySelectorAll;
+  const dirtyTextForm = {
+    elements: [{ type: "textarea", disabled: false, value: "Half a sentence about the drain.", defaultValue: "" }],
+  };
+  const pinnedForm = {
+    elements: [{ type: "hidden", disabled: false, value: "14.01799", defaultValue: "" }],
+  };
+  try {
+    globalThis.document.querySelectorAll = (selector) => (selector === "form" ? [dirtyTextForm] : []);
+    const deferred = await core.checkForStateUpdates();
+    assert.equal(deferred, false, "the refresh is deferred while the form holds typed input");
+    assert.deepEqual(calls, [], "no fetch happens while adoption is deferred");
+
+    calls.length = 0;
+    globalThis.document.querySelectorAll = (selector) => (selector === "form" ? [pinnedForm] : []);
+    const pinned = await core.checkForStateUpdates();
+    assert.equal(pinned, false, "a dropped pin in the hidden map field also counts as unsaved input");
+    assert.deepEqual(calls, [], "no fetch happens while the pin is unsaved");
+
+    calls.length = 0;
+    globalThis.document.querySelectorAll = () => [];
+    const adopted = await core.checkForStateUpdates();
+    assert.equal(adopted, true, "a clean page adopts the new revision");
+    assert.deepEqual(calls, ["/api/state/revision", "/api/state"]);
+  } finally {
+    globalThis.document.querySelectorAll = realQuerySelectorAll;
+  }
+});
+
+test("a placed pin, attached photos and the open map survive report-form rebuilds", async () => {
+  const map = await import("../app/map.mjs");
+  map.setMapState({
+    reportMapExpanded: true,
+    reportMapSelection: { latitude: 14.01799, longitude: 121.09465 },
+    reportMapGeoLocating: false,
+  });
+  core.__setTestState({
+    currentUser: { role: "resident", area: "Purok 1", email: "resident@example.test" },
+    data: {
+      version: 1,
+      users: [],
+      reports: [],
+      schedules: [],
+      notifications: [],
+      activities: [],
+      announcements: [],
+      locations: [],
+      recyclingLocations: [],
+      permissions: {},
+      accountOverrides: {},
+    },
+    reportDraft: null,
+    uploadPhotos: [{ name: "blocked-drain.jpg", previewUrl: "data:image/jpeg;base64,AAAA" }],
+  });
+
+  const first = views.reportFormMarkup();
+  // Rebuild the page again without touching map state (the live-refresh path re-renders the same markup).
+  const second = views.reportFormMarkup();
+
+  for (const [index, markup] of [first, second].entries()) {
+    assert.match(markup, /id="report-latitude"[^>]*value="14\.01799"/, `render ${index + 1} keeps the pin latitude`);
+    assert.match(markup, /id="report-longitude"[^>]*value="121\.09465"/, `render ${index + 1} keeps the pin longitude`);
+    assert.match(markup, /aria-expanded="true"/, `render ${index + 1} keeps the map expanded`);
+    assert.match(markup, /photo-thumb/, `render ${index + 1} keeps the attached photo`);
+    assert.match(markup, /blocked-drain\.jpg/, `render ${index + 1} keeps the attached photo name`);
+  }
+
+  core.__setTestState({ uploadPhotos: [] });
+  map.setMapState({ reportMapExpanded: false, reportMapSelection: null, reportMapGeoLocating: false });
+});

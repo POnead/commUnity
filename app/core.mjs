@@ -485,15 +485,49 @@ sessionSyncChannel?.addEventListener("message", async (event) => {
 // Live updates: poll the cheap revision endpoint and adopt server changes only
 // when one exists. Polling /api/state/revision keeps the common case to a few
 // bytes; a full state fetch happens only when the revision actually moved.
-// Open forms are never disturbed: modal state and unsaved role-permission
-// drafts both pause adoption until the user finishes with them.
+// Forms the user is editing are never rebuilt over: modal state, unsaved
+// role-permission drafts and any inline form holding user input all pause
+// adoption until the user finishes with them.
 export const STATE_REFRESH_INTERVAL_MS = 30000;
 export let stateRefreshTimer = null;
+
+// A form holds unsaved input when one of its controls differs from what was
+// rendered — typed text, a changed select/checkbox/radio, a chosen file, or a
+// dropped pin in the hidden map fields. Pre-filled controls match their
+// rendered defaults, so ordinary untouched forms read as clean. No listeners
+// or bookkeeping are kept in sync: the DOM is the single source of truth, and
+// any rebuild returns every control to its rendered default automatically.
+export function hasUnsavedFormInput() {
+  if (typeof document === "undefined" || typeof document.querySelectorAll !== "function") return false;
+  const controlIsDirty = (control) => {
+    if (!control || control.disabled) return false;
+    const tag = String(control.tagName || "").toUpperCase();
+    const type = String(control.type || "").toLowerCase();
+    if (type === "file") return Boolean(control.files && control.files.length);
+    if (type === "checkbox" || type === "radio") return control.checked !== control.defaultChecked;
+    if (tag === "SELECT") {
+      const options = control.options ? [...control.options] : [];
+      return control.selectedIndex !== options.findIndex((option) => option.defaultSelected);
+    }
+    // Covers text-like inputs, hidden inputs, and textareas.
+    return typeof control.value === "string" && control.value !== control.defaultValue;
+  };
+  for (const form of document.querySelectorAll("form")) {
+    const elements = form.elements ? [...form.elements] : [];
+    if (elements.some(controlIsDirty)) return true;
+  }
+  // Typed list-search boxes are not wrapped in a <form> but hold input a rebuild would erase too.
+  for (const input of document.querySelectorAll("[data-search-input]")) {
+    if (typeof input.value === "string" && input.value !== input.defaultValue) return true;
+  }
+  return false;
+}
 
 export async function checkForStateUpdates() {
   if (!currentUser || currentUser.requiresPasswordChange || !Number.isSafeInteger(dataRevision) || dataRevision < 1) return false;
   if (typeof modalState !== "undefined" && modalState) return false; // do not re-render an open form
   if (typeof hasUnsavedPermissionChanges === "function" && hasUnsavedPermissionChanges()) return false;
+  if (hasUnsavedFormInput()) return false; // do not rebuild a form the user is editing
   let revisionResponse;
   try {
     revisionResponse = await fetch("/api/state/revision");

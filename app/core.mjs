@@ -264,7 +264,6 @@ export async function localSave() {
   let refreshed = false;
   while (true) {
     try {
-      const snapshot = JSON.stringify(data);
       const response = await fetch("/api/state", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

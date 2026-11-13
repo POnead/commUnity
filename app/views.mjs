@@ -1218,14 +1218,6 @@ export function reportsPage(role, view) {
   const filtered = sortedReports(
     officialQueue || canFilter ? userRows.filter((report) => (activeFilter === "all" ? true : report.status === activeFilter)) : userRows,
   );
-  const title =
-    view === "history"
-      ? "Report history"
-      : role === "resident"
-        ? "My reports"
-        : role === "administrator"
-          ? "Community reports"
-          : "Concern queue";
   const subtitle = view === "history" ? "A complete record of submitted concerns and their latest updates." : pageTitle(role, view)[1];
   const showResolvedSeparately = !canFilter || activeFilter === "all";
   const activeRows = view === "history" || !showResolvedSeparately ? filtered : filtered.filter((report) => report.status !== "Resolved");

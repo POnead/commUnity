@@ -1,17 +1,76 @@
 "use strict";
 
-function displayReportId(id) {
-  const value = String(id || "");
-  const timestampId = value.match(/^R(\d{13})(?:-([a-z0-9]{6}))?$/i);
-  if (timestampId) {
-    const suffix = timestampId[2] ? `-${timestampId[2].toUpperCase()}` : "";
-    return `R-${Number(timestampId[1]).toString(36).toUpperCase()}${suffix}`;
-  }
-  const match = value.match(/^R(?:PT-\d{4}-)?(\d+)$/i);
-  return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
-}
+import {
+  locationAreas,
+  residentAreaOptions,
+  effectivePermissions,
+  icon,
+  brandMark,
+  esc,
+  asDate,
+  dateLabel,
+  dateTimeLabel,
+  todayISO,
+  monthKey,
+  monthKeyOffset,
+  normalizeStatus,
+  statusPill,
+  roleLabel,
+  initials,
+  unreadCount,
+  displayReportId,
+  getUser,
+  getReport,
+  userReports,
+  sortedReports,
+  sortedSchedules,
+  sortedNotifications,
+  routeUrl,
+  linkButton,
+  actionButton,
+  inputField,
+  selectField,
+  calendarEventFromRecord,
+  app,
+  data,
+  currentUser,
+  communityOfficialHours,
+  selectedReportId,
+  reportFilter,
+  notificationFilter,
+  uploadPhotos,
+  smtpSettings,
+  reportDraft,
+  modalState,
+  calendarMonth,
+  calendarYear,
+  calendarSelectedDate,
+  selectedPermissionRole,
+  permissionDrafts,
+  permissionOpenGroups,
+  activityLogState,
+  activityFilters,
+} from "./core.mjs";
+import {
+  APP_TIME_ZONE,
+  ROLES,
+  STATUSES,
+  REPORT_TRANSITIONS,
+  CATEGORIES,
+  REPORT_PRIORITIES,
+  FOLLOW_UP_LIMITS,
+  AREAS,
+  PERMISSION_DEFS,
+} from "./constants.mjs";
+import {
+  modalMarkup,
+  reportMapExpanded,
+  reportMapSelection,
+  reportMapGeoLocating,
+} from "./main.mjs";
 
-function navGroups(role) {
+
+export function navGroups(role) {
   const openConcernCount = data.reports.filter((report) => report.status !== "Resolved").length;
   const pendingApprovalCount =
     (data.calendarEvents || []).filter((event) => event.approvalStatus === "pending").length +
@@ -80,7 +139,7 @@ function navGroups(role) {
           ];
   return groups.map((group) => ({ ...group, links: group.links.filter(([key]) => canOpenPage({ role, email: currentUser?.email }, key)) }));
 }
-function requiredPermission(role, pageName) {
+export function requiredPermission(role, pageName) {
   const map = {
     resident: { collection: "viewSchedules", report: "submitReports", reports: "submitReports", history: "submitReports" },
     official: { concerns: "manageReports", history: "manageReports", collection: "manageSchedules", announcements: "manageAnnouncements" },
@@ -97,7 +156,7 @@ function requiredPermission(role, pageName) {
   return map[role]?.[pageName] || "";
 }
 
-function officialReportFilters(reports, activeFilter) {
+export function officialReportFilters(reports, activeFilter) {
   const options = [
     ["all", "All open"],
     ["Submitted", "Submitted"],
@@ -115,7 +174,7 @@ function officialReportFilters(reports, activeFilter) {
     .join("")}</div>`;
 }
 
-function canOpenPage(user, pageName) {
+export function canOpenPage(user, pageName) {
   const permission = requiredPermission(user?.role, pageName);
   if (!permission) return true;
   const override = user?.email ? data.accountOverrides?.[user.email] : null;
@@ -124,7 +183,7 @@ function canOpenPage(user, pageName) {
   return allowed;
 }
 
-function userAvatar(user, extra = "") {
+export function userAvatar(user, extra = "") {
   const name = user?.name || "";
   if (user?.photoUrl) {
     return `<span class="avatar ${extra}"><img src="${esc(user.photoUrl)}" alt="Profile photo of ${esc(name)}"></span>`;
@@ -132,7 +191,7 @@ function userAvatar(user, extra = "") {
   return `<span class="avatar ${extra}" aria-hidden="true">${esc(initials(name))}</span>`;
 }
 
-function checkDataConsistency() {
+export function checkDataConsistency() {
   const counts = STATUSES.map((status) => data.reports.filter((report) => report.status === status).length);
   console.assert(
     counts.reduce((sum, count) => sum + count, 0) === data.reports.length,
@@ -146,7 +205,7 @@ function checkDataConsistency() {
   );
 }
 
-function navMarkup(role, page) {
+export function navMarkup(role, page) {
   return navGroups(role)
     .filter((group) => group.links.length)
     .map(
@@ -168,7 +227,7 @@ function navMarkup(role, page) {
     .join("");
 }
 
-function pageTitle(role, page) {
+export function pageTitle(role, page) {
   const titles = {
     resident: {
       dashboard: ["Your community today", "Service updates and a clear view of your reports."],
@@ -210,7 +269,7 @@ function pageTitle(role, page) {
   return titles[role]?.[page] || ["CommUnity", "Barangay services and community updates."];
 }
 
-function shell(role, page, title, description, body, actions = "") {
+export function shell(role, page, title, description, body, actions = "") {
   const roleLabel = ROLES[role];
   const date = new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "short", month: "short", day: "numeric" }).format(
     new Date(),
@@ -263,25 +322,25 @@ function shell(role, page, title, description, body, actions = "") {
     </div>`;
 }
 
-function page(role, view, body, actions = "") {
+export function page(role, view, body, actions = "") {
   const [title, description] = pageTitle(role, view);
   return shell(role, view, title, description, body, actions);
 }
 
-function stat(label, value, note = "", tone = "") {
+export function stat(label, value, note = "", tone = "") {
   return `<div class="stat" ${tone ? `data-tone="${esc(tone)}"` : ""}><span class="stat-label">${esc(label)}</span><strong class="stat-value">${esc(value)}</strong>${note ? `<span class="stat-note">${esc(note)}</span>` : ""}</div>`;
 }
 
-function statsStrip(items) {
+export function statsStrip(items) {
   return `<section class="stats-strip" aria-label="Summary">${items.join("")}</section>`;
 }
 
-function panel(title, body, options = {}) {
+export function panel(title, body, options = {}) {
   const header = title ? `<header class="panel-head"><div><h2>${esc(title)}</h2></div>${options.action || ""}</header>` : "";
   return `<section class="panel ${options.className || ""}">${header}<div class="panel-body">${body}</div></section>`;
 }
 
-function reportRows(reports, role) {
+export function reportRows(reports, role) {
   if (!reports.length)
     return `<div class="empty-state"><strong>No concerns in this view</strong>When a report is submitted, it will appear here.</div>`;
   const headers =
@@ -315,7 +374,7 @@ function reportRows(reports, role) {
   return `<div class="records" data-page-size="10" role="table" aria-label="Community concerns"><div class="record-row record-head" role="row">${headers.map((header) => `<span role="columnheader">${esc(header)}</span>`).join("")}</div>${cells}</div>`;
 }
 
-function reportAssignmentAction(report) {
+export function reportAssignmentAction(report) {
   if (report.assignedTo?.id === currentUser.id) {
     return `<button class="button secondary small" type="button" data-action="release-report" data-id="${esc(report.id)}">Release</button>`;
   }
@@ -325,7 +384,7 @@ function reportAssignmentAction(report) {
   return "";
 }
 
-function reportHistoryRows(reports) {
+export function reportHistoryRows(reports) {
   const updates = reports
     .flatMap((report) => report.history.map((item) => ({ report, item })))
     .sort((a, b) => asDate(b.item.at) - asDate(a.item.at));
@@ -347,7 +406,7 @@ function reportHistoryRows(reports) {
   return `<div class="records" data-page-size="10" role="table" aria-label="Report activity"><div class="record-row record-head" role="row"><span role="columnheader">Concern</span><span role="columnheader">Resident</span><span role="columnheader">Update</span><span role="columnheader">Date and time</span><span role="columnheader">Action</span></div>${rows}</div>`;
 }
 
-function reportFilters(reports, activeFilter) {
+export function reportFilters(reports, activeFilter) {
   const options = [
     ["all", "All reports"],
     ["Submitted", "Submitted"],
@@ -363,11 +422,11 @@ function reportFilters(reports, activeFilter) {
     .join("")}</div>`;
 }
 
-function searchToolbar(label = "Search concerns by report ID, resident or description") {
+export function searchToolbar(label = "Search concerns by report ID, resident or description") {
   return `<div class="toolbar mt-16"><label class="search-field">${icon("search")}<span class="visually-hidden">${esc(label)}</span><input class="input" type="search" data-search-input autocomplete="off"></label></div>`;
 }
 
-function timelineMarkup(history) {
+export function timelineMarkup(history) {
   return `<ol class="timeline">${history
     .map(
       (item, index) => `
@@ -376,7 +435,7 @@ function timelineMarkup(history) {
     .join("")}</ol>`;
 }
 
-function reportDetail(report, role) {
+export function reportDetail(report, role) {
   const isResident = role === "resident";
   const nextStatuses = report.status === "Resolved" ? [] : REPORT_TRANSITIONS[report.status] || [];
   const needsNote = nextStatuses.length
@@ -472,7 +531,7 @@ function reportDetail(report, role) {
   return page(role, listPage, body, actions);
 }
 
-function upcomingSchedule(area = currentUser.area) {
+export function upcomingSchedule(area = currentUser.area) {
   return sortedSchedules(data.schedules).find(
     (schedule) =>
       (!area || schedule.area === area || currentUser.role !== "resident") &&
@@ -481,7 +540,7 @@ function upcomingSchedule(area = currentUser.area) {
   );
 }
 
-function scheduleHistoryMarkup(history = []) {
+export function scheduleHistoryMarkup(history = []) {
   if (!history.length)
     return `<div class="empty-state"><strong>No status changes recorded</strong>Updates will appear here as the barangay works through this pickup.</div>`;
   return `<ol class="timeline">${[...history]
@@ -497,7 +556,7 @@ function scheduleHistoryMarkup(history = []) {
     .join("")}</ol>`;
 }
 
-function scheduleRows(schedules, canEdit = false) {
+export function scheduleRows(schedules, canEdit = false) {
   if (!schedules.length)
     return `<div class="empty-state"><strong>No collection schedules</strong>Schedules for this area will appear here when the barangay posts them.</div>`;
   return `<div class="records" data-page-size="10" role="table" aria-label="Collection schedule">
@@ -522,7 +581,7 @@ function scheduleRows(schedules, canEdit = false) {
       .join("")}</div>`;
 }
 
-function dashboardResident() {
+export function dashboardResident() {
   const reports = userReports();
   const next = upcomingSchedule(currentUser.area);
   const latest = sortedReports(reports)
@@ -547,7 +606,7 @@ function dashboardResident() {
   return page("resident", "dashboard", body, actions);
 }
 
-function canManageCalendarEvents() {
+export function canManageCalendarEvents() {
   const permission = "manageSchedules";
   const override = data.accountOverrides?.[currentUser?.email];
   const allowed =
@@ -557,13 +616,13 @@ function canManageCalendarEvents() {
   return Boolean(allowed) && ["official", "administrator"].includes(currentUser?.role);
 }
 
-function calendarStatusLabel(status) {
+export function calendarStatusLabel(status) {
   if (status === "pending") return "Pending approval";
   if (status === "declined") return "Declined";
   return "Approved";
 }
 
-function calendarPage() {
+export function calendarPage() {
   const isResident = currentUser?.role === "resident";
   const canManage = canManageCalendarEvents();
   const isAdmin = currentUser?.role === "administrator";
@@ -749,7 +808,7 @@ function calendarPage() {
   return page(currentUser?.role || "resident", "calendar", body, headingAction);
 }
 
-function dashboardOfficial() {
+export function dashboardOfficial() {
   const open = data.reports.filter((report) => report.status !== "Resolved");
   const pending = open.filter((report) => report.status === "Submitted" || report.status === "Under Review");
   const latest = [...open]
@@ -783,7 +842,7 @@ function dashboardOfficial() {
   return page("official", "dashboard", body);
 }
 
-function dashboardAdmin() {
+export function dashboardAdmin() {
   const residentCount = data.users.filter((user) => user.role === "resident").length;
   const officialCount = data.users.filter((user) => user.role === "official").length;
   const activeCount = data.users.filter((user) => user.status === "Active").length;
@@ -815,7 +874,7 @@ function dashboardAdmin() {
   return page("administrator", "dashboard", body, linkButton(`${icon("users")} Manage users`, routeUrl("administrator", "users"), ""));
 }
 
-function settingsPage() {
+export function settingsPage() {
   const accountItems = [
     ["User management", "Accounts and status", "users", "users"],
     ["Profile and password", "Your administrator account", "user", "profile"],
@@ -839,16 +898,16 @@ function settingsPage() {
   return page("administrator", "settings", body);
 }
 
-function emailPage() {
+export function emailPage() {
   const body = `<div class="content-stack">${emailDeliverySection()}</div>`;
   return page("administrator", "email", body);
 }
 
-function emailDeliverySection() {
+export function emailDeliverySection() {
   return `<section class="settings-section"><h2>Email</h2><form id="smtp-settings-form" class="settings-email"><div class="settings-email-head"><span class="settings-row-icon">${icon("mail")}</span><div><strong>SMTP email</strong><small>Report and collection notifications</small></div><span class="settings-row-arrow">${icon("arrow")}</span></div><div class="smtp-guide"><strong>Start with your email provider</strong><span>Choose a provider to fill the server details. Use an app password or service API key when your provider offers one; do not use your normal email password.</span><div class="smtp-provider-list"><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="gmail">Gmail</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="outlook">Outlook</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="sendgrid">SendGrid</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="custom">Other provider</button></div><p class="field-help" id="smtp-provider-help">Select a provider to see where its SMTP password or API key comes from.</p></div><div class="form-grid mt-16">${inputField("SMTP host", "host", smtpSettings.host, { required: true })}${inputField("SMTP port", "port", smtpSettings.port || "587", { type: "number", required: true, min: 1, max: 65535 })}${inputField("SMTP username", "user", smtpSettings.user, { required: true })}${inputField("Sender address", "from", smtpSettings.from, { required: true })}${inputField("SMTP password", "pass", "", { type: "password", autocomplete: "new-password", placeholder: smtpSettings.configured ? "Leave blank to keep current password" : "" })}</div><div class="form-actions"><button class="button" type="submit">Save SMTP settings</button><button class="button secondary" type="button" data-action="test-smtp">Send test email</button></div><p class="field-help">The password is encrypted on the server and never returned to this browser.</p></form></section>`;
 }
 
-function collectionResident() {
+export function collectionResident() {
   const schedules = sortedSchedules(data.schedules).filter((schedule) => schedule.area === currentUser.area);
   const next = upcomingSchedule(currentUser.area);
   const nextNote = next && ["Delayed", "Cancelled"].includes(next.status) ? (next.history || []).at(-1)?.note : "";
@@ -863,7 +922,7 @@ function collectionResident() {
   return page("resident", "collection", body);
 }
 
-function locationsPage() {
+export function locationsPage() {
   const locationRows = data.locations
     .map(
       (
@@ -912,14 +971,14 @@ function locationsPage() {
   return page("administrator", "locations", body);
 }
 
-function announcementEventMarkup(item) {
+export function announcementEventMarkup(item) {
   if (!item?.isEvent) return "";
   const hasPin = Number.isFinite(item.latitude) && Number.isFinite(item.longitude);
   if (!hasPin) return `<span class="approval-tag">Event</span>`;
   return `<span class="approval-tag">Event</span><button class="text-button" type="button" data-action="view-announcement-location" data-id="${esc(item.id)}">View event location</button>`;
 }
 
-function announcementsPage(role) {
+export function announcementsPage(role) {
   const isManager = role === "official" || role === "administrator";
   const announcements = [...data.announcements].sort((a, b) => asDate(b.date) - asDate(a.date));
   const statusLabel = (item) =>
@@ -949,7 +1008,7 @@ function announcementsPage(role) {
   return page(role, "announcements", body);
 }
 
-function analyticsPage() {
+export function analyticsPage() {
   const reports = data.reports;
   const schedules = sortedSchedules(data.schedules);
   const users = data.users || [];
@@ -1063,7 +1122,7 @@ function analyticsPage() {
   return page("administrator", "analytics", body);
 }
 
-function collectionOfficial() {
+export function collectionOfficial() {
   const schedules = sortedSchedules(data.schedules);
   const body = `
     <div class="content-stack">
@@ -1091,7 +1150,7 @@ function collectionOfficial() {
   return page("official", "collection", body);
 }
 
-function reportFormMarkup() {
+export function reportFormMarkup() {
   const draft = reportDraft || {};
   const reportAreas = residentAreaOptions();
   const defaultArea = reportAreas.includes(draft.area)
@@ -1148,11 +1207,11 @@ function reportFormMarkup() {
     </div></section>`;
 }
 
-function reportPage() {
+export function reportPage() {
   return page("resident", "report", reportFormMarkup());
 }
 
-function reportsPage(role, view) {
+export function reportsPage(role, view) {
   const userRows = role === "resident" ? userReports() : data.reports;
   const selection = selectedReportId ? getReport(selectedReportId) : null;
   if (selection && (role !== "resident" || selection.userEmail === currentUser.email)) return reportDetail(selection, role);
@@ -1193,7 +1252,7 @@ function reportsPage(role, view) {
   return page(role, view, body, primaryAction);
 }
 
-function notificationsPage(role) {
+export function notificationsPage(role) {
   const notifications = sortedNotifications(data.notifications.filter((item) => item.targetEmail === currentUser.email));
   const visible = notificationFilter === "unread" ? notifications.filter((item) => !item.read) : notifications;
   const unread = notifications.filter((item) => !item.read).length;
@@ -1216,7 +1275,7 @@ function notificationsPage(role) {
   return page(role, "notifications", body, reviewAction);
 }
 
-function approvalsPage() {
+export function approvalsPage() {
   const pendingEvents = (data.calendarEvents || []).filter((event) => event.approvalStatus === "pending");
   const pendingAnnouncements = data.announcements.filter((item) => item.approvalStatus === "pending");
   const total = pendingEvents.length + pendingAnnouncements.length;
@@ -1268,7 +1327,7 @@ function approvalsPage() {
   return page("administrator", "approvals", body);
 }
 
-function profilePage(role) {
+export function profilePage(role) {
   const recoveryEmail = currentUser.recoveryEmail || "";
   const recoveryVerified = Boolean(currentUser.recoveryEmailVerified);
   const recoveryHelp = !recoveryEmail
@@ -1315,7 +1374,7 @@ function profilePage(role) {
   return page(role, "profile", body);
 }
 
-function userRowsMarkup(users) {
+export function userRowsMarkup(users) {
   if (!users.length) return `<div class="empty-state"><strong>No accounts match</strong>Try another name, email, role, or status.</div>`;
   return `<div class="records" data-page-size="10" role="table" aria-label="User accounts"><div class="record-row record-head user-record-head" role="row"><span role="columnheader">Account</span><span role="columnheader">Role</span><span role="columnheader">Area</span><span role="columnheader">Status</span><span role="columnheader">Action</span></div>${users
     .map(
@@ -1332,7 +1391,7 @@ function userRowsMarkup(users) {
     .join("")}</div>`;
 }
 
-function usersPage() {
+export function usersPage() {
   const counts = Object.keys(ROLES).map((role) => [role, data.users.filter((user) => user.role === role).length]);
   const body = `
     <div class="content-stack">
@@ -1358,7 +1417,7 @@ function usersPage() {
   return page("administrator", "users", body);
 }
 
-function rolesPage() {
+export function rolesPage() {
   const roles = ["resident", "official", "administrator"];
   const selectedRole = selectedPermissionRole;
   permissionDrafts[selectedRole] ||= { ...data.permissions[selectedRole] };
@@ -1477,26 +1536,26 @@ function rolesPage() {
   return page("administrator", "roles", body);
 }
 
-function rememberOpenPermissionGroups() {
+export function rememberOpenPermissionGroups() {
   permissionOpenGroups[selectedPermissionRole] = [...app.querySelectorAll(".permission-group[open]")].map(
     (group) => group.dataset.permissionGroup,
   );
 }
 
-function hasUnsavedPermissionChanges() {
+export function hasUnsavedPermissionChanges() {
   return Object.entries(permissionDrafts).some(([role, draft]) =>
     PERMISSION_DEFS.some(({ id }) => draft[id] !== Boolean(data.permissions[role]?.[id])),
   );
 }
 
-function confirmLeaveWithUnsavedPermissions() {
+export function confirmLeaveWithUnsavedPermissions() {
   return (
     !hasUnsavedPermissionChanges() ||
     window.confirm("You have unsaved role permission changes. Leave without saving? Your changes will be discarded.")
   );
 }
 
-function activityResultsMarkup() {
+export function activityResultsMarkup() {
   const summary = activityLogState.summary || {};
   const rows = activityLogState.activities || [];
   const total = Number(activityLogState.total || 0);
@@ -1531,7 +1590,7 @@ function activityResultsMarkup() {
     ${pageCount > 1 ? `<nav class="pagination" aria-label="Activity log pages"><button class="button secondary small" type="button" data-action="activity-page" data-direction="-1" ${page <= 1 ? "disabled" : ""}>Previous</button><span class="pagination-status" aria-live="polite">Page ${page} of ${pageCount} · ${total} records</span><button class="button secondary small" type="button" data-action="activity-page" data-direction="1" ${page >= pageCount ? "disabled" : ""}>Next</button></nav>` : ""}`;
 }
 
-function activityLogPage() {
+export function activityLogPage() {
   const sources = [
     ["all", "Current and archived"],
     ["current", "Current only"],
@@ -1558,7 +1617,7 @@ function activityLogPage() {
   return page("administrator", "activity", body);
 }
 
-function loginMarkup() {
+export function loginMarkup() {
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
@@ -1582,7 +1641,7 @@ function loginMarkup() {
     </main>`;
 }
 
-function forgotPasswordMarkup() {
+export function forgotPasswordMarkup() {
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
@@ -1602,7 +1661,7 @@ function forgotPasswordMarkup() {
     </main>`;
 }
 
-function resetPasswordMarkup(token) {
+export function resetPasswordMarkup(token) {
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
@@ -1624,7 +1683,7 @@ function resetPasswordMarkup(token) {
     </main>`;
 }
 
-function verifyRecoveryMarkup(token) {
+export function verifyRecoveryMarkup(token) {
   return `
     <main class="login-page" id="main-content">
       <section class="login-story" aria-label="About CommUnity">
@@ -1644,7 +1703,7 @@ function verifyRecoveryMarkup(token) {
     </main>`;
 }
 
-function registerMarkup() {
+export function registerMarkup() {
   const areaOptions = residentAreaOptions();
   return `
     <main class="login-page" id="main-content">

@@ -65,6 +65,10 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.match(homeHtml, /node_modules\/leaflet\/dist\/leaflet\.js/);
     assert.equal((await fetch(`${app.origin}/package.json`)).status, 404);
     for (const [asset, contentType] of [
+      ["/app/main.mjs", "text/javascript"],
+      ["/app/views.mjs", "text/javascript"],
+      ["/app/core.mjs", "text/javascript"],
+      ["/app/constants.mjs", "text/javascript"],
       ["/node_modules/leaflet/dist/leaflet.js", "text/javascript"],
       ["/node_modules/leaflet/dist/leaflet.css", "text/css"],
       ["/node_modules/leaflet/dist/images/layers.png", "image/png"],
@@ -78,6 +82,9 @@ test("serves hardened static files and protects database routes behind sessions"
       assert.match(response.headers.get("content-type"), new RegExp(contentType), asset);
       assert.ok(Number(response.headers.get("content-length")) > 0, asset);
     }
+    // The directory-based allowlist must not leak anything outside its root.
+    assert.equal((await fetch(`${app.origin}/app/../server/index.mjs`)).status, 404);
+    assert.equal((await fetch(`${app.origin}/app/..%2Fserver%2Findex.mjs`)).status, 404);
     const session = await api(app, "/api/session");
     assert.equal(session.status, 200);
     assert.deepEqual(await session.json(), { user: null });

@@ -6,12 +6,14 @@ import { CONTENT_TYPES, MAX_STATE_BYTES } from "./constants.mjs";
 
 export { CONTENT_TYPES, MAX_STATE_BYTES };
 
+// The frontend is buildless ES modules under app/. Serve the directory — every
+// file under it is public app code — rather than maintain a per-file allowlist.
+// Nothing outside it is reachable.
+const PUBLIC_DIRECTORIES = new Set(["app/"]);
+
 const PUBLIC_FILES = new Set([
   "index.html",
   "styles.css",
-  "app-core.js",
-  "app-views.js",
-  "app.js",
   "logo/palsara-transparent.png",
   "favicon.png",
   "node_modules/leaflet/dist/leaflet.js",
@@ -86,7 +88,10 @@ export function createExpressApp({
       }
       const pathname = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`).pathname;
       const filename = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
-      if (!PUBLIC_FILES.has(filename)) {
+      const allowedByDirectory = [...PUBLIC_DIRECTORIES].some((dir) =>
+        filename.startsWith(dir) && !filename.includes("..") && !path.isAbsolute(filename),
+      );
+      if (!PUBLIC_FILES.has(filename) && !allowedByDirectory) {
         response.writeHead(404).end("Not found");
         return;
       }

@@ -1,11 +1,124 @@
 "use strict";
 
-let reportMapExpanded = false;
-let reportMapSelection = null;
+import {
+  locationAreas,
+  locationAreaLabels,
+  isResidentArea,
+  icon,
+  brandMark,
+  esc,
+  appDateParts,
+  dateLabel,
+  dateTimeLabel,
+  todayISO,
+  statusPill,
+  roleLabel,
+  idFor,
+  emptyState,
+  localSave,
+  loadCommunityOfficialHours,
+  loadLocalData,
+  toast,
+  confirmAction,
+  currentPath,
+  clearSession,
+  announceSessionChange,
+  startStateUpdates,
+  stopStateUpdates,
+  addActivity,
+  getUser,
+  getReport,
+  userReports,
+  sortedReports,
+  sortedSchedules,
+  scheduleStatusEntry,
+  scheduleOccurrenceDates,
+  routeUrl,
+  inputField,
+  selectField,
+  reportDraftFromForm,
+  calendarEventFromForm,
+  calendarEventFromRecord,
+  app,
+  data,
+  currentUser,
+  setState,
+  pendingReportRoute,
+  uploadPhotos,
+  smtpSettings,
+  reportDraft,
+  modalState,
+  forcedPasswordDismissed,
+  calendarMonth,
+  calendarYear,
+  calendarSelectedDate,
+  selectedPermissionRole,
+  permissionDrafts,
+  activityLogState,
+  activityFilters,
+  activityLogLoadedKey,
+  lastKnownHash,
+  SESSION_SYNC_KEY,
+  sessionSyncChannel,
+} from "./core.mjs";
+import {
+  ROLES,
+  ROLE_THEME,
+  STATUSES,
+  REPORT_TRANSITIONS,
+  COLLECTION_STATUSES,
+  CATEGORIES,
+  REPORT_PRIORITIES,
+  FOLLOW_UP_LIMITS,
+  PALSARA_CENTER,
+  PALSARA_BOUNDS,
+  AREA_COORDINATES,
+  PERMISSION_DEFS,
+  SCHEDULE_FREQUENCIES,
+  SCHEDULE_REASON_STATUSES,
+} from "./constants.mjs";
+import {
+  canOpenPage,
+  checkDataConsistency,
+  scheduleHistoryMarkup,
+  dashboardResident,
+  calendarStatusLabel,
+  calendarPage,
+  dashboardOfficial,
+  dashboardAdmin,
+  settingsPage,
+  emailPage,
+  collectionResident,
+  locationsPage,
+  announcementsPage,
+  analyticsPage,
+  collectionOfficial,
+  reportPage,
+  reportsPage,
+  notificationsPage,
+  approvalsPage,
+  profilePage,
+  usersPage,
+  rolesPage,
+  rememberOpenPermissionGroups,
+  hasUnsavedPermissionChanges,
+  confirmLeaveWithUnsavedPermissions,
+  activityResultsMarkup,
+  activityLogPage,
+  loginMarkup,
+  forgotPasswordMarkup,
+  resetPasswordMarkup,
+  verifyRecoveryMarkup,
+  registerMarkup,
+} from "./views.mjs";
+
+
+export let reportMapExpanded = false;
+export let reportMapSelection = null;
 let reportMap = null;
 let reportMapElement = null;
 let reportMapMarker = null;
-let reportMapGeoLocating = false;
+export let reportMapGeoLocating = false;
 let areaMapListenerAttached = false;
 let reportDetailMap = null;
 let reportDetailMapElement = null;
@@ -81,10 +194,10 @@ function routeState() {
   return { type: "app", role, page: resolvedPage };
 }
 
-function render() {
+export function render() {
   if (!data) return;
   const route = routeState();
-  currentRoute = route;
+  setState({ currentRoute: route });
   if (route.type !== "app" || route.role !== "resident" || route.page !== "report") {
     reportMapExpanded = false;
     reportMapSelection = null;
@@ -115,7 +228,7 @@ function render() {
     announcementDetailMapElements = [];
   }
   if (currentUser && route.type === "app") {
-    if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) modalState = { kind: "forced-password" };
+    if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) setState({ modalState: { kind: "forced-password" } });
     document.documentElement.dataset.theme = ROLE_THEME[currentUser.role];
     if (window.location.hash !== routeUrl(currentUser.role, route.page)) {
       window.history.replaceState(null, "", routeUrl(currentUser.role, route.page));
@@ -181,7 +294,7 @@ function render() {
   }
   initializeReportDetailMap();
   initializeAnnouncementDetailMap();
-  lastKnownHash = window.location.hash;
+  setState({ lastKnownHash: window.location.hash });
 }
 
 function makeModal(title, body, className = "") {
@@ -221,7 +334,7 @@ function availableDayOptions(selectedDays = DEFAULT_OFFICIAL_DAYS) {
   ).join("");
 }
 
-function modalMarkup() {
+export function modalMarkup() {
   if (modalState.kind === "activity-detail") {
     const item = modalState.event;
     const body = `<div class="activity-detail-list">${[
@@ -247,7 +360,7 @@ function modalMarkup() {
   if (modalState.kind === "user-password") {
     const user = getUser(modalState.id);
     if (!user || user.email === currentUser.email) {
-      modalState = null;
+      setState({ modalState: null });
       return "";
     }
     const body = `<form id="user-password-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
@@ -277,7 +390,7 @@ function modalMarkup() {
   if (modalState.kind === "schedule-detail") {
     const schedule = data.schedules.find((item) => item.id === modalState.id);
     if (!schedule) {
-      modalState = null;
+      setState({ modalState: null });
       return "";
     }
     const latest = (schedule.history || []).at(-1);
@@ -337,7 +450,7 @@ function modalMarkup() {
   if (modalState.kind === "announcement-location") {
     const item = data.announcements.find((record) => record.id === modalState.id);
     if (!item || !item.isEvent || !Number.isFinite(item.latitude) || !Number.isFinite(item.longitude)) {
-      modalState = null;
+      setState({ modalState: null });
       return "";
     }
     const isEvent = Boolean(item.isEvent);
@@ -445,7 +558,7 @@ function modalMarkup() {
   if (modalState.kind === "deactivate") {
     const user = modalState.id ? getUser(modalState.id) : null;
     if (!user) {
-      modalState = null;
+      setState({ modalState: null });
       return "";
     }
     const body = `<form id="deactivate-form" class="modal-form"><input type="hidden" name="email" value="${esc(user.email)}">
@@ -490,12 +603,12 @@ function showModal(kind, id = "") {
         ? { latitude: item.latitude, longitude: item.longitude }
         : null;
   }
-  modalState = { kind, id };
+  setState({ modalState: { kind, id } });
   render();
 }
 
 function closeModal() {
-  modalState = null;
+  setState({ modalState: null });
   render();
   app.querySelector(".workspace-main")?.focus();
 }
@@ -661,8 +774,8 @@ async function loadActivityLog(page = 1, force = false) {
   const response = await fetch(`/api/community/activity?${key}`);
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The activity log could not be loaded.");
-  activityLogState = result;
-  activityLogLoadedKey = key;
+  setState({ activityLogState: result });
+  setState({ activityLogLoadedKey: key });
   const region = app.querySelector("#activity-results");
   if (region) region.innerHTML = activityResultsMarkup();
 }
@@ -807,11 +920,11 @@ async function submitReportDraft() {
     data.reports = data.reports.filter((item) => item.id !== report.id);
     return;
   }
-  reportDraft = null;
+  setState({ reportDraft: null });
   reportMapExpanded = false;
   reportMapSelection = null;
-  uploadPhotos = [];
-  selectedReportId = null;
+  setState({ uploadPhotos: [] });
+  setState({ selectedReportId: null });
   window.location.hash = routeUrl("resident", "reports");
   toast(`${report.id} was submitted to barangay staff.`, "success");
 }
@@ -847,7 +960,7 @@ async function updateReportStatus(form) {
   report.history.push({ status, at: now, note: note || `Status updated to ${status}.` });
   addActivity("Updated a report", `${report.id} · ${status}`);
   if (!(await localSave())) return;
-  selectedReportId = null;
+  setState({ selectedReportId: null });
   render();
   toast(`${report.id} updated. The resident has an in-app notification.`, "success");
 }
@@ -892,10 +1005,10 @@ async function confirmReport(reportId, note) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The concern was confirmed, but the report list could not be refreshed.");
-  data = state.data;
-  dataRevision = state.revision;
-  lastPersistedSnapshot = JSON.stringify(data);
-  selectedReportId = null;
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ selectedReportId: null });
   render();
   toast(`${reportId} confirmed as addressed.`, "success");
 }
@@ -922,10 +1035,10 @@ async function reopenReport(reportId, reason) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The concern was reopened, but the report list could not be refreshed.");
-  data = state.data;
-  dataRevision = state.revision;
-  lastPersistedSnapshot = JSON.stringify(data);
-  selectedReportId = null;
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ selectedReportId: null });
   render();
   toast(`${reportId} reopened. It is back in the concern queue.`, "success");
 }
@@ -967,15 +1080,15 @@ async function submitFollowUp(form) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (stateResponse.ok) {
-    data = state.data;
-    dataRevision = state.revision;
-    lastPersistedSnapshot = JSON.stringify(data);
+    setState({ data: state.data });
+    setState({ dataRevision: state.revision });
+    setState({ lastPersistedSnapshot: JSON.stringify(data) });
   } else {
     console.error("CommUnity could not refresh state after follow-up.", state.error);
     const localReport = data.reports.find((item) => item.id === reportId);
     if (localReport && typeof result.count === "number") localReport.followUpCount = result.count;
   }
-  selectedReportId = null;
+  setState({ selectedReportId: null });
   render();
   const nextLine = result.remaining == null ? "Unlimited follow-ups remain." : `${result.remaining} follow-up(s) remain.`;
   toast(`Your follow-up was sent to barangay staff. ${nextLine}`, "success");
@@ -1007,9 +1120,9 @@ async function updateReportPriority(form) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The priority was updated, but the report list could not be refreshed.");
-  data = state.data;
-  dataRevision = state.revision;
-  lastPersistedSnapshot = JSON.stringify(data);
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
   render();
   toast(`${report.id} priority updated to ${priority}.`, "success");
 }
@@ -1108,7 +1221,7 @@ async function updateCollection(form) {
     );
   }
   if (!(await localSave())) return;
-  modalState = null;
+  setState({ modalState: null });
   render();
   toast("Collection schedule saved. Residents in the affected area have an in-app update.", "success");
 }
@@ -1138,7 +1251,7 @@ async function saveLocation(form) {
   else data.locations.push(record);
   addActivity(existing ? "Updated a community location" : "Added a community location", `${record.area} · ${record.barangay}`);
   if (!(await localSave())) return;
-  modalState = null;
+  setState({ modalState: null });
   render();
   toast("Community location saved.", "success");
 }
@@ -1171,7 +1284,7 @@ async function saveRecyclingLocation(form) {
   else data.recyclingLocations.push(record);
   addActivity(existing ? "Updated a recycling directory listing" : "Added a recycling directory listing", record.name);
   if (!(await localSave())) return;
-  modalState = null;
+  setState({ modalState: null });
   render();
   toast("Recycling directory listing saved.", "success");
 }
@@ -1244,7 +1357,7 @@ async function saveAnnouncement(form) {
   announcementMap = null;
   announcementMapElement = null;
   announcementMapMarker = null;
-  modalState = null;
+  setState({ modalState: null });
   render();
   toast(
     needsApproval
@@ -1276,10 +1389,10 @@ async function decideAnnouncement(id, status, reason = "") {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The announcement decision could not be saved.");
-  data = result.data || data;
-  if (result.revision) dataRevision = result.revision;
-  lastPersistedSnapshot = JSON.stringify(data);
-  modalState = null;
+  setState({ data: result.data || data });
+  if (result.revision) setState({ dataRevision: result.revision });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ modalState: null });
   render();
   toast(status === "declined" ? "Announcement declined." : "Announcement approved and published.", "success");
 }
@@ -1304,12 +1417,12 @@ async function saveCalendarEvent(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The calendar event could not be saved.");
-  data = result.data || data;
-  if (result.revision) dataRevision = result.revision;
-  currentUser = result.user || currentUser;
-  lastPersistedSnapshot = JSON.stringify(data);
-  modalState = null;
-  calendarSelectedDate = body.date;
+  setState({ data: result.data || data });
+  if (result.revision) setState({ dataRevision: result.revision });
+  setState({ currentUser: result.user || currentUser });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ modalState: null });
+  setState({ calendarSelectedDate: body.date });
   render();
   toast(currentUser.role === "administrator" ? "Event added to the calendar." : "Event request sent for approval.", "success");
 }
@@ -1332,11 +1445,11 @@ async function decideCalendarEvent(id, status, reason = "") {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The event decision could not be saved.");
-  data = result.data || data;
-  if (result.revision) dataRevision = result.revision;
-  currentUser = result.user || currentUser;
-  lastPersistedSnapshot = JSON.stringify(data);
-  modalState = null;
+  setState({ data: result.data || data });
+  if (result.revision) setState({ dataRevision: result.revision });
+  setState({ currentUser: result.user || currentUser });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ modalState: null });
   render();
   toast(
     status === "declined" ? "Event rejected and the reason sent to the official." : "Event approved and added to the calendar.",
@@ -1432,10 +1545,10 @@ async function updateProfile(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
-  currentUser = result.user;
-  data = result.data;
-  dataRevision = result.revision;
-  lastPersistedSnapshot = JSON.stringify(data);
+  setState({ currentUser: result.user });
+  setState({ data: result.data });
+  setState({ dataRevision: result.revision });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
   render();
   toast(profileSavedMessage(result.recoveryEmail), "success");
 }
@@ -1452,7 +1565,7 @@ async function loadSmtpSettings() {
   const response = await fetch("/api/settings/smtp");
   const result = await response.json();
   if (!response.ok) return;
-  smtpSettings = result.settings;
+  setState({ smtpSettings: result.settings });
   const form = app.querySelector("#smtp-settings-form");
   if (!form) return;
   for (const [name, value] of Object.entries(smtpSettings)) {
@@ -1478,7 +1591,7 @@ async function saveSmtpSettings(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "SMTP settings could not be saved.");
-  smtpSettings = result.settings;
+  setState({ smtpSettings: result.settings });
   form.elements.namedItem("pass").value = "";
   toast("SMTP settings saved.", "success");
 }
@@ -1544,11 +1657,11 @@ async function updatePassword(form) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The account was updated, but CommUnity could not reload.");
-  data = state.data;
-  dataRevision = state.revision;
-  currentUser = state.user;
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
+  setState({ currentUser: state.user });
   await loadCommunityOfficialHours();
-  lastPersistedSnapshot = JSON.stringify(data);
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
   startStateUpdates();
   form.reset();
   toast("Password updated.", "success");
@@ -1590,18 +1703,18 @@ async function createResident(form) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "Your account was created, but CommUnity could not load it.");
-  currentUser = state.user || result.user;
-  data = state.data;
-  dataRevision = state.revision;
+  setState({ currentUser: state.user || result.user });
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
   await loadCommunityOfficialHours();
-  lastPersistedSnapshot = JSON.stringify(data);
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
   startStateUpdates();
   window.location.hash = routeUrl("resident", "dashboard");
   announceSessionChange();
   toast("Your resident account is ready.", "success");
 }
 
-async function login(emailInput, password, remember = false) {
+export async function login(emailInput, password, remember = false) {
   const response = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1609,17 +1722,17 @@ async function login(emailInput, password, remember = false) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Those sign-in details do not match an active account.");
-  currentUser = result.user || null;
+  setState({ currentUser: result.user || null });
   if (!currentUser) throw new Error("Signed in, but CommUnity could not load your information.");
-  forcedPasswordDismissed = false;
+  setState({ forcedPasswordDismissed: false });
   if (currentUser.requiresPasswordChange) {
     // The server answers only the password change until the temporary password is
     // replaced, so load the empty shell and let the forced dialog run first. The
     // real state loads inside updatePassword() once the change succeeds.
-    data = emptyState();
-    dataRevision = 0;
-    lastPersistedSnapshot = "";
-    communityOfficialHours = [];
+    setState({ data: emptyState() });
+    setState({ dataRevision: 0 });
+    setState({ lastPersistedSnapshot: "" });
+    setState({ communityOfficialHours: [] });
     window.location.hash = routeUrl(currentUser.role, "dashboard");
     render();
     announceSessionChange();
@@ -1628,13 +1741,13 @@ async function login(emailInput, password, remember = false) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "Signed in, but CommUnity could not load your information.");
-  currentUser = state.user || result.user;
-  data = state.data;
-  dataRevision = state.revision;
+  setState({ currentUser: state.user || result.user });
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
   await loadCommunityOfficialHours();
-  lastPersistedSnapshot = JSON.stringify(data);
-  selectedReportId = null;
-  reportDraft = null;
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ selectedReportId: null });
+  setState({ reportDraft: null });
   startStateUpdates();
   window.location.hash = routeUrl(currentUser.role, "dashboard");
   render();
@@ -1659,11 +1772,11 @@ async function resetUserPassword(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The account password could not be reset.");
-  data = result.data;
-  dataRevision = result.revision;
-  currentUser = result.user;
-  lastPersistedSnapshot = JSON.stringify(data);
-  modalState = null;
+  setState({ data: result.data });
+  setState({ dataRevision: result.revision });
+  setState({ currentUser: result.user });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ modalState: null });
   render();
   toast("Temporary password generated and emailed to the account holder.", "success");
 }
@@ -1834,17 +1947,17 @@ async function addOrEditUser(form) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The account could not be added.");
-    data = result.data;
-    dataRevision = result.revision;
-    currentUser = result.user;
-    lastPersistedSnapshot = JSON.stringify(data);
-    modalState = null;
+    setState({ data: result.data });
+    setState({ dataRevision: result.revision });
+    setState({ currentUser: result.user });
+    setState({ lastPersistedSnapshot: JSON.stringify(data) });
+    setState({ modalState: null });
     render();
     toast("Account added.", "success");
     return;
   }
   if (!(await localSave())) return;
-  modalState = null;
+  setState({ modalState: null });
   render();
   toast(existing ? "Account updated." : "Account added.", "success");
 }
@@ -1870,11 +1983,11 @@ async function toggleAccount(email) {
     const stateResponse = await fetch("/api/state");
     const state = await stateResponse.json();
     if (!stateResponse.ok) throw new Error(state.error || "The account was reactivated, but the user list could not be refreshed.");
-    data = state.data;
-    dataRevision = state.revision;
-    currentUser = state.user;
-    lastPersistedSnapshot = JSON.stringify(data);
-    modalState = null;
+    setState({ data: state.data });
+    setState({ dataRevision: state.revision });
+    setState({ currentUser: state.user });
+    setState({ lastPersistedSnapshot: JSON.stringify(data) });
+    setState({ modalState: null });
     render();
     announceSessionChange();
     const reactivated = getUser(email);
@@ -1909,11 +2022,11 @@ async function deactivateAccount(email, reason) {
   const stateResponse = await fetch("/api/state");
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(state.error || "The account was deactivated, but the user list could not be refreshed.");
-  data = state.data;
-  dataRevision = state.revision;
-  currentUser = state.user;
-  lastPersistedSnapshot = JSON.stringify(data);
-  modalState = null;
+  setState({ data: state.data });
+  setState({ dataRevision: state.revision });
+  setState({ currentUser: state.user });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  setState({ modalState: null });
   render();
   announceSessionChange();
   const deactivated = getUser(email);
@@ -1930,16 +2043,16 @@ function openReport(id) {
     toast("Residents can only open their own reports.", "error");
     return;
   }
-  selectedReportId = report.id;
+  setState({ selectedReportId: report.id });
   const destination = routeUrl(
     currentUser.role,
     currentUser.role === "resident" ? "reports" : currentUser.role === "administrator" ? "reports" : "concerns",
   );
   if (window.location.hash === destination) {
-    pendingReportRoute = "";
+    setState({ pendingReportRoute: "" });
     render();
   } else {
-    pendingReportRoute = destination;
+    setState({ pendingReportRoute: destination });
     window.location.hash = destination;
   }
 }
@@ -2378,9 +2491,9 @@ async function handleAction(button, clickEvent) {
     if (!response.ok) throw new Error("CommUnity could not sign you out. Try again.");
     clearSession();
     stopStateUpdates();
-    permissionDrafts = {};
-    permissionOpenGroups = {};
-    selectedPermissionRole = "resident";
+    setState({ permissionDrafts: {} });
+    setState({ permissionOpenGroups: {} });
+    setState({ selectedPermissionRole: "resident" });
     window.location.hash = "#/login";
     render();
     announceSessionChange();
@@ -2410,13 +2523,13 @@ async function handleAction(button, clickEvent) {
     if (!reason.trim()) throw new Error("Enter a reason before reopening the concern.");
     await reopenReport(button.dataset.id, reason.trim());
   } else if (action === "back-list") {
-    selectedReportId = null;
+    setState({ selectedReportId: null });
     render();
   } else if (action === "filter-reports") {
-    reportFilter = button.dataset.value;
+    setState({ reportFilter: button.dataset.value });
     render();
   } else if (action === "filter-notifications") {
-    notificationFilter = button.dataset.value;
+    setState({ notificationFilter: button.dataset.value });
     render();
   } else if (action === "change-page") {
     const table = app.querySelector(`.records[data-pagination-id="${button.dataset.paginationId}"]`);
@@ -2509,7 +2622,7 @@ async function handleAction(button, clickEvent) {
       data.locations = data.locations.filter((item) => item.id !== location.id);
       addActivity("Removed a community location", location.area);
       if (await localSave()) {
-        modalState = null;
+        setState({ modalState: null });
         render();
         toast("Community location removed.", "success");
       }
@@ -2531,7 +2644,7 @@ async function handleAction(button, clickEvent) {
       data.recyclingLocations = data.recyclingLocations.filter((record) => record.id !== item.id);
       addActivity("Removed a recycling directory listing", item.name);
       if (await localSave()) {
-        modalState = null;
+        setState({ modalState: null });
         render();
         toast("Recycling listing removed.", "success");
       }
@@ -2543,7 +2656,7 @@ async function handleAction(button, clickEvent) {
   } else if (action === "approve-announcement") {
     await decideAnnouncement(button.dataset.id, "approved");
   } else if (action === "decline-announcement") {
-    modalState = { kind: "announcement-decline", id: button.dataset.id };
+    setState({ modalState: { kind: "announcement-decline", id: button.dataset.id } });
     render();
   } else if (action === "delete-announcement") {
     const item = data.announcements.find((record) => record.id === button.dataset.id);
@@ -2562,11 +2675,11 @@ async function handleAction(button, clickEvent) {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "The announcement could not be removed.");
-      data = result.data;
-      dataRevision = result.revision;
-      currentUser = result.user;
-      lastPersistedSnapshot = JSON.stringify(data);
-      modalState = null;
+      setState({ data: result.data });
+      setState({ dataRevision: result.revision });
+      setState({ currentUser: result.user });
+      setState({ lastPersistedSnapshot: JSON.stringify(data) });
+      setState({ modalState: null });
       render();
       toast("Announcement removed.", "success");
     }
@@ -2575,7 +2688,7 @@ async function handleAction(button, clickEvent) {
     if (!Object.hasOwn(data.permissions, role)) throw new Error("This role could not be found.");
     rememberOpenPermissionGroups();
     permissionDrafts[role] ||= { ...data.permissions[role] };
-    selectedPermissionRole = role;
+    setState({ selectedPermissionRole: role });
     render();
     app.querySelector(`[data-action="select-permission-role"][data-role="${role}"]`)?.focus();
   } else if (action === "toggle-permission") {
@@ -2713,13 +2826,13 @@ async function handleAction(button, clickEvent) {
   } else if (action === "view-activity") {
     const event = activityLogState.activities.find((item) => item.id === button.dataset.id);
     if (event) {
-      modalState = { kind: "activity-detail", event };
+      setState({ modalState: { kind: "activity-detail", event } });
       render();
     }
   } else if (action === "activity-page") {
     await loadActivityLog(activityLogState.page + Number(button.dataset.direction), true);
   } else if (action === "clear-activity-filters") {
-    activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
+    setState({ activityFilters: { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" } });
     await loadActivityLog(1, true);
     render();
   } else if (action === "export-reports") {
@@ -2743,17 +2856,17 @@ async function handleAction(button, clickEvent) {
   } else if (action === "close-modal-backdrop" && button === clickEvent.target) {
     closeModal();
   } else if (action === "calendar-prev") {
-    calendarMonth--;
-    if (calendarMonth < 0) {
-      calendarMonth = 11;
-      calendarYear--;
+    if (calendarMonth === 0) {
+      setState({ calendarMonth: 11, calendarYear: calendarYear - 1 });
+    } else {
+      setState({ calendarMonth: calendarMonth - 1 });
     }
     render();
   } else if (action === "calendar-next") {
-    calendarMonth++;
-    if (calendarMonth > 11) {
-      calendarMonth = 0;
-      calendarYear++;
+    if (calendarMonth === 11) {
+      setState({ calendarMonth: 0, calendarYear: calendarYear + 1 });
+    } else {
+      setState({ calendarMonth: calendarMonth + 1 });
     }
     render();
   } else if (action === "calendar-day") {
@@ -2763,20 +2876,20 @@ async function handleAction(button, clickEvent) {
     lastCalendarClick = { date, at: now };
     if (isDoubleClick && button.classList.contains("calendar-cell--has-events")) {
       lastCalendarClick = { date: "", at: 0 };
-      calendarSelectedDate = date;
-      modalState = { kind: "calendar-event-detail", date };
+      setState({ calendarSelectedDate: date });
+      setState({ modalState: { kind: "calendar-event-detail", date } });
       render();
       return;
     }
-    calendarSelectedDate = date;
+    setState({ calendarSelectedDate: date });
     render();
   } else if (action === "add-calendar-event") {
-    modalState = { kind: "calendar-event", id: "", date: button.dataset.date || calendarSelectedDate || todayISO() };
+    setState({ modalState: { kind: "calendar-event", id: "", date: button.dataset.date || calendarSelectedDate || todayISO() } });
     render();
   } else if (action === "approve-calendar-event") {
     await decideCalendarEvent(button.dataset.id, "approved");
   } else if (action === "decline-calendar-event") {
-    modalState = { kind: "calendar-decline", id: button.dataset.id };
+    setState({ modalState: { kind: "calendar-decline", id: button.dataset.id } });
     render();
   } else if (action === "toggle-report-map") {
     reportMapExpanded = !reportMapExpanded;
@@ -2827,7 +2940,7 @@ async function handleAction(button, clickEvent) {
     const status = app.querySelector("#calendar-event-map-status");
     if (status) status.textContent = "No pin selected. Click the map to place the event location.";
   } else if (action === "view-announcement-location") {
-    modalState = { kind: "announcement-location", id: button.dataset.id };
+    setState({ modalState: { kind: "announcement-location", id: button.dataset.id } });
     render();
   } else if (action === "edit-report-draft") {
     reportDraft.step = "details";
@@ -2884,7 +2997,7 @@ async function handleSubmit(formEvent) {
               latitude: draft.latitude,
               longitude: draft.longitude,
             };
-      reportDraft = draft;
+      setState({ reportDraft: draft });
       render();
     } else if (formId === "report-status-form") {
       await updateReportStatus(fields);
@@ -2902,7 +3015,7 @@ async function handleSubmit(formEvent) {
       await updatePassword(fields);
     } else if (formId === "forced-password-form") {
       if (await updatePassword(form)) {
-        modalState = null;
+        setState({ modalState: null });
         render();
       }
     } else if (formId === "user-form") {
@@ -2919,7 +3032,7 @@ async function handleSubmit(formEvent) {
       await verifyRecovery(form);
     } else if (formId === "activity-filter-form") {
       const fields = new FormData(form);
-      activityFilters = {
+      setState({ activityFilters: {
         from: String(fields.get("from") || ""),
         to: String(fields.get("to") || ""),
         actor: String(fields.get("actor") || "").trim(),
@@ -2927,7 +3040,7 @@ async function handleSubmit(formEvent) {
         result: String(fields.get("result") || ""),
         affectedId: String(fields.get("affectedId") || "").trim(),
         source: String(fields.get("source") || "all"),
-      };
+      } });
       await loadActivityLog(1, true);
     } else if (formId === "location-form") {
       await saveLocation(fields);
@@ -3021,12 +3134,12 @@ async function syncSessionAcrossTabs() {
     if (!nextUser) {
       clearSession();
       stopStateUpdates();
-      communityOfficialHours = [];
-      data = emptyState();
-      dataRevision = 0;
-      lastPersistedSnapshot = "";
-      modalState = null;
-      permissionDrafts = {};
+      setState({ communityOfficialHours: [] });
+      setState({ data: emptyState() });
+      setState({ dataRevision: 0 });
+      setState({ lastPersistedSnapshot: "" });
+      setState({ modalState: null });
+      setState({ permissionDrafts: {} });
       window.location.hash = "#/login";
       render();
       return;
@@ -3035,15 +3148,15 @@ async function syncSessionAcrossTabs() {
     const stateResponse = await fetch("/api/state");
     const state = await stateResponse.json();
     if (!stateResponse.ok) return;
-    currentUser = state.user;
-    data = state.data;
-    dataRevision = state.revision;
+    setState({ currentUser: state.user });
+    setState({ data: state.data });
+    setState({ dataRevision: state.revision });
     startStateUpdates();
     await loadCommunityOfficialHours();
-    lastPersistedSnapshot = JSON.stringify(data);
-    modalState = null;
-    permissionDrafts = {};
-    selectedReportId = null;
+    setState({ lastPersistedSnapshot: JSON.stringify(data) });
+    setState({ modalState: null });
+    setState({ permissionDrafts: {} });
+    setState({ selectedReportId: null });
     window.location.hash = routeUrl(currentUser.role, "dashboard");
     render();
     toast(`This browser is now signed in as ${currentUser.name}.`, "success");
@@ -3070,7 +3183,7 @@ async function initialize() {
   checkDataConsistency();
   if (currentUser) startStateUpdates();
   if (!window.location.hash) window.history.replaceState(null, "", currentUser ? routeUrl(currentUser.role, "dashboard") : "#/login");
-  lastKnownHash = window.location.hash;
+  setState({ lastKnownHash: window.location.hash });
   render();
 }
 
@@ -3201,12 +3314,12 @@ window.addEventListener("hashchange", () => {
   const destination = window.location.hash;
   if (destination !== lastKnownHash && !confirmLeaveWithUnsavedPermissions()) {
     window.history.replaceState(null, "", lastKnownHash || "#/login");
-    pendingReportRoute = "";
+    setState({ pendingReportRoute: "" });
     return;
   }
-  if (destination !== lastKnownHash) permissionDrafts = {};
-  if (window.location.hash !== pendingReportRoute) selectedReportId = null;
-  pendingReportRoute = "";
+  if (destination !== lastKnownHash) setState({ permissionDrafts: {} });
+  if (window.location.hash !== pendingReportRoute) setState({ selectedReportId: null });
+  setState({ pendingReportRoute: "" });
   render();
 });
 

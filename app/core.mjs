@@ -1,59 +1,29 @@
 "use strict";
 
-// Every calendar day shown or validated in the interface is the barangay's day,
-// not the day of whatever time zone the browser happens to be in.
-const APP_TIME_ZONE = "Asia/Manila";
+import {
+  APP_TIME_ZONE,
+  ROLES,
+  COLLECTION_STATUSES,
+  REPORT_PRIORITIES,
+  AREAS,
+  DEFAULT_PERMISSIONS,
+  SCHEDULE_FREQUENCIES,
+  RECURRENCE_DEFAULT_MONTHS,
+  MAX_RECURRENCE_OCCURRENCES,
+  SCHEDULE_REASON_STATUSES,
+} from "./constants.mjs";
 
-const ROLES = {
-  resident: "Resident",
-  official: "Barangay official",
-  administrator: "Administrator",
-};
-const ROLE_THEME = { resident: "resident", official: "official", administrator: "admin" };
-const STATUSES = ["Submitted", "Under Review", "In Progress", "Resolved"];
-const REPORT_TRANSITIONS = {
-  Submitted: ["Under Review"],
-  "Under Review": ["In Progress"],
-  "In Progress": ["Resolved"],
-  Resolved: [],
-};
-const RESPONSE_DEADLINE_DAYS = { High: 1, Medium: 3, Low: 7 };
-const COLLECTION_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
-const CATEGORIES = [
-  "Road damage",
-  "Broken streetlight",
-  "Drainage problem",
-  "Flooding",
-  "Illegal dumping",
-  "Missed garbage collection",
-  "Other community concern",
-];
-const REPORT_PRIORITIES = ["High", "Medium", "Low"];
-const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
-const AREAS = ["Purok 1", "Purok 2", "Purok 3", "Purok 4", "Purok 5", "Main Road"];
-const PALSARA_CENTER = [14.01799, 121.09465];
-const PALSARA_BOUNDS = [
-  [13.99, 121.06],
-  [14.045, 121.13],
-];
-const AREA_COORDINATES = {
-  "Purok 1": [14.01799, 121.09465],
-  "Purok 2": [14.025, 121.087],
-  "Purok 3": [14.01, 121.102],
-  "Purok 4": [14.005, 121.09],
-  "Purok 5": [14.03, 121.098],
-  "Main Road": [14.02, 121.08],
-};
-function locationAreas() {
+
+export function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
 }
-function locationBarangays() {
+export function locationBarangays() {
   return [...new Set((data?.locations || []).map((location) => location.barangay))];
 }
-function areasInBarangay(barangay) {
+export function areasInBarangay(barangay) {
   return (data?.locations || []).filter((location) => location.barangay === barangay).map((location) => location.area);
 }
-function locationAreaLabels() {
+export function locationAreaLabels() {
   return Object.fromEntries(
     (data?.locations || []).map((location) => [
       location.area,
@@ -61,7 +31,7 @@ function locationAreaLabels() {
     ]),
   );
 }
-function residentAreaOptions(barangay = "Palsara") {
+export function residentAreaOptions(barangay = "Palsara") {
   const areas = [
     ...new Set(
       (data?.locations || []).filter((location) => location?.barangay === barangay && location.area).map((location) => location.area),
@@ -69,11 +39,11 @@ function residentAreaOptions(barangay = "Palsara") {
   ];
   return areas.length ? areas : AREAS;
 }
-function isResidentArea(area, barangay = "Palsara") {
+export function isResidentArea(area, barangay = "Palsara") {
   return residentAreaOptions(barangay).includes(area);
 }
 
-function effectivePermissions(user, dataContext = null) {
+export function effectivePermissions(user, dataContext = null) {
   const effectiveData = dataContext || data;
   if (!user || !effectiveData) return {};
   const roleDefaults = effectiveData?.permissions?.[user.role] || {};
@@ -84,121 +54,39 @@ function effectivePermissions(user, dataContext = null) {
   }
   return effective;
 }
-const DEFAULT_PERMISSIONS = {
-  resident: {
-    submitReports: true,
-    viewSchedules: true,
-    manageReports: false,
-    manageSchedules: false,
-    manageAnnouncements: false,
-    manageUsers: false,
-    manageRoles: false,
-    viewAudit: false,
-  },
-  official: {
-    submitReports: false,
-    viewSchedules: true,
-    manageReports: true,
-    manageSchedules: true,
-    manageAnnouncements: true,
-    manageUsers: false,
-    manageRoles: false,
-    viewAudit: false,
-  },
-  administrator: {
-    submitReports: false,
-    viewSchedules: true,
-    manageReports: true,
-    manageSchedules: true,
-    manageAnnouncements: true,
-    manageUsers: true,
-    manageRoles: true,
-    viewAudit: true,
-  },
-};
-const PERMISSION_DEFS = [
-  {
-    id: "submitReports",
-    label: "Submit and track concerns",
-    group: "Community services",
-    description: "Create concerns and view their updates.",
-  },
-  {
-    id: "viewSchedules",
-    label: "View collection schedules",
-    group: "Community services",
-    description: "See posted collection dates and service updates.",
-  },
-  {
-    id: "manageReports",
-    label: "Review and update reports",
-    group: "Community services",
-    description: "Review resident concerns and record status updates.",
-  },
-  {
-    id: "manageSchedules",
-    label: "Manage collection schedules",
-    group: "Community services",
-    description: "Create, update, and remove service schedules.",
-  },
-  {
-    id: "manageAnnouncements",
-    label: "Manage announcements",
-    group: "Community services",
-    description: "Publish or remove updates shared with residents.",
-  },
-  {
-    id: "manageUsers",
-    label: "Manage user accounts",
-    group: "Portal administration",
-    description: "Review accounts and adjust access in this workspace.",
-  },
-  {
-    id: "manageRoles",
-    label: "Change role permissions",
-    group: "Portal administration",
-    description: "Choose which workspace functions each role can access.",
-  },
-  {
-    id: "viewAudit",
-    label: "Review activity history",
-    group: "Portal administration",
-    description: "Review recorded account and service activity.",
-  },
-];
 
-const app = document.getElementById("app");
-const toastEl = document.getElementById("toast");
-let data;
-let currentUser;
-let communityOfficialHours = [];
-let currentRoute;
-let dataRevision = 0;
-let lastKnownHash = window.location.hash;
-let selectedReportId = null;
-let pendingReportRoute = "";
-let reportFilter = "all";
-let notificationFilter = "all";
-let uploadPhotos = [];
-let smtpSettings = { host: "", port: "", user: "", from: "", configured: false };
-let reportDraft = null;
-let modalState = null;
-let forcedPasswordDismissed = false;
-const calendarToday = appDateParts();
-let calendarMonth = Number(calendarToday.month) - 1;
-let calendarYear = Number(calendarToday.year);
-let calendarSelectedDate = "";
-let selectedPermissionRole = "resident";
-let permissionDrafts = {};
-let permissionOpenGroups = {};
-let toastTimer;
-let lastPersistedSnapshot = "";
+export const app = document.getElementById("app");
+export const toastEl = document.getElementById("toast");
+export let data;
+export let currentUser;
+export let communityOfficialHours = [];
+export let currentRoute;
+export let dataRevision = 0;
+export let lastKnownHash = window.location.hash;
+export let selectedReportId = null;
+export let pendingReportRoute = "";
+export let reportFilter = "all";
+export let notificationFilter = "all";
+export let uploadPhotos = [];
+export let smtpSettings = { host: "", port: "", user: "", from: "", configured: false };
+export let reportDraft = null;
+export let modalState = null;
+export let forcedPasswordDismissed = false;
+export const calendarToday = appDateParts();
+export let calendarMonth = Number(calendarToday.month) - 1;
+export let calendarYear = Number(calendarToday.year);
+export let calendarSelectedDate = "";
+export let selectedPermissionRole = "resident";
+export let permissionDrafts = {};
+export let permissionOpenGroups = {};
+export let toastTimer;
+export let lastPersistedSnapshot = "";
 // The activity log is browsed from the server, so its page and filters live outside the shared state.
-let activityLogState = { activities: [], total: 0, page: 1, pageSize: 25, pageCount: 1, summary: {} };
-let activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
-let activityLogLoadedKey = "";
+export let activityLogState = { activities: [], total: 0, page: 1, pageSize: 25, pageCount: 1, summary: {} };
+export let activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
+export let activityLogLoadedKey = "";
 
-const icons = {
+export const icons = {
   home: '<path d="m3.5 10 8.5-7 8.5 7"></path><path d="M5.5 9v11h13V9"></path><path d="M9 20v-6h6v6"></path>',
   calendar:
     '<rect x="3.5" y="5" width="17" height="16" rx="2"></rect><path d="M7.5 3v4M16.5 3v4M3.5 9h17"></path><path d="M7.5 13h3M7.5 16h6"></path>',
@@ -231,14 +119,14 @@ const icons = {
   alert: '<path d="m12 3 9 17H3z"></path><path d="M12 9v4m0 3h.01"></path>',
 };
 
-function icon(name, extra = "") {
+export function icon(name, extra = "") {
   return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${extra}">${icons[name] || icons.home}</svg>`;
 }
-function brandMark() {
+export function brandMark() {
   return '<span class="brand-mark"><img src="/logo/palsara-transparent.png" alt="Palsara barangay logo"></span>';
 }
 
-function esc(value) {
+export function esc(value) {
   return String(value ?? "").replace(
     /[&<>"']/g,
     (char) =>
@@ -252,13 +140,13 @@ function esc(value) {
   );
 }
 
-function asDate(value) {
+export function asDate(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) throw new Error("A saved CommUnity date is invalid.");
   return parsed;
 }
 
-function appDateParts(value = new Date()) {
+export function appDateParts(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error("A saved CommUnity date is invalid.");
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -271,12 +159,12 @@ function appDateParts(value = new Date()) {
   return { year: part("year"), month: part("month"), day: part("day") };
 }
 
-function dateLabel(value, options = { day: "numeric", month: "short", year: "numeric" }) {
+export function dateLabel(value, options = { day: "numeric", month: "short", year: "numeric" }) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, ...options }).format(asDate(value));
 }
 
-function dateTimeLabel(value) {
+export function dateTimeLabel(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-PH", {
     timeZone: APP_TIME_ZONE,
@@ -287,44 +175,44 @@ function dateTimeLabel(value) {
   }).format(asDate(value));
 }
 
-function dateInputValue(value = new Date()) {
+export function dateInputValue(value = new Date()) {
   if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   const { year, month, day } = appDateParts(value);
   return `${year}-${month}-${day}`;
 }
 
-function todayISO() {
+export function todayISO() {
   return dateInputValue(new Date());
 }
 
 // A month bucket key in the barangay's time zone, matching the report trend table.
-function monthKey(value = new Date()) {
+export function monthKey(value = new Date()) {
   const { year, month } = appDateParts(value);
   return `${year}-${month}`;
 }
 
-function monthKeyOffset(offset, from = new Date()) {
+export function monthKeyOffset(offset, from = new Date()) {
   const { year, month } = appDateParts(from);
   const shifted = new Date(Date.UTC(Number(year), Number(month) - 1 + offset, 1));
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-function normalizeStatus(value) {
+export function normalizeStatus(value) {
   return String(value || "")
     .toLowerCase()
     .replaceAll(" ", "-");
 }
 
-function statusPill(value, label = value) {
+export function statusPill(value, label = value) {
   return `<span class="status" data-status="${esc(normalizeStatus(value))}">${esc(label)}</span>`;
 }
 
 // "system" is an audit role, not an account role, so it is not part of ROLES.
-function roleLabel(role) {
+export function roleLabel(role) {
   return role === "system" ? "System" : ROLES[role] || role;
 }
 
-function initials(name = "") {
+export function initials(name = "") {
   return (
     name
       .trim()
@@ -336,11 +224,11 @@ function initials(name = "") {
   );
 }
 
-function idFor(prefix) {
+export function idFor(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function emptyState() {
+export function emptyState() {
   return {
     version: 1,
     users: [],
@@ -361,14 +249,14 @@ function emptyState() {
 // server-owned rows (a collection reminder, a pruned notification) without the
 // user's change being stale. Compare everything except notifications to decide
 // whether a revision conflict is safe to retry.
-function stateMatchesIgnoringNotifications(left, right) {
+export function stateMatchesIgnoringNotifications(left, right) {
   if (!left || !right) return false;
   const { notifications: _left, ...leftRest } = left;
   const { notifications: _right, ...rightRest } = right;
   return JSON.stringify(leftRest) === JSON.stringify(rightRest);
 }
 
-async function localSave() {
+export async function localSave() {
   let refreshed = false;
   while (true) {
     try {
@@ -416,7 +304,7 @@ async function localSave() {
   }
 }
 
-async function loadCommunityOfficialHours() {
+export async function loadCommunityOfficialHours() {
   communityOfficialHours = [];
   if (currentUser?.role !== "resident") return;
   try {
@@ -429,7 +317,7 @@ async function loadCommunityOfficialHours() {
   }
 }
 
-async function loadLocalData() {
+export async function loadLocalData() {
   try {
     const sessionResponse = await fetch("/api/session");
     const session = await sessionResponse.json();
@@ -478,7 +366,7 @@ async function loadLocalData() {
   }
 }
 
-function toast(message, kind = "") {
+export function toast(message, kind = "") {
   toastEl.textContent = message;
   toastEl.dataset.kind = kind;
   toastEl.classList.add("visible");
@@ -486,9 +374,9 @@ function toast(message, kind = "") {
   toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 3400);
 }
 
-let activeConfirmation = null;
+export let activeConfirmation = null;
 
-function confirmAction({
+export function confirmAction({
   title = "Confirm change",
   message = "",
   confirmLabel = "Confirm",
@@ -551,11 +439,11 @@ function confirmAction({
   });
 }
 
-function currentPath() {
+export function currentPath() {
   return window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
 }
 
-function clearSession() {
+export function clearSession() {
   currentUser = null;
   selectedReportId = null;
   reportDraft = null;
@@ -563,10 +451,10 @@ function clearSession() {
   document.documentElement.dataset.theme = "auth";
 }
 
-const SESSION_SYNC_KEY = "community.session-sync";
-const sessionSyncChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("community-session") : null;
+export const SESSION_SYNC_KEY = "community.session-sync";
+export const sessionSyncChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("community-session") : null;
 
-function announceSessionChange() {
+export function announceSessionChange() {
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   try {
     localStorage.setItem(SESSION_SYNC_KEY, stamp);
@@ -596,10 +484,10 @@ sessionSyncChannel?.addEventListener("message", async (event) => {
 // bytes; a full state fetch happens only when the revision actually moved.
 // Open forms are never disturbed: modal state and unsaved role-permission
 // drafts both pause adoption until the user finishes with them.
-const STATE_REFRESH_INTERVAL_MS = 30000;
-let stateRefreshTimer = null;
+export const STATE_REFRESH_INTERVAL_MS = 30000;
+export let stateRefreshTimer = null;
 
-async function checkForStateUpdates() {
+export async function checkForStateUpdates() {
   if (!currentUser || currentUser.requiresPasswordChange || !Number.isSafeInteger(dataRevision) || dataRevision < 1) return false;
   if (typeof modalState !== "undefined" && modalState) return false; // do not re-render an open form
   if (typeof hasUnsavedPermissionChanges === "function" && hasUnsavedPermissionChanges()) return false;
@@ -631,23 +519,23 @@ async function checkForStateUpdates() {
   return true;
 }
 
-function startStateUpdates() {
+export function startStateUpdates() {
   if (stateRefreshTimer) return;
   stateRefreshTimer = setInterval(() => {
     checkForStateUpdates().catch((error) => console.error("CommUnity could not refresh.", error));
   }, STATE_REFRESH_INTERVAL_MS);
 }
 
-function stopStateUpdates() {
+export function stopStateUpdates() {
   clearInterval(stateRefreshTimer);
   stateRefreshTimer = null;
 }
 
-function unreadCount(user = currentUser) {
+export function unreadCount(user = currentUser) {
   if (!user || !data.notifications) return 0;
   return data.notifications.filter((item) => item.targetEmail === user.email && !item.read).length;
 }
-function displayReportId(id) {
+export function displayReportId(id) {
   const value = String(id || "");
   const timestampId = value.match(/^R(\d{13})(?:-([a-z0-9]{6}))?$/i);
   if (timestampId) {
@@ -658,7 +546,7 @@ function displayReportId(id) {
   return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
 }
 
-function addActivity(action, detail, result = "Success") {
+export function addActivity(action, detail, result = "Success") {
   data.activities.push({
     id: idFor("A"),
     actor: currentUser?.name || "Resident",
@@ -670,7 +558,7 @@ function addActivity(action, detail, result = "Success") {
   });
 }
 
-function addNotification(targetEmail, title, body, reportId = "") {
+export function addNotification(targetEmail, title, body, reportId = "") {
   data.notifications.unshift({
     id: idFor("N"),
     targetEmail,
@@ -682,37 +570,33 @@ function addNotification(targetEmail, title, body, reportId = "") {
   });
 }
 
-function addRoleNotification(role, title, body, reportId = "") {
+export function addRoleNotification(role, title, body, reportId = "") {
   data.users
     .filter((user) => user.role === role && user.status === "Active")
     .forEach((user) => addNotification(user.email, title, body, reportId));
 }
 
-function getUser(email) {
+export function getUser(email) {
   return data.users.find((user) => user.email === email);
 }
 
-function getReport(id) {
+export function getReport(id) {
   return data.reports.find((report) => report.id === id);
 }
 
-function userReports(user = currentUser) {
+export function userReports(user = currentUser) {
   return data.reports.filter((report) => report.userEmail === user?.email);
 }
 
-function sortedReports(reports = data.reports) {
+export function sortedReports(reports = data.reports) {
   return [...reports].sort((a, b) => asDate(b.submittedAt) - asDate(a.submittedAt));
 }
 
-function sortedSchedules(schedules = data.schedules) {
+export function sortedSchedules(schedules = data.schedules) {
   return [...schedules].sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
 }
 
-const SCHEDULE_FREQUENCIES = ["Weekly", "Bi-weekly", "Monthly", "One-time"];
-const RECURRENCE_DEFAULT_MONTHS = 12;
-const MAX_RECURRENCE_OCCURRENCES = 260;
-
-function scheduleDateValue(value) {
+export function scheduleDateValue(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
   if (!match) throw new Error("Choose a valid collection date.");
   const year = Number(match[1]);
@@ -725,7 +609,7 @@ function scheduleDateValue(value) {
   return parsed;
 }
 
-function addMonthsUtc(date, months) {
+export function addMonthsUtc(date, months) {
   const year = date.getUTCFullYear();
   const month = date.getUTCMonth() + months;
   const day = date.getUTCDate();
@@ -733,9 +617,7 @@ function addMonthsUtc(date, months) {
   return new Date(Date.UTC(year, month, Math.min(day, lastDay)));
 }
 
-const SCHEDULE_REASON_STATUSES = ["Delayed", "Cancelled"];
-
-function scheduleClockMinutes(value) {
+export function scheduleClockMinutes(value) {
   const match = String(value || "").match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
   if (!match) return -1;
   const hours = Number(match[1]);
@@ -744,7 +626,7 @@ function scheduleClockMinutes(value) {
   return (hours % 12) * 60 + minutes + (match[3].toUpperCase() === "PM" ? 720 : 0);
 }
 
-function scheduleStatusEntry(
+export function scheduleStatusEntry(
   previous,
   { status, note = "", date, start, end, at = new Date().toISOString(), actorName = "", actorRole = "" } = {},
 ) {
@@ -787,7 +669,7 @@ function scheduleStatusEntry(
   };
 }
 
-function scheduleOccurrenceDates(startDate, frequency, endDate = null) {
+export function scheduleOccurrenceDates(startDate, frequency, endDate = null) {
   if (!SCHEDULE_FREQUENCIES.includes(frequency)) throw new Error("Choose a valid collection frequency.");
   const start = scheduleDateValue(startDate);
   if (frequency === "One-time") return [startDate];
@@ -809,33 +691,33 @@ function scheduleOccurrenceDates(startDate, frequency, endDate = null) {
   return dates;
 }
 
-function sortedNotifications(items = data.notifications || []) {
+export function sortedNotifications(items = data.notifications || []) {
   return [...items].sort((a, b) => asDate(b.createdAt) - asDate(a.createdAt));
 }
 
-function selectedAreaFor(user = currentUser) {
+export function selectedAreaFor(user = currentUser) {
   return user?.area || "Palsara";
 }
 
-function routeUrl(role, page) {
+export function routeUrl(role, page) {
   return `#/${role}/${page}`;
 }
 
-function linkButton(label, href, variant = "secondary", extra = "") {
+export function linkButton(label, href, variant = "secondary", extra = "") {
   return `<a class="button ${variant} ${extra}" href="${esc(href)}">${label}</a>`;
 }
 
-function actionButton(label, action, variant = "secondary", extra = "", attrs = "") {
+export function actionButton(label, action, variant = "secondary", extra = "", attrs = "") {
   return `<button class="button ${variant} ${extra}" type="button" data-action="${esc(action)}" ${attrs}>${label}</button>`;
 }
 
-function selectOptions(items, selected, labels = {}) {
+export function selectOptions(items, selected, labels = {}) {
   return items
     .map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labels[item] || item)}</option>`)
     .join("");
 }
 
-function inputField(label, name, value = "", options = {}) {
+export function inputField(label, name, value = "", options = {}) {
   const id = options.id || name;
   const type = options.type || "text";
   const required = options.required ? "required" : "";
@@ -845,13 +727,13 @@ function inputField(label, name, value = "", options = {}) {
   return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${placeholder} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}>${help}</div>`;
 }
 
-function selectField(label, name, items, selected, options = {}) {
+export function selectField(label, name, items, selected, options = {}) {
   const labelMap = options.labels || {};
   const required = options.required ? "required" : "";
   return `<div class="form-field"><label for="${esc(name)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(name)}" name="${esc(name)}" ${required}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select></div>`;
 }
 
-function reportDraftFromForm(fields) {
+export function reportDraftFromForm(fields) {
   const readOptionalCoordinate = (value) => {
     const text = String(value || "").trim();
     return text ? Number(text) : null;
@@ -872,7 +754,7 @@ function reportDraftFromForm(fields) {
   };
 }
 
-function calendarEventFromForm(fields) {
+export function calendarEventFromForm(fields) {
   const readOptionalCoordinate = (value) => {
     const text = String(value || "").trim();
     return text ? Number(text) : null;
@@ -895,7 +777,7 @@ function calendarEventFromForm(fields) {
   };
 }
 
-function calendarEventFromRecord(item) {
+export function calendarEventFromRecord(item) {
   return {
     id: String(item.id),
     date: item.date,
@@ -909,4 +791,49 @@ function calendarEventFromRecord(item) {
     latitude: item.latitude ?? null,
     longitude: item.longitude ?? null,
   };
+}
+
+// Live binding reads are allowed from other modules; writes go through this hook.
+export function setState(changes = {}) {
+  const handlers = {
+    data: (v) => (data = v), currentUser: (v) => (currentUser = v), modalState: (v) => (modalState = v),
+    dataRevision: (v) => (dataRevision = v), lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
+    reportDraft: (v) => (reportDraft = v), activityLogState: (v) => (activityLogState = v),
+    activityFilters: (v) => (activityFilters = v), activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
+    permissionDrafts: (v) => (permissionDrafts = v), permissionOpenGroups: (v) => (permissionOpenGroups = v),
+    calendarMonth: (v) => (calendarMonth = v), calendarYear: (v) => (calendarYear = v),
+    calendarSelectedDate: (v) => (calendarSelectedDate = v), selectedPermissionRole: (v) => (selectedPermissionRole = v),
+    communityOfficialHours: (v) => (communityOfficialHours = v), selectedReportId: (v) => (selectedReportId = v),
+    reportFilter: (v) => (reportFilter = v), notificationFilter: (v) => (notificationFilter = v),
+    uploadPhotos: (v) => (uploadPhotos = v), smtpSettings: (v) => (smtpSettings = v),
+    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v), currentRoute: (v) => (currentRoute = v),
+    pendingReportRoute: (v) => (pendingReportRoute = v), toastTimer: (v) => (toastTimer = v),
+    lastKnownHash: (v) => (lastKnownHash = v),
+  };
+  for (const [key, value] of Object.entries(changes)) {
+    if (!handlers[key]) throw new Error(`setState: unknown key "${key}"`);
+    handlers[key](value);
+  }
+}
+
+// Test hook: lets the vm-based frontend tests override module state.
+export function __setTestState(next = {}) {
+  const handlers = {
+    data: (v) => (data = v), currentUser: (v) => (currentUser = v), modalState: (v) => (modalState = v),
+    dataRevision: (v) => (dataRevision = v), lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
+    reportDraft: (v) => (reportDraft = v), activityLogState: (v) => (activityLogState = v),
+    activityFilters: (v) => (activityFilters = v), activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
+    permissionDrafts: (v) => (permissionDrafts = v), permissionOpenGroups: (v) => (permissionOpenGroups = v),
+    calendarMonth: (v) => (calendarMonth = v), calendarYear: (v) => (calendarYear = v),
+    calendarSelectedDate: (v) => (calendarSelectedDate = v), selectedPermissionRole: (v) => (selectedPermissionRole = v),
+    communityOfficialHours: (v) => (communityOfficialHours = v), selectedReportId: (v) => (selectedReportId = v),
+    reportFilter: (v) => (reportFilter = v), notificationFilter: (v) => (notificationFilter = v),
+    uploadPhotos: (v) => (uploadPhotos = v), smtpSettings: (v) => (smtpSettings = v),
+    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v), currentRoute: (v) => (currentRoute = v),
+    pendingReportRoute: (v) => (pendingReportRoute = v), toastTimer: (v) => (toastTimer = v),
+  };
+  for (const [key, value] of Object.entries(next)) {
+    if (!handlers[key]) throw new Error(`__setTestState: unknown key "${key}"`);
+    handlers[key](value);
+  }
 }

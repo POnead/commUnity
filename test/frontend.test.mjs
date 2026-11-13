@@ -835,7 +835,7 @@ test("the live refresh adopts new state and re-renders, but leaves open forms al
   });
 
   const calls = [];
-  globalThis.fetch = async (url, options = {}) => {
+  globalThis.fetch = async (url, _options = {}) => {
     calls.push(String(url));
     if (String(url).endsWith("/api/state/revision")) return stubJsonResponse(200, { revision: 9 });
     return stubJsonResponse(200, {

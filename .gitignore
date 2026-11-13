@@ -10,3 +10,8 @@ data/uploads/
 
 # Local run artifacts
 .run/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/

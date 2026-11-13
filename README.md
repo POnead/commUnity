@@ -45,7 +45,7 @@ app/
   constants.mjs            Pure constants (roles, statuses, permissions, defaults)
 ```
 
-The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. Tests live in `test/` — shared fixtures in `test/helpers.mjs`, `test/frontend-stubs.mjs` provides a minimal DOM for importing the real modules, one file per area (`reports`, `users`, `security`, `schedules`, `announcements`, `activity`, `maintenance`, `state`, `platform`, `frontend`, `service-targets`), plus `postgres-migration.test.mjs` (migrations against embedded PostgreSQL). `npm test` runs everything.
+The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. Tests live in `test/` — shared fixtures in `test/helpers.mjs`, `test/frontend-stubs.mjs` provides a minimal DOM for importing the real modules, one file per area (`reports`, `users`, `security`, `schedules`, `announcements`, `activity`, `maintenance`, `state`, `platform`, `frontend`, `service-targets`), plus `postgres-migration.test.mjs` (migrations against embedded PostgreSQL). `npm test` runs everything; `npm run test:e2e` runs the Playwright browser suite in `test/e2e/`.
 
 ## Run locally
 
@@ -198,3 +198,13 @@ Run the API, authentication, role-access, and persistence checks with:
 ```powershell
 npm test
 ```
+
+Browser end-to-end tests live in `test/e2e/` and drive a real Chromium through the critical paths (register, sign in, report submission with a map pin and photos, official review, notifications, reopening, announcement approval, collection schedules, and form preservation during the automatic refresh). They use a throwaway embedded database seeded by the test server, so nothing is shared between runs.
+
+```powershell
+npm install        # one-time: installs @playwright/test
+npx playwright install chromium   # one-time: downloads the browser
+npm run test:e2e
+```
+
+The e2e suite runs serially against one shared server instance on port 8799.

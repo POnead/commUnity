@@ -349,22 +349,25 @@ test("calendar events send paired map coordinates and keep them on records", asy
 });
 
 test("recurring schedules generate separate dated occurrences and reject invalid ranges", async () => {
-  assert.deepEqual(
-    Array.from(core.scheduleOccurrenceDates("2026-11-02", "Weekly", "2026-11-30")),
-    ["2026-11-02", "2026-11-09", "2026-11-16", "2026-11-23", "2026-11-30"],
-  );
-  assert.deepEqual(
-    Array.from(core.scheduleOccurrenceDates("2026-11-02", "Bi-weekly", "2026-12-01")),
-    ["2026-11-02", "2026-11-16", "2026-11-30"],
-  );
-  assert.deepEqual(
-    Array.from(core.scheduleOccurrenceDates("2026-01-31", "Monthly", "2026-04-30")),
-    ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30"],
-  );
-  assert.deepEqual(
-    Array.from(core.scheduleOccurrenceDates("2026-11-02", "One-time", "2027-11-02")),
-    ["2026-11-02"],
-  );
+  assert.deepEqual(Array.from(core.scheduleOccurrenceDates("2026-11-02", "Weekly", "2026-11-30")), [
+    "2026-11-02",
+    "2026-11-09",
+    "2026-11-16",
+    "2026-11-23",
+    "2026-11-30",
+  ]);
+  assert.deepEqual(Array.from(core.scheduleOccurrenceDates("2026-11-02", "Bi-weekly", "2026-12-01")), [
+    "2026-11-02",
+    "2026-11-16",
+    "2026-11-30",
+  ]);
+  assert.deepEqual(Array.from(core.scheduleOccurrenceDates("2026-01-31", "Monthly", "2026-04-30")), [
+    "2026-01-31",
+    "2026-02-28",
+    "2026-03-31",
+    "2026-04-30",
+  ]);
+  assert.deepEqual(Array.from(core.scheduleOccurrenceDates("2026-11-02", "One-time", "2027-11-02")), ["2026-11-02"]);
 
   const defaultMonthly = core.scheduleOccurrenceDates("2027-01-04", "Monthly");
   assert.equal(defaultMonthly.length, 12);

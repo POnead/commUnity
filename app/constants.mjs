@@ -127,11 +127,8 @@ export const PERMISSION_DEFS = [
   },
 ];
 
-
 export const SCHEDULE_FREQUENCIES = ["Weekly", "Bi-weekly", "Monthly", "One-time"];
 export const RECURRENCE_DEFAULT_MONTHS = 12;
 export const MAX_RECURRENCE_OCCURRENCES = 260;
 
-
 export const SCHEDULE_REASON_STATUSES = ["Delayed", "Cancelled"];
-

@@ -18,7 +18,6 @@ import {
 import { render } from "./main.mjs";
 import { hasUnsavedPermissionChanges } from "./views.mjs";
 
-
 export function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
 }
@@ -801,18 +800,31 @@ export function calendarEventFromRecord(item) {
 // Live binding reads are allowed from other modules; writes go through this hook.
 export function setState(changes = {}) {
   const handlers = {
-    data: (v) => (data = v), currentUser: (v) => (currentUser = v), modalState: (v) => (modalState = v),
-    dataRevision: (v) => (dataRevision = v), lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
-    reportDraft: (v) => (reportDraft = v), activityLogState: (v) => (activityLogState = v),
-    activityFilters: (v) => (activityFilters = v), activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
-    permissionDrafts: (v) => (permissionDrafts = v), permissionOpenGroups: (v) => (permissionOpenGroups = v),
-    calendarMonth: (v) => (calendarMonth = v), calendarYear: (v) => (calendarYear = v),
-    calendarSelectedDate: (v) => (calendarSelectedDate = v), selectedPermissionRole: (v) => (selectedPermissionRole = v),
-    communityOfficialHours: (v) => (communityOfficialHours = v), selectedReportId: (v) => (selectedReportId = v),
-    reportFilter: (v) => (reportFilter = v), notificationFilter: (v) => (notificationFilter = v),
-    uploadPhotos: (v) => (uploadPhotos = v), smtpSettings: (v) => (smtpSettings = v),
-    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v), currentRoute: (v) => (currentRoute = v),
-    pendingReportRoute: (v) => (pendingReportRoute = v), toastTimer: (v) => (toastTimer = v),
+    data: (v) => (data = v),
+    currentUser: (v) => (currentUser = v),
+    modalState: (v) => (modalState = v),
+    dataRevision: (v) => (dataRevision = v),
+    lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
+    reportDraft: (v) => (reportDraft = v),
+    activityLogState: (v) => (activityLogState = v),
+    activityFilters: (v) => (activityFilters = v),
+    activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
+    permissionDrafts: (v) => (permissionDrafts = v),
+    permissionOpenGroups: (v) => (permissionOpenGroups = v),
+    calendarMonth: (v) => (calendarMonth = v),
+    calendarYear: (v) => (calendarYear = v),
+    calendarSelectedDate: (v) => (calendarSelectedDate = v),
+    selectedPermissionRole: (v) => (selectedPermissionRole = v),
+    communityOfficialHours: (v) => (communityOfficialHours = v),
+    selectedReportId: (v) => (selectedReportId = v),
+    reportFilter: (v) => (reportFilter = v),
+    notificationFilter: (v) => (notificationFilter = v),
+    uploadPhotos: (v) => (uploadPhotos = v),
+    smtpSettings: (v) => (smtpSettings = v),
+    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v),
+    currentRoute: (v) => (currentRoute = v),
+    pendingReportRoute: (v) => (pendingReportRoute = v),
+    toastTimer: (v) => (toastTimer = v),
     lastKnownHash: (v) => (lastKnownHash = v),
   };
   for (const [key, value] of Object.entries(changes)) {
@@ -824,18 +836,31 @@ export function setState(changes = {}) {
 // Test hook: lets the vm-based frontend tests override module state.
 export function __setTestState(next = {}) {
   const handlers = {
-    data: (v) => (data = v), currentUser: (v) => (currentUser = v), modalState: (v) => (modalState = v),
-    dataRevision: (v) => (dataRevision = v), lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
-    reportDraft: (v) => (reportDraft = v), activityLogState: (v) => (activityLogState = v),
-    activityFilters: (v) => (activityFilters = v), activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
-    permissionDrafts: (v) => (permissionDrafts = v), permissionOpenGroups: (v) => (permissionOpenGroups = v),
-    calendarMonth: (v) => (calendarMonth = v), calendarYear: (v) => (calendarYear = v),
-    calendarSelectedDate: (v) => (calendarSelectedDate = v), selectedPermissionRole: (v) => (selectedPermissionRole = v),
-    communityOfficialHours: (v) => (communityOfficialHours = v), selectedReportId: (v) => (selectedReportId = v),
-    reportFilter: (v) => (reportFilter = v), notificationFilter: (v) => (notificationFilter = v),
-    uploadPhotos: (v) => (uploadPhotos = v), smtpSettings: (v) => (smtpSettings = v),
-    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v), currentRoute: (v) => (currentRoute = v),
-    pendingReportRoute: (v) => (pendingReportRoute = v), toastTimer: (v) => (toastTimer = v),
+    data: (v) => (data = v),
+    currentUser: (v) => (currentUser = v),
+    modalState: (v) => (modalState = v),
+    dataRevision: (v) => (dataRevision = v),
+    lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
+    reportDraft: (v) => (reportDraft = v),
+    activityLogState: (v) => (activityLogState = v),
+    activityFilters: (v) => (activityFilters = v),
+    activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
+    permissionDrafts: (v) => (permissionDrafts = v),
+    permissionOpenGroups: (v) => (permissionOpenGroups = v),
+    calendarMonth: (v) => (calendarMonth = v),
+    calendarYear: (v) => (calendarYear = v),
+    calendarSelectedDate: (v) => (calendarSelectedDate = v),
+    selectedPermissionRole: (v) => (selectedPermissionRole = v),
+    communityOfficialHours: (v) => (communityOfficialHours = v),
+    selectedReportId: (v) => (selectedReportId = v),
+    reportFilter: (v) => (reportFilter = v),
+    notificationFilter: (v) => (notificationFilter = v),
+    uploadPhotos: (v) => (uploadPhotos = v),
+    smtpSettings: (v) => (smtpSettings = v),
+    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v),
+    currentRoute: (v) => (currentRoute = v),
+    pendingReportRoute: (v) => (pendingReportRoute = v),
+    toastTimer: (v) => (toastTimer = v),
   };
   for (const [key, value] of Object.entries(next)) {
     if (!handlers[key]) throw new Error(`__setTestState: unknown key "${key}"`);

@@ -88,8 +88,8 @@ export function createExpressApp({
       }
       const pathname = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`).pathname;
       const filename = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
-      const allowedByDirectory = [...PUBLIC_DIRECTORIES].some((dir) =>
-        filename.startsWith(dir) && !filename.includes("..") && !path.isAbsolute(filename),
+      const allowedByDirectory = [...PUBLIC_DIRECTORIES].some(
+        (dir) => filename.startsWith(dir) && !filename.includes("..") && !path.isAbsolute(filename),
       );
       if (!PUBLIC_FILES.has(filename) && !allowedByDirectory) {
         response.writeHead(404).end("Not found");

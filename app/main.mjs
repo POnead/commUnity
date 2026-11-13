@@ -130,7 +130,6 @@ import {
   initializeAnnouncementDetailMap,
 } from "./map.mjs";
 
-
 let profilePhotoFile = null;
 let profilePhotoPreview = null;
 let lastCalendarClick = { date: "", at: 0 };
@@ -212,7 +211,8 @@ export function render() {
     setMapState({ announcementDetailMapElements: [] });
   }
   if (currentUser && route.type === "app") {
-    if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) setState({ modalState: { kind: "forced-password" } });
+    if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed)
+      setState({ modalState: { kind: "forced-password" } });
     document.documentElement.dataset.theme = ROLE_THEME[currentUser.role];
     if (window.location.hash !== routeUrl(currentUser.role, route.page)) {
       window.history.replaceState(null, "", routeUrl(currentUser.role, route.page));
@@ -582,9 +582,12 @@ function showModal(kind, id = "") {
   if (kind === "announcement") {
     const item = id ? data.announcements.find((record) => record.id === id) : null;
     setMapState({ announcementMapExpanded: Boolean(item?.isEvent) });
-    setMapState({ announcementMapSelection: item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
-        ? { latitude: item.latitude, longitude: item.longitude }
-        : null });
+    setMapState({
+      announcementMapSelection:
+        item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
+          ? { latitude: item.latitude, longitude: item.longitude }
+          : null,
+    });
   }
   setState({ modalState: { kind, id } });
   render();
@@ -2561,12 +2564,15 @@ async function handleAction(button, clickEvent) {
     render();
   } else if (action === "edit-report-draft") {
     reportDraft.step = "details";
-    setMapState({ reportMapSelection: reportDraft.latitude === null
-        ? null
-        : {
-            latitude: reportDraft.latitude,
-            longitude: reportDraft.longitude,
-          } });
+    setMapState({
+      reportMapSelection:
+        reportDraft.latitude === null
+          ? null
+          : {
+              latitude: reportDraft.latitude,
+              longitude: reportDraft.longitude,
+            },
+    });
     render();
   } else if (action === "submit-report") {
     submitReportDraft().catch((error) => toast(error.message, "error"));
@@ -2606,12 +2612,15 @@ async function handleSubmit(formEvent) {
       ) {
         throw new Error("Choose a valid map location or clear the pin before continuing.");
       }
-      setMapState({ reportMapSelection: draft.latitude === null
-          ? null
-          : {
-              latitude: draft.latitude,
-              longitude: draft.longitude,
-            } });
+      setMapState({
+        reportMapSelection:
+          draft.latitude === null
+            ? null
+            : {
+                latitude: draft.latitude,
+                longitude: draft.longitude,
+              },
+      });
       setState({ reportDraft: draft });
       render();
     } else if (formId === "report-status-form") {
@@ -2647,15 +2656,17 @@ async function handleSubmit(formEvent) {
       await verifyRecovery(form);
     } else if (formId === "activity-filter-form") {
       const fields = new FormData(form);
-      setState({ activityFilters: {
-        from: String(fields.get("from") || ""),
-        to: String(fields.get("to") || ""),
-        actor: String(fields.get("actor") || "").trim(),
-        action: String(fields.get("action") || "").trim(),
-        result: String(fields.get("result") || ""),
-        affectedId: String(fields.get("affectedId") || "").trim(),
-        source: String(fields.get("source") || "all"),
-      } });
+      setState({
+        activityFilters: {
+          from: String(fields.get("from") || ""),
+          to: String(fields.get("to") || ""),
+          actor: String(fields.get("actor") || "").trim(),
+          action: String(fields.get("action") || "").trim(),
+          result: String(fields.get("result") || ""),
+          affectedId: String(fields.get("affectedId") || "").trim(),
+          source: String(fields.get("source") || "all"),
+        },
+      });
       await loadActivityLog(1, true);
     } else if (formId === "location-form") {
       await saveLocation(fields);
@@ -2804,147 +2815,146 @@ async function initialize() {
 
 export function startCommUnity() {
   app.addEventListener("click", async (clickEvent) => {
-  const button = clickEvent.target.closest("[data-action]");
-  if (!button) return;
-  try {
-    await handleAction(button, clickEvent);
-  } catch (error) {
-    console.error("CommUnity action failed.", error);
-    toast(error.message || "This action could not be completed.", "error");
-  }
-});
-
-app.addEventListener("submit", (submitEvent) => {
-  handleSubmit(submitEvent);
-});
-
-app.addEventListener("input", (inputEvent) => {
-  if (inputEvent.target.matches("[data-search-input]")) refreshSearch(inputEvent.target.value);
-});
-
-app.addEventListener("change", (changeEvent) => {
-  const target = changeEvent.target;
-  if (target.matches("#report-photos")) handlePhotoSelection(target);
-  else if (target.matches("#profile-photo")) handleProfilePhotoSelection(target);
-  else if (target.id === "status" && target.form?.getAttribute("id") === "schedule-form") syncScheduleStatusFields(target.form);
-  else if (target.matches("#announcement-is-event")) {
-    setMapState({ announcementMapExpanded: target.checked });
-    const region = app.querySelector("#announcement-map-region");
-    if (region) region.hidden = !target.checked;
-    if (target.checked) {
-      initializeAnnouncementMap();
-      const status = app.querySelector("#announcement-map-status");
-      if (status && !announcementMapSelection) status.textContent = "Click the map to place the event location pin.";
-    } else {
-      setMapState({ announcementMapSelection: null });
-      const latitudeField = app.querySelector("#announcement-latitude");
-      const longitudeField = app.querySelector("#announcement-longitude");
-      if (latitudeField) latitudeField.value = "";
-      if (longitudeField) longitudeField.value = "";
-      const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
-      if (clearButton) clearButton.hidden = true;
-      if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
-      setMapState({ announcementMapMarker: null });
-      const status = app.querySelector("#announcement-map-status");
-      if (status) status.textContent = "No pin selected.";
+    const button = clickEvent.target.closest("[data-action]");
+    if (!button) return;
+    try {
+      await handleAction(button, clickEvent);
+    } catch (error) {
+      console.error("CommUnity action failed.", error);
+      toast(error.message || "This action could not be completed.", "error");
     }
-  } else if (target.matches("#calendar-event-has-location")) {
-    setMapState({ calendarEventMapExpanded: target.checked });
-    const region = app.querySelector("#calendar-event-map-region");
-    if (region) region.hidden = !target.checked;
-    if (target.checked) {
-      initializeCalendarEventMap();
-      const status = app.querySelector("#calendar-event-map-status");
-      if (status && !calendarEventMapSelection) status.textContent = "Click the map to place the event location pin.";
-    } else {
-      setMapState({ calendarEventMapSelection: null });
-      const latitudeField = app.querySelector("#calendar-event-latitude");
-      const longitudeField = app.querySelector("#calendar-event-longitude");
-      if (latitudeField) latitudeField.value = "";
-      if (longitudeField) longitudeField.value = "";
-      const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
-      if (clearButton) clearButton.hidden = true;
-      if (calendarEventMapMarker && calendarEventMap) calendarEventMap.removeLayer(calendarEventMapMarker);
-      setMapState({ calendarEventMapMarker: null });
-      const status = app.querySelector("#calendar-event-map-status");
-      if (status) status.textContent = "No pin selected.";
-    }
-  } else if (target.matches("#user-form [name=role]")) {
-    const areaField = app.querySelector("#user-form [name=area]");
-    if (!areaField) return;
-    const areas = locationAreas();
-    const originalEmail = app.querySelector("#user-form [name=originalEmail]")?.value;
-    const selected = areas.includes(areaField.value) ? areaField.value : originalEmail ? "" : areas[0];
-    areaField.innerHTML = `${selected ? "" : '<option value="">Choose a managed location</option>'}${areas.map((area) => `<option value="${esc(area)}" ${area === selected ? "selected" : ""}>${esc(locationAreaLabels()[area] || area)}</option>`).join("")}`;
-    for (const field of app.querySelectorAll("#working-hours-start, #working-hours-end")) {
-      field.closest(".form-field").hidden = target.value !== "official";
-      field.disabled = target.value !== "official";
-      field.required = target.value === "official";
-    }
-    const availabilityField = app.querySelector(".availability-field");
-    availabilityField.hidden = target.value !== "official";
-    availabilityField.querySelectorAll("[name=availableDays]").forEach((field) => {
-      field.disabled = target.value !== "official";
-    });
-  } else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
-    const query = app.querySelector("[data-search-input]")?.value || "";
-    refreshSearch(query);
-  }
-});
+  });
 
-document.addEventListener("keydown", (keyEvent) => {
-  if (keyEvent.key === "Escape" && modalState) closeModal();
-  if (keyEvent.key === "Escape") {
-    const drawer = app.querySelector("#mobile-navigation");
-    if (drawer && !drawer.hidden) {
-      drawer.hidden = true;
-      app.querySelector(".mobile-menu-button")?.setAttribute("aria-expanded", "false");
-      app.querySelector(".mobile-menu-button")?.focus();
-    }
-  }
-  if (keyEvent.key !== "Tab") return;
-  const dialog = app.querySelector(".modal-backdrop .modal, #mobile-navigation:not([hidden]) .mobile-drawer");
-  if (!dialog) return;
-  const focusable = [
-    ...dialog.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ].filter((element) => element.getClientRects().length > 0);
-  if (!focusable.length) {
-    keyEvent.preventDefault();
-    dialog.focus();
-    return;
-  }
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (keyEvent.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
-    keyEvent.preventDefault();
-    last.focus();
-  } else if (!keyEvent.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
-    keyEvent.preventDefault();
-    first.focus();
-  }
-});
+  app.addEventListener("submit", (submitEvent) => {
+    handleSubmit(submitEvent);
+  });
 
-window.addEventListener("hashchange", () => {
-  const destination = window.location.hash;
-  if (destination !== lastKnownHash && !confirmLeaveWithUnsavedPermissions()) {
-    window.history.replaceState(null, "", lastKnownHash || "#/login");
+  app.addEventListener("input", (inputEvent) => {
+    if (inputEvent.target.matches("[data-search-input]")) refreshSearch(inputEvent.target.value);
+  });
+
+  app.addEventListener("change", (changeEvent) => {
+    const target = changeEvent.target;
+    if (target.matches("#report-photos")) handlePhotoSelection(target);
+    else if (target.matches("#profile-photo")) handleProfilePhotoSelection(target);
+    else if (target.id === "status" && target.form?.getAttribute("id") === "schedule-form") syncScheduleStatusFields(target.form);
+    else if (target.matches("#announcement-is-event")) {
+      setMapState({ announcementMapExpanded: target.checked });
+      const region = app.querySelector("#announcement-map-region");
+      if (region) region.hidden = !target.checked;
+      if (target.checked) {
+        initializeAnnouncementMap();
+        const status = app.querySelector("#announcement-map-status");
+        if (status && !announcementMapSelection) status.textContent = "Click the map to place the event location pin.";
+      } else {
+        setMapState({ announcementMapSelection: null });
+        const latitudeField = app.querySelector("#announcement-latitude");
+        const longitudeField = app.querySelector("#announcement-longitude");
+        if (latitudeField) latitudeField.value = "";
+        if (longitudeField) longitudeField.value = "";
+        const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
+        if (clearButton) clearButton.hidden = true;
+        if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
+        setMapState({ announcementMapMarker: null });
+        const status = app.querySelector("#announcement-map-status");
+        if (status) status.textContent = "No pin selected.";
+      }
+    } else if (target.matches("#calendar-event-has-location")) {
+      setMapState({ calendarEventMapExpanded: target.checked });
+      const region = app.querySelector("#calendar-event-map-region");
+      if (region) region.hidden = !target.checked;
+      if (target.checked) {
+        initializeCalendarEventMap();
+        const status = app.querySelector("#calendar-event-map-status");
+        if (status && !calendarEventMapSelection) status.textContent = "Click the map to place the event location pin.";
+      } else {
+        setMapState({ calendarEventMapSelection: null });
+        const latitudeField = app.querySelector("#calendar-event-latitude");
+        const longitudeField = app.querySelector("#calendar-event-longitude");
+        if (latitudeField) latitudeField.value = "";
+        if (longitudeField) longitudeField.value = "";
+        const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
+        if (clearButton) clearButton.hidden = true;
+        if (calendarEventMapMarker && calendarEventMap) calendarEventMap.removeLayer(calendarEventMapMarker);
+        setMapState({ calendarEventMapMarker: null });
+        const status = app.querySelector("#calendar-event-map-status");
+        if (status) status.textContent = "No pin selected.";
+      }
+    } else if (target.matches("#user-form [name=role]")) {
+      const areaField = app.querySelector("#user-form [name=area]");
+      if (!areaField) return;
+      const areas = locationAreas();
+      const originalEmail = app.querySelector("#user-form [name=originalEmail]")?.value;
+      const selected = areas.includes(areaField.value) ? areaField.value : originalEmail ? "" : areas[0];
+      areaField.innerHTML = `${selected ? "" : '<option value="">Choose a managed location</option>'}${areas.map((area) => `<option value="${esc(area)}" ${area === selected ? "selected" : ""}>${esc(locationAreaLabels()[area] || area)}</option>`).join("")}`;
+      for (const field of app.querySelectorAll("#working-hours-start, #working-hours-end")) {
+        field.closest(".form-field").hidden = target.value !== "official";
+        field.disabled = target.value !== "official";
+        field.required = target.value === "official";
+      }
+      const availabilityField = app.querySelector(".availability-field");
+      availabilityField.hidden = target.value !== "official";
+      availabilityField.querySelectorAll("[name=availableDays]").forEach((field) => {
+        field.disabled = target.value !== "official";
+      });
+    } else if (target.matches("[data-user-role-filter], [data-user-status-filter]")) {
+      const query = app.querySelector("[data-search-input]")?.value || "";
+      refreshSearch(query);
+    }
+  });
+
+  document.addEventListener("keydown", (keyEvent) => {
+    if (keyEvent.key === "Escape" && modalState) closeModal();
+    if (keyEvent.key === "Escape") {
+      const drawer = app.querySelector("#mobile-navigation");
+      if (drawer && !drawer.hidden) {
+        drawer.hidden = true;
+        app.querySelector(".mobile-menu-button")?.setAttribute("aria-expanded", "false");
+        app.querySelector(".mobile-menu-button")?.focus();
+      }
+    }
+    if (keyEvent.key !== "Tab") return;
+    const dialog = app.querySelector(".modal-backdrop .modal, #mobile-navigation:not([hidden]) .mobile-drawer");
+    if (!dialog) return;
+    const focusable = [
+      ...dialog.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter((element) => element.getClientRects().length > 0);
+    if (!focusable.length) {
+      keyEvent.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (keyEvent.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+      keyEvent.preventDefault();
+      last.focus();
+    } else if (!keyEvent.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+      keyEvent.preventDefault();
+      first.focus();
+    }
+  });
+
+  window.addEventListener("hashchange", () => {
+    const destination = window.location.hash;
+    if (destination !== lastKnownHash && !confirmLeaveWithUnsavedPermissions()) {
+      window.history.replaceState(null, "", lastKnownHash || "#/login");
+      setState({ pendingReportRoute: "" });
+      return;
+    }
+    if (destination !== lastKnownHash) setState({ permissionDrafts: {} });
+    if (window.location.hash !== pendingReportRoute) setState({ selectedReportId: null });
     setState({ pendingReportRoute: "" });
-    return;
-  }
-  if (destination !== lastKnownHash) setState({ permissionDrafts: {} });
-  if (window.location.hash !== pendingReportRoute) setState({ selectedReportId: null });
-  setState({ pendingReportRoute: "" });
-  render();
-});
+    render();
+  });
 
-window.addEventListener("beforeunload", (event) => {
-  if (!hasUnsavedPermissionChanges()) return;
-  event.preventDefault();
-  event.returnValue = "";
-});
+  window.addEventListener("beforeunload", (event) => {
+    if (!hasUnsavedPermissionChanges()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
 
   window.addEventListener("load", () => initialize().catch(showFatal));
 }
-

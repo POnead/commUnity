@@ -63,12 +63,7 @@ import {
   PERMISSION_DEFS,
 } from "./constants.mjs";
 import { modalMarkup } from "./main.mjs";
-import {
-  reportMapExpanded,
-  reportMapSelection,
-  reportMapGeoLocating,
-} from "./map.mjs";
-
+import { reportMapExpanded, reportMapSelection, reportMapGeoLocating } from "./map.mjs";
 
 export function navGroups(role) {
   const openConcernCount = data.reports.filter((report) => report.status !== "Resolved").length;

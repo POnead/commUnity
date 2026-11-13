@@ -68,6 +68,7 @@ test("serves hardened static files and protects database routes behind sessions"
       ["/app/main.mjs", "text/javascript"],
       ["/app/views.mjs", "text/javascript"],
       ["/app/core.mjs", "text/javascript"],
+      ["/app/map.mjs", "text/javascript"],
       ["/app/constants.mjs", "text/javascript"],
       ["/node_modules/leaflet/dist/leaflet.js", "text/javascript"],
       ["/node_modules/leaflet/dist/leaflet.css", "text/css"],

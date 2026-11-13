@@ -41,10 +41,11 @@ app/
   main.mjs                 Composition root: boots the app, routes, event listeners
   core.mjs                 State, data loading, saving, live updates, shared helpers
   views.mjs                Page renderers and markup builders
+  map.mjs                  Leaflet map pickers, pin rendering, event maps, and map state
   constants.mjs            Pure constants (roles, statuses, permissions, defaults)
 ```
 
-The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/constants.mjs`) with a strict CSP. Tests live in `test/` — shared fixtures in `test/helpers.mjs`, `test/frontend-stubs.mjs` provides a minimal DOM for importing the real modules, one file per area (`reports`, `users`, `security`, `schedules`, `announcements`, `activity`, `maintenance`, `state`, `platform`, `frontend`, `service-targets`), plus `postgres-migration.test.mjs` (migrations against embedded PostgreSQL). `npm test` runs everything.
+The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. Tests live in `test/` — shared fixtures in `test/helpers.mjs`, `test/frontend-stubs.mjs` provides a minimal DOM for importing the real modules, one file per area (`reports`, `users`, `security`, `schedules`, `announcements`, `activity`, `maintenance`, `state`, `platform`, `frontend`, `service-targets`), plus `postgres-migration.test.mjs` (migrations against embedded PostgreSQL). `npm test` runs everything.
 
 ## Run locally
 

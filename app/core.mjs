@@ -12,6 +12,11 @@ import {
   MAX_RECURRENCE_OCCURRENCES,
   SCHEDULE_REASON_STATUSES,
 } from "./constants.mjs";
+// render lives in main.mjs and hasUnsavedPermissionChanges in views.mjs; both are
+// only invoked at runtime, so the import cycle main -> core -> main/views is safe
+// (function declarations are hoisted and call sites run post-evaluation).
+import { render } from "./main.mjs";
+import { hasUnsavedPermissionChanges } from "./views.mjs";
 
 
 export function locationAreas() {

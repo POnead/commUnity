@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 import {
   locationAreas,
@@ -70,9 +70,6 @@ import {
   CATEGORIES,
   REPORT_PRIORITIES,
   FOLLOW_UP_LIMITS,
-  PALSARA_CENTER,
-  PALSARA_BOUNDS,
-  AREA_COORDINATES,
   PERMISSION_DEFS,
   SCHEDULE_FREQUENCIES,
   SCHEDULE_REASON_STATUSES,
@@ -111,45 +108,32 @@ import {
   verifyRecoveryMarkup,
   registerMarkup,
 } from "./views.mjs";
+import {
+  reportMapExpanded,
+  announcementMapExpanded,
+  announcementMapSelection,
+  calendarEventMapExpanded,
+  calendarEventMapSelection,
+  announcementDetailMaps,
+  reportMap,
+  announcementMap,
+  calendarEventMap,
+  reportMapMarker,
+  announcementMapMarker,
+  calendarEventMapMarker,
+  setMapState,
+  useCurrentLocation,
+  initializeReportMap,
+  initializeReportDetailMap,
+  initializeAnnouncementMap,
+  initializeCalendarEventMap,
+  initializeAnnouncementDetailMap,
+} from "./map.mjs";
 
 
-export let reportMapExpanded = false;
-export let reportMapSelection = null;
-let reportMap = null;
-let reportMapElement = null;
-let reportMapMarker = null;
-export let reportMapGeoLocating = false;
-let areaMapListenerAttached = false;
-let reportDetailMap = null;
-let reportDetailMapElement = null;
-let announcementMapExpanded = false;
-let announcementMapSelection = null;
-let announcementMap = null;
-let announcementMapElement = null;
-let announcementMapMarker = null;
-let announcementDetailMaps = [];
-let announcementDetailMapElements = [];
-let calendarEventMapExpanded = false;
-let calendarEventMapSelection = null;
-let calendarEventMap = null;
-let calendarEventMapElement = null;
-let calendarEventMapMarker = null;
 let profilePhotoFile = null;
 let profilePhotoPreview = null;
 let lastCalendarClick = { date: "", at: 0 };
-
-// Community concern locations must be within this radius of Balete, Batangas.
-const BALETE_CENTER = PALSARA_CENTER; // [14.01799, 121.09465]
-const BALETE_NEAR_RADIUS_M = 2000; // 2 km
-
-function haversineDistanceM(lat1, lon1, lat2, lon2) {
-  const toRad = (deg) => (deg * Math.PI) / 180;
-  const earthRadiusM = 6371000;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * earthRadiusM * Math.asin(Math.sqrt(a));
-}
 
 function routeState() {
   const path = currentPath();
@@ -199,33 +183,33 @@ export function render() {
   const route = routeState();
   setState({ currentRoute: route });
   if (route.type !== "app" || route.role !== "resident" || route.page !== "report") {
-    reportMapExpanded = false;
-    reportMapSelection = null;
+    setMapState({ reportMapExpanded: false });
+    setMapState({ reportMapSelection: null });
     reportMap?.remove();
-    reportMap = null;
-    reportMapElement = null;
-    reportMapMarker = null;
+    setMapState({ reportMap: null });
+    setMapState({ reportMapElement: null });
+    setMapState({ reportMapMarker: null });
   }
   if (modalState?.kind !== "announcement") {
-    announcementMapExpanded = false;
-    announcementMapSelection = null;
+    setMapState({ announcementMapExpanded: false });
+    setMapState({ announcementMapSelection: null });
     announcementMap?.remove();
-    announcementMap = null;
-    announcementMapElement = null;
-    announcementMapMarker = null;
+    setMapState({ announcementMap: null });
+    setMapState({ announcementMapElement: null });
+    setMapState({ announcementMapMarker: null });
   }
   if (modalState?.kind !== "calendar-event") {
-    calendarEventMapExpanded = false;
-    calendarEventMapSelection = null;
+    setMapState({ calendarEventMapExpanded: false });
+    setMapState({ calendarEventMapSelection: null });
     calendarEventMap?.remove();
-    calendarEventMap = null;
-    calendarEventMapElement = null;
-    calendarEventMapMarker = null;
+    setMapState({ calendarEventMap: null });
+    setMapState({ calendarEventMapElement: null });
+    setMapState({ calendarEventMapMarker: null });
   }
   if (modalState?.kind !== "announcement-location" && modalState?.kind !== "calendar-event-detail") {
     announcementDetailMaps?.forEach((map) => map?.remove());
-    announcementDetailMaps = [];
-    announcementDetailMapElements = [];
+    setMapState({ announcementDetailMaps: [] });
+    setMapState({ announcementDetailMapElements: [] });
   }
   if (currentUser && route.type === "app") {
     if (currentUser.requiresPasswordChange && !modalState && !forcedPasswordDismissed) setState({ modalState: { kind: "forced-password" } });
@@ -597,11 +581,10 @@ function syncScheduleStatusFields(form) {
 function showModal(kind, id = "") {
   if (kind === "announcement") {
     const item = id ? data.announcements.find((record) => record.id === id) : null;
-    announcementMapExpanded = Boolean(item?.isEvent);
-    announcementMapSelection =
-      item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
+    setMapState({ announcementMapExpanded: Boolean(item?.isEvent) });
+    setMapState({ announcementMapSelection: item?.isEvent && Number.isFinite(item.latitude) && Number.isFinite(item.longitude)
         ? { latitude: item.latitude, longitude: item.longitude }
-        : null;
+        : null });
   }
   setState({ modalState: { kind, id } });
   render();
@@ -921,8 +904,8 @@ async function submitReportDraft() {
     return;
   }
   setState({ reportDraft: null });
-  reportMapExpanded = false;
-  reportMapSelection = null;
+  setMapState({ reportMapExpanded: false });
+  setMapState({ reportMapSelection: null });
   setState({ uploadPhotos: [] });
   setState({ selectedReportId: null });
   window.location.hash = routeUrl("resident", "reports");
@@ -1351,12 +1334,12 @@ async function saveAnnouncement(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The announcement could not be saved.");
-  announcementMapExpanded = false;
-  announcementMapSelection = null;
+  setMapState({ announcementMapExpanded: false });
+  setMapState({ announcementMapSelection: null });
   announcementMap?.remove();
-  announcementMap = null;
-  announcementMapElement = null;
-  announcementMapMarker = null;
+  setMapState({ announcementMap: null });
+  setMapState({ announcementMapElement: null });
+  setMapState({ announcementMapMarker: null });
   setState({ modalState: null });
   render();
   toast(
@@ -2082,372 +2065,6 @@ async function markNotification(id) {
   render();
 }
 
-function setReportMapPin(position) {
-  const { lat: latitude, lng: longitude } = position;
-  reportMapSelection = { latitude, longitude };
-  const latitudeField = app.querySelector("#report-latitude");
-  const longitudeField = app.querySelector("#report-longitude");
-  const status = app.querySelector("#report-map-status");
-  const clearButton = app.querySelector('[data-action="clear-report-map-pin"]');
-  if (latitudeField) latitudeField.value = String(latitude);
-  if (longitudeField) longitudeField.value = String(longitude);
-  if (clearButton) clearButton.hidden = false;
-  if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
-  if (!reportMapMarker) {
-    reportMapMarker = window.L.marker([latitude, longitude], {
-      draggable: true,
-      title: "Reported concern location",
-    }).addTo(reportMap);
-    reportMapMarker.on("dragend", (event) => setReportMapPin(event.target.getLatLng()));
-  } else {
-    reportMapMarker.setLatLng([latitude, longitude]);
-  }
-  reportMap.panTo([latitude, longitude]);
-}
-
-async function useCurrentLocation() {
-  if (!navigator.geolocation) {
-    toast("Your browser does not support location services. Click the map to choose a location instead.", "error");
-    return;
-  }
-  if (reportMapGeoLocating) return;
-  reportMapGeoLocating = true;
-  const toggle = app.querySelector('[data-action="use-current-location"]');
-  const status = app.querySelector("#report-map-status");
-  if (toggle) toggle.disabled = true;
-  if (toggle) toggle.textContent = "Locating…";
-  if (status) status.textContent = "Locating your current position…";
-  try {
-    const position = await new Promise((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(resolve, reject, {
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 0,
-      });
-    });
-    const { latitude, longitude } = position.coords;
-    if (
-      !Number.isFinite(latitude) ||
-      latitude < -90 ||
-      latitude > 90 ||
-      !Number.isFinite(longitude) ||
-      longitude < -180 ||
-      longitude > 180
-    ) {
-      throw new Error("Invalid location received.");
-    }
-    const distanceM = haversineDistanceM(latitude, longitude, BALETE_CENTER[0], BALETE_CENTER[1]);
-    if (distanceM > BALETE_NEAR_RADIUS_M) {
-      const km = Math.round(distanceM / 1000);
-      const limitKm = Math.round(BALETE_NEAR_RADIUS_M / 1000);
-      if (status) status.textContent = `Your location is ${km} km from Balete, Batangas — concern locations must be within ${limitKm} km.`;
-      toast(`Location must be near Balete, Batangas. Yours is ${km} km away.`, "error");
-      return;
-    }
-    setReportMapPin({ lat: latitude, lng: longitude });
-    if (status) status.textContent = `Your location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}.`;
-    toast("Your location was added to the map.", "success");
-  } catch (error) {
-    let message = "Could not determine your location.";
-    if (error.code === 1) message = "Location access was denied. Click the map to choose a location instead.";
-    else if (error.code === 2) message = "Location information is unavailable.";
-    else if (error.code === 3) message = "Location request timed out. Click the map to choose a location instead.";
-    toast(message, "error");
-    if (status) status.textContent = message;
-  } finally {
-    reportMapGeoLocating = false;
-    if (toggle) toggle.disabled = false;
-    if (toggle) toggle.textContent = "Choose my current location";
-  }
-}
-
-function centerMapOnArea(area) {
-  const coords = AREA_COORDINATES[area];
-  if (!coords || !reportMap) return;
-  reportMap.setView(coords, 15);
-  if (reportMapSelection) {
-    reportMapMarker.setLatLng(coords);
-    reportMapSelection = { latitude: coords[0], longitude: coords[1] };
-    const latitudeField = app.querySelector("#report-latitude");
-    const longitudeField = app.querySelector("#report-longitude");
-    const status = app.querySelector("#report-map-status");
-    if (latitudeField) latitudeField.value = String(coords[0]);
-    if (longitudeField) longitudeField.value = String(coords[1]);
-    const clearButton = clearMapButton();
-    if (clearButton) clearButton.hidden = false;
-    if (status) status.textContent = `Map centered on ${area}. Pin placed at ${coords[0].toFixed(6)}, ${coords[1].toFixed(6)}.`;
-  } else {
-    reportMap.panTo(coords);
-  }
-}
-
-function clearMapButton() {
-  return app.querySelector('[data-action="clear-report-map-pin"]');
-}
-
-function createTileLayer(map) {
-  return window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-  }).addTo(map);
-}
-
-function initializeReportMap() {
-  const mapElement = app.querySelector("#report-map");
-  if (!reportMapExpanded || !mapElement?.isConnected || !window.L) return;
-  if (reportMapElement !== mapElement) {
-    reportMap?.remove();
-    reportMapElement = mapElement;
-    reportMapMarker = null;
-    reportMap = window.L.map(mapElement).setView(
-      reportMapSelection ? [reportMapSelection.latitude, reportMapSelection.longitude] : PALSARA_CENTER,
-      reportMapSelection ? 17 : 13,
-    );
-    reportMap.setMaxBounds(PALSARA_BOUNDS);
-    reportMap.options.maxBoundsViscosity = 1.0;
-    const tileLayer = createTileLayer(reportMap);
-    tileLayer.on("tileerror", () => {
-      const status = app.querySelector("#report-map-status");
-      if (status) status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still submit without a pin.";
-    });
-    reportMap.on("click", (event) => setReportMapPin(event.latlng));
-    const areaSelect = app.querySelector("#area");
-    if (areaSelect && areaMapListenerAttached !== areaSelect) {
-      areaSelect.addEventListener("change", (event) => {
-        if (reportMapExpanded) centerMapOnArea(event.target.value);
-      });
-      areaMapListenerAttached = areaSelect;
-    }
-  } else {
-    reportMap.invalidateSize();
-  }
-  if (!reportMapSelection) {
-    const areaSelect = app.querySelector("#area");
-    const selectedArea = areaSelect ? areaSelect.value : null;
-    if (selectedArea && AREA_COORDINATES[selectedArea]) {
-      centerMapOnArea(selectedArea);
-    } else {
-      reportMap.setView(PALSARA_CENTER, 13);
-    }
-  } else {
-    setReportMapPin({
-      lat: reportMapSelection.latitude,
-      lng: reportMapSelection.longitude,
-    });
-  }
-}
-
-function initializeReportDetailMap() {
-  const mapElement = app.querySelector("#report-detail-map");
-  if (!mapElement || !window.L) {
-    reportDetailMap?.remove();
-    reportDetailMap = null;
-    reportDetailMapElement = null;
-    if (mapElement) {
-      const status = app.querySelector("#report-detail-map-status");
-      if (status) status.textContent = "The interactive map is unavailable. Use the directions link to open this location.";
-    }
-    return;
-  }
-  if (reportDetailMapElement === mapElement) {
-    reportDetailMap.invalidateSize();
-    return;
-  }
-
-  reportDetailMap?.remove();
-  reportDetailMap = null;
-  reportDetailMapElement = mapElement;
-  const latitude = Number(mapElement.dataset.latitude);
-  const longitude = Number(mapElement.dataset.longitude);
-  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
-    const status = app.querySelector("#report-detail-map-status");
-    if (status) status.textContent = "This report's saved map coordinates are invalid.";
-    reportDetailMapElement = null;
-    return;
-  }
-
-  reportDetailMap = window.L.map(mapElement).setView([latitude, longitude], 17);
-  const tileLayer = createTileLayer(reportDetailMap);
-  const statusElement = app.querySelector("#report-detail-map-status");
-  window.L.marker([latitude, longitude], {
-    title: "Exact concern location",
-    alt: "Exact concern location",
-  }).addTo(reportDetailMap);
-  tileLayer.on("tileerror", () => {
-    if (statusElement)
-      statusElement.textContent =
-        "Map tiles could not be loaded. Check your internet connection; the saved pin and directions link are still available.";
-  });
-}
-
-function setAnnouncementMapPin(position) {
-  const { lat: latitude, lng: longitude } = position;
-  announcementMapSelection = { latitude, longitude };
-  const latitudeField = app.querySelector("#announcement-latitude");
-  const longitudeField = app.querySelector("#announcement-longitude");
-  const status = app.querySelector("#announcement-map-status");
-  const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
-  if (latitudeField) latitudeField.value = String(latitude);
-  if (longitudeField) longitudeField.value = String(longitude);
-  if (clearButton) clearButton.hidden = false;
-  if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
-  if (!announcementMap) return;
-  if (!announcementMapMarker) {
-    announcementMapMarker = window.L.marker([latitude, longitude], {
-      draggable: true,
-      title: "Event location",
-    }).addTo(announcementMap);
-    announcementMapMarker.on("dragend", (event) => setAnnouncementMapPin(event.target.getLatLng()));
-  } else {
-    announcementMapMarker.setLatLng([latitude, longitude]);
-  }
-  announcementMap.panTo([latitude, longitude]);
-}
-
-function initializeAnnouncementMap() {
-  const mapElement = app.querySelector("#announcement-map");
-  if (!announcementMapExpanded || !mapElement?.isConnected || !window.L) return;
-  if (announcementMapElement !== mapElement) {
-    announcementMap?.remove();
-    announcementMapElement = mapElement;
-    announcementMapMarker = null;
-    announcementMap = window.L.map(mapElement).setView(
-      announcementMapSelection ? [announcementMapSelection.latitude, announcementMapSelection.longitude] : [14.01799, 121.09465],
-      announcementMapSelection ? 17 : 13,
-    );
-    const tileLayer = createTileLayer(announcementMap);
-    tileLayer.on("tileerror", () => {
-      const status = app.querySelector("#announcement-map-status");
-      if (status)
-        status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
-    });
-    announcementMap.on("click", (event) => setAnnouncementMapPin(event.latlng));
-  } else {
-    announcementMap.invalidateSize();
-  }
-  if (announcementMapSelection) {
-    setAnnouncementMapPin({
-      lat: announcementMapSelection.latitude,
-      lng: announcementMapSelection.longitude,
-    });
-  }
-}
-
-function setCalendarEventMapPin(position) {
-  const { lat: latitude, lng: longitude } = position;
-  calendarEventMapSelection = { latitude, longitude };
-  const latitudeField = app.querySelector("#calendar-event-latitude");
-  const longitudeField = app.querySelector("#calendar-event-longitude");
-  const status = app.querySelector("#calendar-event-map-status");
-  const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
-  if (latitudeField) latitudeField.value = String(latitude);
-  if (longitudeField) longitudeField.value = String(longitude);
-  if (clearButton) clearButton.hidden = false;
-  if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
-  if (!calendarEventMap) return;
-  if (!calendarEventMapMarker) {
-    calendarEventMapMarker = window.L.marker([latitude, longitude], {
-      draggable: true,
-      title: "Event location",
-    }).addTo(calendarEventMap);
-    calendarEventMapMarker.on("dragend", (event) => setCalendarEventMapPin(event.target.getLatLng()));
-  } else {
-    calendarEventMapMarker.setLatLng([latitude, longitude]);
-  }
-  calendarEventMap.panTo([latitude, longitude]);
-}
-
-function initializeCalendarEventMap() {
-  const mapElement = app.querySelector("#calendar-event-map");
-  if (!calendarEventMapExpanded || !mapElement?.isConnected || !window.L) return;
-  if (calendarEventMapElement !== mapElement) {
-    calendarEventMap?.remove();
-    calendarEventMapElement = mapElement;
-    calendarEventMapMarker = null;
-    calendarEventMap = window.L.map(mapElement).setView(
-      calendarEventMapSelection ? [calendarEventMapSelection.latitude, calendarEventMapSelection.longitude] : [14.01799, 121.09465],
-      calendarEventMapSelection ? 17 : 13,
-    );
-    const tileLayer = createTileLayer(calendarEventMap);
-    tileLayer.on("tileerror", () => {
-      const status = app.querySelector("#calendar-event-map-status");
-      if (status)
-        status.textContent = "Map tiles could not be loaded. Check your internet connection; you can still place the pin on the map.";
-    });
-    calendarEventMap.on("click", (event) => setCalendarEventMapPin(event.latlng));
-  } else {
-    calendarEventMap.invalidateSize();
-  }
-  if (calendarEventMapSelection) {
-    setCalendarEventMapPin({
-      lat: calendarEventMapSelection.latitude,
-      lng: calendarEventMapSelection.longitude,
-    });
-  }
-}
-
-function initializeAnnouncementDetailMap() {
-  const mapElements = app.querySelectorAll('.report-detail-map[id^="announcement-detail-map"]');
-  if (!mapElements.length || !window.L) {
-    announcementDetailMaps.forEach((map) => map?.remove());
-    announcementDetailMaps = [];
-    announcementDetailMapElements = [];
-    const statuses = app.querySelectorAll('[id^="announcement-detail-map-status"]');
-    statuses.forEach((status) => {
-      status.textContent = "The interactive map is unavailable. Use the Google Maps link to open this location.";
-    });
-    return;
-  }
-
-  // Drop maps whose elements are no longer in the DOM
-  announcementDetailMaps = announcementDetailMaps.filter((map, i) => {
-    const el = announcementDetailMapElements[i];
-    if (!el || !el.isConnected) {
-      map?.remove();
-      return false;
-    }
-    return true;
-  });
-  announcementDetailMapElements = announcementDetailMapElements.filter((_, i) => announcementDetailMaps[i] !== undefined);
-
-  mapElements.forEach((el) => {
-    const already = announcementDetailMapElements.indexOf(el);
-    if (already !== -1) {
-      announcementDetailMaps[already]?.invalidateSize();
-      return;
-    }
-    const latitude = Number(el.dataset.latitude);
-    const longitude = Number(el.dataset.longitude);
-    if (
-      !Number.isFinite(latitude) ||
-      latitude < -90 ||
-      latitude > 90 ||
-      !Number.isFinite(longitude) ||
-      longitude < -180 ||
-      longitude > 180
-    ) {
-      const status = el.parentElement?.querySelector('[id^="announcement-detail-map-status"]');
-      if (status) status.textContent = "This event's saved map coordinates are invalid.";
-      return;
-    }
-    const map = window.L.map(el).setView([latitude, longitude], 17);
-    const tileLayer = createTileLayer(map);
-    const status = el.parentElement?.querySelector('[id^="announcement-detail-map-status"]');
-    window.L.marker([latitude, longitude], {
-      title: "Event location",
-      alt: "Event location",
-    }).addTo(map);
-    tileLayer.on("tileerror", () => {
-      if (status)
-        status.textContent =
-          "Map tiles could not be loaded. Check your internet connection; the saved pin and Google Maps link are still available.";
-    });
-    announcementDetailMaps.push(map);
-    announcementDetailMapElements.push(el);
-  });
-}
-
 async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
   if (action === "forgot-password") {
@@ -2892,7 +2509,7 @@ async function handleAction(button, clickEvent) {
     setState({ modalState: { kind: "calendar-decline", id: button.dataset.id } });
     render();
   } else if (action === "toggle-report-map") {
-    reportMapExpanded = !reportMapExpanded;
+    setMapState({ reportMapExpanded: !reportMapExpanded });
     const region = app.querySelector("#report-map-region");
     const toggle = app.querySelector('[data-action="toggle-report-map"]');
     region.hidden = !reportMapExpanded;
@@ -2902,16 +2519,16 @@ async function handleAction(button, clickEvent) {
   } else if (action === "use-current-location") {
     useCurrentLocation();
   } else if (action === "clear-report-map-pin") {
-    reportMapSelection = null;
+    setMapState({ reportMapSelection: null });
     app.querySelector("#report-latitude").value = "";
     app.querySelector("#report-longitude").value = "";
     app.querySelector('[data-action="clear-report-map-pin"]').hidden = true;
     if (reportMapMarker) reportMap.removeLayer(reportMapMarker);
-    reportMapMarker = null;
+    setMapState({ reportMapMarker: null });
     const status = app.querySelector("#report-map-status");
     if (status) status.textContent = "No pin selected. Click the map to place one, or continue without it.";
   } else if (action === "clear-announcement-map-pin") {
-    announcementMapSelection = null;
+    setMapState({ announcementMapSelection: null });
     const latitudeField = app.querySelector("#announcement-latitude");
     const longitudeField = app.querySelector("#announcement-longitude");
     if (latitudeField) latitudeField.value = "";
@@ -2919,16 +2536,16 @@ async function handleAction(button, clickEvent) {
     const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
     if (clearButton) clearButton.hidden = true;
     if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
-    announcementMapMarker = null;
+    setMapState({ announcementMapMarker: null });
     const status = app.querySelector("#announcement-map-status");
     if (status) status.textContent = "No pin selected. Click the map to place the event location.";
   } else if (action === "toggle-calendar-event-map") {
-    calendarEventMapExpanded = !calendarEventMapExpanded;
+    setMapState({ calendarEventMapExpanded: !calendarEventMapExpanded });
     const region = app.querySelector("#calendar-event-map-region");
     region.hidden = !calendarEventMapExpanded;
     if (calendarEventMapExpanded) initializeCalendarEventMap();
   } else if (action === "clear-calendar-event-map-pin") {
-    calendarEventMapSelection = null;
+    setMapState({ calendarEventMapSelection: null });
     const latitudeField = app.querySelector("#calendar-event-latitude");
     const longitudeField = app.querySelector("#calendar-event-longitude");
     if (latitudeField) latitudeField.value = "";
@@ -2936,7 +2553,7 @@ async function handleAction(button, clickEvent) {
     const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
     if (clearButton) clearButton.hidden = true;
     if (calendarEventMapMarker && calendarEventMap) calendarEventMap.removeLayer(calendarEventMapMarker);
-    calendarEventMapMarker = null;
+    setMapState({ calendarEventMapMarker: null });
     const status = app.querySelector("#calendar-event-map-status");
     if (status) status.textContent = "No pin selected. Click the map to place the event location.";
   } else if (action === "view-announcement-location") {
@@ -2944,13 +2561,12 @@ async function handleAction(button, clickEvent) {
     render();
   } else if (action === "edit-report-draft") {
     reportDraft.step = "details";
-    reportMapSelection =
-      reportDraft.latitude === null
+    setMapState({ reportMapSelection: reportDraft.latitude === null
         ? null
         : {
             latitude: reportDraft.latitude,
             longitude: reportDraft.longitude,
-          };
+          } });
     render();
   } else if (action === "submit-report") {
     submitReportDraft().catch((error) => toast(error.message, "error"));
@@ -2990,13 +2606,12 @@ async function handleSubmit(formEvent) {
       ) {
         throw new Error("Choose a valid map location or clear the pin before continuing.");
       }
-      reportMapSelection =
-        draft.latitude === null
+      setMapState({ reportMapSelection: draft.latitude === null
           ? null
           : {
               latitude: draft.latitude,
               longitude: draft.longitude,
-            };
+            } });
       setState({ reportDraft: draft });
       render();
     } else if (formId === "report-status-form") {
@@ -3187,7 +2802,8 @@ async function initialize() {
   render();
 }
 
-app.addEventListener("click", async (clickEvent) => {
+export function startCommUnity() {
+  app.addEventListener("click", async (clickEvent) => {
   const button = clickEvent.target.closest("[data-action]");
   if (!button) return;
   try {
@@ -3212,7 +2828,7 @@ app.addEventListener("change", (changeEvent) => {
   else if (target.matches("#profile-photo")) handleProfilePhotoSelection(target);
   else if (target.id === "status" && target.form?.getAttribute("id") === "schedule-form") syncScheduleStatusFields(target.form);
   else if (target.matches("#announcement-is-event")) {
-    announcementMapExpanded = target.checked;
+    setMapState({ announcementMapExpanded: target.checked });
     const region = app.querySelector("#announcement-map-region");
     if (region) region.hidden = !target.checked;
     if (target.checked) {
@@ -3220,7 +2836,7 @@ app.addEventListener("change", (changeEvent) => {
       const status = app.querySelector("#announcement-map-status");
       if (status && !announcementMapSelection) status.textContent = "Click the map to place the event location pin.";
     } else {
-      announcementMapSelection = null;
+      setMapState({ announcementMapSelection: null });
       const latitudeField = app.querySelector("#announcement-latitude");
       const longitudeField = app.querySelector("#announcement-longitude");
       if (latitudeField) latitudeField.value = "";
@@ -3228,12 +2844,12 @@ app.addEventListener("change", (changeEvent) => {
       const clearButton = app.querySelector('[data-action="clear-announcement-map-pin"]');
       if (clearButton) clearButton.hidden = true;
       if (announcementMapMarker && announcementMap) announcementMap.removeLayer(announcementMapMarker);
-      announcementMapMarker = null;
+      setMapState({ announcementMapMarker: null });
       const status = app.querySelector("#announcement-map-status");
       if (status) status.textContent = "No pin selected.";
     }
   } else if (target.matches("#calendar-event-has-location")) {
-    calendarEventMapExpanded = target.checked;
+    setMapState({ calendarEventMapExpanded: target.checked });
     const region = app.querySelector("#calendar-event-map-region");
     if (region) region.hidden = !target.checked;
     if (target.checked) {
@@ -3241,7 +2857,7 @@ app.addEventListener("change", (changeEvent) => {
       const status = app.querySelector("#calendar-event-map-status");
       if (status && !calendarEventMapSelection) status.textContent = "Click the map to place the event location pin.";
     } else {
-      calendarEventMapSelection = null;
+      setMapState({ calendarEventMapSelection: null });
       const latitudeField = app.querySelector("#calendar-event-latitude");
       const longitudeField = app.querySelector("#calendar-event-longitude");
       if (latitudeField) latitudeField.value = "";
@@ -3249,7 +2865,7 @@ app.addEventListener("change", (changeEvent) => {
       const clearButton = app.querySelector('[data-action="clear-calendar-event-map-pin"]');
       if (clearButton) clearButton.hidden = true;
       if (calendarEventMapMarker && calendarEventMap) calendarEventMap.removeLayer(calendarEventMapMarker);
-      calendarEventMapMarker = null;
+      setMapState({ calendarEventMapMarker: null });
       const status = app.querySelector("#calendar-event-map-status");
       if (status) status.textContent = "No pin selected.";
     }
@@ -3329,4 +2945,6 @@ window.addEventListener("beforeunload", (event) => {
   event.returnValue = "";
 });
 
-initialize().catch(showFatal);
+  window.addEventListener("load", () => initialize().catch(showFatal));
+}
+

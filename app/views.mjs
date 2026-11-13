@@ -62,12 +62,12 @@ import {
   AREAS,
   PERMISSION_DEFS,
 } from "./constants.mjs";
+import { modalMarkup } from "./main.mjs";
 import {
-  modalMarkup,
   reportMapExpanded,
   reportMapSelection,
   reportMapGeoLocating,
-} from "./main.mjs";
+} from "./map.mjs";
 
 
 export function navGroups(role) {

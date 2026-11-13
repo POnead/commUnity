@@ -851,6 +851,8 @@ test("the live refresh adopts new state and re-renders, but leaves open forms al
     lastPersistedSnapshot: JSON.stringify(base),
     currentUser: { id: "u", role: "resident", name: "Resident Example", email: "r@example.test", requiresPasswordChange: false },
     modalState: null,
+    permissionDrafts: {},
+    selectedPermissionRole: "official",
   });
 
   const adopted = await core.checkForStateUpdates();

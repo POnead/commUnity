@@ -121,6 +121,14 @@ Upgrading an existing deployment applies the schema changes at startup and recov
 
 **The old local demonstration data is not imported into the new relational schema.** The existing `data/pglite/` directory is left untouched, but the new app will not read its legacy JSON state. Back it up before switching versions. The remote database starts clean as requested.
 
+## Backups
+
+Rehearse a restore before real resident records live in this database.
+
+- **Managed PostgreSQL:** take a logical dump with `pg_dump` (for example `pg_dump --format=custom --file=backup.dump "$DATABASE_URL"`) and restore with `pg_restore` into a fresh database before going live and after every meaningful schema change. A restore into a migrated database is safe as long as the migration-owned seed rows (`schema_migrations`, `app_meta`, `role_permissions`, `community_locations`) are matched on conflict rather than duplicated. The rehearsed restore procedure recovers a logical dump into a freshly migrated database and verifies the row count of every public table.
+- **Local PGlite:** the database lives entirely in `data/pglite/`. Stop the server, copy the directory to backup storage, and restore by stopping the server and replacing the directory with the backup copy. Do not copy the directory while the server is running.
+- **Uploaded photos:** are stored in `data/uploads/` (or `UPLOADS_DIR`), not in either database, and need their own backup. Photo backups must be restored alongside the matching database.
+
 ## Security notes
 
 - Passwords are hashed on the server with scrypt; browser storage does not contain passwords or session identifiers.

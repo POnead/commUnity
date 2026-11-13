@@ -1355,6 +1355,7 @@ async function updatePassword(form) {
   currentUser = state.user;
   await loadCommunityOfficialHours();
   lastPersistedSnapshot = JSON.stringify(data);
+  startStateUpdates();
   form.reset();
   toast("Password updated.", "success");
   return true;
@@ -1394,6 +1395,7 @@ async function createResident(form) {
   dataRevision = state.revision;
   await loadCommunityOfficialHours();
   lastPersistedSnapshot = JSON.stringify(data);
+  startStateUpdates();
   window.location.hash = routeUrl("resident", "dashboard");
   announceSessionChange();
   toast("Your resident account is ready.", "success");
@@ -1433,6 +1435,7 @@ async function login(emailInput, password, remember = false) {
   lastPersistedSnapshot = JSON.stringify(data);
   selectedReportId = null;
   reportDraft = null;
+  startStateUpdates();
   window.location.hash = routeUrl(currentUser.role, "dashboard");
   render();
   announceSessionChange();
@@ -2115,6 +2118,7 @@ async function handleAction(button, clickEvent) {
     const response = await fetch("/api/auth/logout", { method: "POST" });
     if (!response.ok) throw new Error("CommUnity could not sign you out. Try again.");
     clearSession();
+    stopStateUpdates();
     permissionDrafts = {};
     permissionOpenGroups = {};
     selectedPermissionRole = "resident";
@@ -2730,6 +2734,7 @@ async function syncSessionAcrossTabs() {
 
     if (!nextUser) {
       clearSession();
+      stopStateUpdates();
       communityOfficialHours = [];
       data = emptyState();
       dataRevision = 0;
@@ -2747,6 +2752,7 @@ async function syncSessionAcrossTabs() {
     currentUser = state.user;
     data = state.data;
     dataRevision = state.revision;
+    startStateUpdates();
     await loadCommunityOfficialHours();
     lastPersistedSnapshot = JSON.stringify(data);
     modalState = null;
@@ -2776,6 +2782,7 @@ async function initialize() {
   await loadLocalData();
   if (!data) return;
   checkDataConsistency();
+  if (currentUser) startStateUpdates();
   if (!window.location.hash) window.history.replaceState(null, "", currentUser ? routeUrl(currentUser.role, "dashboard") : "#/login");
   lastKnownHash = window.location.hash;
   render();

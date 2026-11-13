@@ -971,3 +971,90 @@ test("a High priority concern renders unlimited follow-ups, a Medium one shows t
   assert.match(low, /Low priority · 0 of 3 follow-ups remaining\./);
   assert.doesNotMatch(low, /id="follow-up-form"/);
 });
+
+test("the live refresh adopts new state and re-renders, but leaves open forms alone", async () => {
+  const core = await readFile(new URL("../app-core.js", import.meta.url), "utf8");
+  const base = {
+    version: 1,
+    users: [],
+    reports: [],
+    schedules: [
+      { id: "GCS-live-1", area: "Purok 2", zone: "Zone A", date: "2026-11-14", wasteType: "Biodegradable", start: "6:00 AM", end: "9:00 AM", frequency: "Weekly", team: "Team A", status: "Scheduled", history: [] },
+    ],
+    activities: [],
+    permissions: {},
+    accountOverrides: {},
+    announcements: [],
+    calendarEvents: [],
+    locations: [],
+    recyclingLocations: [],
+    notifications: [],
+  };
+  const fresh = structuredClone(base);
+  fresh.schedules.push({
+    id: "GCS-live-2",
+    area: "Purok 3",
+    zone: "Zone B",
+    date: "2026-11-15",
+    wasteType: "Recyclables",
+    start: "6:00 AM",
+    end: "9:00 AM",
+    frequency: "Weekly",
+    team: "Team B",
+    status: "Scheduled",
+    history: [],
+  });
+
+  const calls = [];
+  const context = createContext({
+    document: { getElementById: () => null },
+    window: { location: { hash: "" } },
+    console,
+    fetch: async (url) => {
+      calls.push(String(url));
+      if (String(url).endsWith("/api/state/revision")) return stubJsonResponse(200, { revision: 9 });
+      return stubJsonResponse(200, {
+        data: fresh,
+        revision: 9,
+        user: { id: "u", role: "resident", name: "Resident Example", email: "r@example.test", requiresPasswordChange: false },
+      });
+    },
+  });
+  runInContext(core, context);
+  const renderCalls = [];
+  context.render = () => renderCalls.push(true);
+  const toasts = [];
+  context.toast = (message, kind) => toasts.push({ message, kind });
+  runInContext(
+    `currentUser = { id: "u", role: "resident", name: "Resident Example", email: "r@example.test", requiresPasswordChange: false };
+     data = ${JSON.stringify(base)};
+     dataRevision = 8;
+     lastPersistedSnapshot = JSON.stringify(data);
+     modalState = null;`,
+    context,
+  );
+
+  const adopted = await runInContext("checkForStateUpdates()", context);
+  assert.equal(adopted, true);
+  assert.deepEqual(calls, ["/api/state/revision", "/api/state"]);
+  assert.equal(runInContext("dataRevision", context), 9);
+  assert.equal(runInContext("data", context).schedules.length, 2, "the adopted schedule list includes the server's new row");
+  assert.equal(renderCalls.length, 1, "the refresh re-renders once");
+  assert.equal(toasts[0]?.message, "Updated with the latest changes.");
+
+  calls.length = 0;
+  renderCalls.length = 0;
+  toasts.length = 0;
+  const again = await runInContext("checkForStateUpdates()", context);
+  assert.equal(again, false, "no full fetch when the revision has not moved");
+  assert.deepEqual(calls, ["/api/state/revision"]);
+  assert.equal(renderCalls.length, 0);
+  assert.equal(toasts.length, 0);
+
+  calls.length = 0;
+  runInContext("modalState = { kind: 'report' };", context);
+  const skipped = await runInContext("checkForStateUpdates()", context);
+  assert.equal(skipped, false, "an open form is never refreshed over");
+  assert.deepEqual(calls, [], "the revision check is skipped entirely while a form is open");
+  assert.equal(renderCalls.length, 0);
+});

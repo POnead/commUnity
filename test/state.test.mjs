@@ -6,6 +6,38 @@ import path from "node:path";
 import { startServer, api, signIn, ADMIN_EMAIL, registerResident, createOfficial, manilaDate } from "./helpers.mjs";
 import { archiveOldActivities, pruneOldNotifications, runScheduleReminders } from "../server/index.mjs";
 
+test("the revision endpoint reports the shared revision without fetching state, and requires a session", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-revision-endpoint-"));
+  const app = await startServer(dataDir);
+  try {
+    const anonymous = await api(app, "/api/state/revision");
+    assert.equal(anonymous.status, 401);
+
+    const cookie = (await signIn(app)).cookie;
+    const first = await api(app, "/api/state/revision", { cookie });
+    assert.equal(first.status, 200);
+    const firstJson = await first.json();
+    assert.equal(typeof firstJson.revision, "number");
+
+    // A revision-check read must not move the counter by itself.
+    const again = await api(app, "/api/state/revision", { cookie });
+    assert.equal((await again.json()).revision, firstJson.revision);
+
+    const stateBefore = await api(app, "/api/state", { cookie }).then((response) => response.json());
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie,
+      body: { revision: stateBefore.revision, data: stateBefore.data },
+    });
+    assert.equal(saved.status, 200);
+    const second = await api(app, "/api/state/revision", { cookie });
+    assert.equal((await second.json()).revision, Number(firstJson.revision) + 1);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("a resident save survives a collection reminder the server created after the browser's read", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-reminder-save-"));
   const app = await startServer(dataDir);

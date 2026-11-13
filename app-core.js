@@ -508,6 +508,58 @@ sessionSyncChannel?.addEventListener("message", async (event) => {
   }
 });
 
+// Live updates: poll the cheap revision endpoint and adopt server changes only
+// when one exists. Polling /api/state/revision keeps the common case to a few
+// bytes; a full state fetch happens only when the revision actually moved.
+// Open forms are never disturbed: modal state and unsaved role-permission
+// drafts both pause adoption until the user finishes with them.
+const STATE_REFRESH_INTERVAL_MS = 30000;
+let stateRefreshTimer = null;
+
+async function checkForStateUpdates() {
+  if (!currentUser || currentUser.requiresPasswordChange || !Number.isSafeInteger(dataRevision) || dataRevision < 1) return false;
+  if (typeof modalState !== "undefined" && modalState) return false; // do not re-render an open form
+  if (typeof hasUnsavedPermissionChanges === "function" && hasUnsavedPermissionChanges()) return false;
+  let revisionResponse;
+  try {
+    revisionResponse = await fetch("/api/state/revision");
+  } catch (error) {
+    console.error("CommUnity could not check for updates.", error);
+    return false;
+  }
+  if (!revisionResponse.ok) return false;
+  const { revision } = await revisionResponse.json();
+  if (!Number.isSafeInteger(revision) || revision === dataRevision) return false;
+  let stateResponse;
+  try {
+    stateResponse = await fetch("/api/state");
+  } catch (error) {
+    console.error("CommUnity could not refresh state.", error);
+    return false;
+  }
+  const state = await stateResponse.json();
+  if (!stateResponse.ok || !state?.data) return false;
+  data = state.data;
+  currentUser = state.user ?? currentUser;
+  dataRevision = state.revision;
+  lastPersistedSnapshot = JSON.stringify(data);
+  if (typeof render === "function") render();
+  toast("Updated with the latest changes.", "success");
+  return true;
+}
+
+function startStateUpdates() {
+  if (stateRefreshTimer) return;
+  stateRefreshTimer = setInterval(() => {
+    checkForStateUpdates().catch((error) => console.error("CommUnity could not refresh.", error));
+  }, STATE_REFRESH_INTERVAL_MS);
+}
+
+function stopStateUpdates() {
+  clearInterval(stateRefreshTimer);
+  stateRefreshTimer = null;
+}
+
 function unreadCount(user = currentUser) {
   if (!user || !data.notifications) return 0;
   return data.notifications.filter((item) => item.targetEmail === user.email && !item.read).length;

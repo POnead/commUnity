@@ -6,11 +6,12 @@
   "main": "server/index.mjs",
   "scripts": {
     "start": "node server/index.mjs",
-    "test": "node --test \"test/*.test.mjs\" ./postgres-migration.test.mjs",
+    "test": "node --test --test-concurrency=1 \"test/*.test.mjs\" ./postgres-migration.test.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "rehearse:restore": "node scripts/rehearse-restore.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.13",

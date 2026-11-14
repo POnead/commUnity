@@ -9,9 +9,14 @@ export async function createDatabase({ dataDir, databaseUrl, poolMax, connection
   const setSessionTimeZone = (client) => client.query("SELECT set_config('TimeZone', $1, false)", [timeZone]);
   if (databaseUrl) {
     const { Pool } = await import("pg");
+    // A managed PostgreSQL provider that issues a private certificate (for example
+    // Amazon RDS) is not in the public root store. DATABASE_CA, holding the provider's
+    // CA bundle as PEM, lets the strict certificate check pass only for that CA;
+    // without it, the default public-root check applies and NODE_EXTRA_CA_CERTS also works.
+    const databaseCa = typeof process.env.DATABASE_CA === "string" && process.env.DATABASE_CA.trim() ? process.env.DATABASE_CA : null;
     const pool = new Pool({
       connectionString: databaseUrl,
-      ssl: { rejectUnauthorized: true },
+      ssl: databaseCa ? { rejectUnauthorized: true, ca: databaseCa } : { rejectUnauthorized: true },
       max: poolMax,
       connectionTimeoutMillis,
       idleTimeoutMillis: 30000,

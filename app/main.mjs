@@ -99,6 +99,7 @@ import {
   rolesPage,
   photoPreviewMarkup,
   rememberOpenPermissionGroups,
+  rememberOpenPermissionAccounts,
   hasUnsavedPermissionChanges,
   confirmLeaveWithUnsavedPermissions,
   activityResultsMarkup,
@@ -182,6 +183,9 @@ function routeState() {
 
 export function render() {
   if (!data) return;
+  // Keep expanded per-official override panels expanded when the live update
+  // refresh rebuilds the page; the DOM still shows the previous render here.
+  rememberOpenPermissionAccounts();
   const route = routeState();
   setState({ currentRoute: route });
   if (route.type !== "app" || route.role !== "resident" || route.page !== "report") {
@@ -1563,7 +1567,10 @@ async function requestEmailChange(form) {
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "The email change could not be requested.");
-  form.reset();
+  // The submit handler passes FormData, not the form element; reset the form
+  // itself so a successful request clears the fields instead of throwing after
+  // the verification email has already been sent.
+  (typeof form.reset === "function" ? form : document.getElementById("change-email-form"))?.reset();
   toast(result.message || "A verification link was sent to your new email address.", "success");
 }
 
@@ -2164,6 +2171,7 @@ async function handleAction(button, clickEvent) {
     stopStateUpdates();
     setState({ permissionDrafts: {} });
     setState({ permissionOpenGroups: {} });
+    setState({ permissionOpenAccounts: {} });
     setState({ selectedPermissionRole: "resident" });
     window.location.hash = "#/login";
     render();

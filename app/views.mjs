@@ -48,6 +48,7 @@ import {
   selectedPermissionRole,
   permissionDrafts,
   permissionOpenGroups,
+  permissionOpenAccounts,
   activityLogState,
   activityFilters,
 } from "./core.mjs";
@@ -1477,7 +1478,7 @@ export function rolesPage() {
           const override = data.accountOverrides?.[official.email] || {};
           const effective = effectivePermissions(official, data);
           const overrideCount = Object.keys(override).length;
-          return `<details class="permission-account">
+          return `<details class="permission-account" data-email="${esc(official.email)}" ${permissionOpenAccounts[official.email] ? "open" : ""}>
       <summary class="permission-account-head">
         <span class="permission-copy">
           <strong>${esc(official.name)}</strong>
@@ -1550,6 +1551,15 @@ export function rememberOpenPermissionGroups() {
   permissionOpenGroups[selectedPermissionRole] = [...app.querySelectorAll(".permission-group[open]")].map(
     (group) => group.dataset.permissionGroup,
   );
+}
+
+// Capture expanded per-official override panels before a rebuild so the live
+// update refresh does not collapse the panel the administrator is reading.
+export function rememberOpenPermissionAccounts() {
+  for (const email of Object.keys(permissionOpenAccounts)) delete permissionOpenAccounts[email];
+  for (const account of app.querySelectorAll("details.permission-account[open]")) {
+    if (account.dataset.email) permissionOpenAccounts[account.dataset.email] = true;
+  }
 }
 
 export function hasUnsavedPermissionChanges() {

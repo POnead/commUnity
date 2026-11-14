@@ -83,6 +83,9 @@ export let calendarSelectedDate = "";
 export let selectedPermissionRole = "resident";
 export let permissionDrafts = {};
 export let permissionOpenGroups = {};
+// Which per-official override panels the administrator has expanded. Kept so a
+// live-update rebuild does not collapse the panel while it is being read.
+export let permissionOpenAccounts = {};
 export let toastTimer;
 export let lastPersistedSnapshot = "";
 // The activity log is browsed from the server, so its page and filters live outside the shared state.
@@ -844,6 +847,7 @@ export function setState(changes = {}) {
     activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
     permissionDrafts: (v) => (permissionDrafts = v),
     permissionOpenGroups: (v) => (permissionOpenGroups = v),
+    permissionOpenAccounts: (v) => (permissionOpenAccounts = v),
     calendarMonth: (v) => (calendarMonth = v),
     calendarYear: (v) => (calendarYear = v),
     calendarSelectedDate: (v) => (calendarSelectedDate = v),
@@ -880,6 +884,7 @@ export function __setTestState(next = {}) {
     activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
     permissionDrafts: (v) => (permissionDrafts = v),
     permissionOpenGroups: (v) => (permissionOpenGroups = v),
+    permissionOpenAccounts: (v) => (permissionOpenAccounts = v),
     calendarMonth: (v) => (calendarMonth = v),
     calendarYear: (v) => (calendarYear = v),
     calendarSelectedDate: (v) => (calendarSelectedDate = v),

@@ -382,6 +382,48 @@ test("roles page renders role defaults, individual overrides, and effective perm
   assert.match(html, /Effective: Off/);
 });
 
+test("an expanded per-official override panel survives a live-update rebuild", async () => {
+  core.__setTestState({
+    data: {
+      version: 1,
+      users: [
+        { id: "u1", name: "Official One", email: "official.one@example.test", role: "official", status: "Active" },
+        { id: "u2", name: "Official Two", email: "official.two@example.test", role: "official", status: "Active" },
+      ],
+      reports: [],
+      schedules: [],
+      notifications: [],
+      activities: [],
+      announcements: [],
+      calendarEvents: [],
+      locations: [],
+      recyclingLocations: [],
+      permissions: { official: { manageReports: true } },
+      accountOverrides: {},
+    },
+    selectedPermissionRole: "official",
+    permissionDrafts: {},
+    permissionOpenGroups: {},
+    permissionOpenAccounts: {},
+    currentUser: { id: "admin", name: "Admin User", email: "admin@example.test", role: "administrator", area: "Palsara" },
+  });
+
+  // Only Official One's panel is expanded in the DOM when the refresh happens.
+  const selector = core.app.querySelectorAll;
+  core.app.querySelectorAll = (query) =>
+    query === "details.permission-account[open]" ? [{ dataset: { email: "official.one@example.test" } }] : [];
+  try {
+    views.rememberOpenPermissionAccounts();
+  } finally {
+    core.app.querySelectorAll = selector;
+  }
+
+  assert.deepEqual(core.permissionOpenAccounts, { "official.one@example.test": true });
+  const html = views.rolesPage();
+  assert.match(html, /data-email="official\.one@example\.test" open/);
+  assert.match(html, /data-email="official\.two@example\.test"\s+>/);
+});
+
 test("calendar events send paired map coordinates and keep them on records", async () => {
   const formFields = (latitude, longitude) => {
     const fields = new FormData();

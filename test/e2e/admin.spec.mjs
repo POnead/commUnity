@@ -62,6 +62,20 @@ async function confirm(page) {
   await page.locator("[data-confirm='accept']").click();
 }
 
+// The roles page refreshes itself every 30 seconds and rebuilds the DOM. The
+// app keeps an expanded override panel expanded across that rebuild, but a
+// blind summary click would collapse it, so only click when it is closed and
+// then assert the panel really is open before touching its controls.
+async function openOfficialOverrides(page) {
+  const details = page.locator("details.permission-account").filter({ hasText: OFFICIAL_EMAIL });
+  await expect(details).toBeVisible();
+  if (!(await details.evaluate((element) => element.open))) {
+    await details.locator("summary").click();
+  }
+  await expect(details).toHaveAttribute("open", "");
+  return details;
+}
+
 test.describe.configure({ mode: "serial" });
 
 test("1. administrator manages an account through the user interface", async ({ page }) => {
@@ -177,20 +191,18 @@ test("2. administrator edits role permissions and per-official overrides", async
   // Per-official override on the seeded official, then clear it.
   const details = page.locator("details.permission-account").filter({ hasText: OFFICIAL_EMAIL });
   await expect(details).toContainText(OFFICIAL_NAME);
-  await details.locator("summary").click();
+  await expect(details).not.toHaveAttribute("open", "");
   const reportsRow = details.locator(".permission-row").filter({ hasText: "Review and update reports" });
+
+  await openOfficialOverrides(page);
   await reportsRow.getByRole("button", { name: "Disable override" }).click();
   await page.locator(".confirm-modal").getByRole("button", { name: "Disable", exact: true }).click();
   await expect(page.locator("#toast")).toContainText("Barangay official permissions saved.");
   await expect(details).toContainText("Override: Disabled");
   await expect(details).toContainText("Effective: Off");
 
-  await details.locator("summary").click();
-  await details
-    .locator(".permission-row")
-    .filter({ hasText: "Review and update reports" })
-    .getByRole("button", { name: "Clear override" })
-    .click();
+  await openOfficialOverrides(page);
+  await reportsRow.getByRole("button", { name: "Clear override" }).click();
   await page.locator(".confirm-modal").getByRole("button", { name: "Clear override", exact: true }).click();
   await expect(page.locator("#toast")).toContainText(`Override cleared for ${OFFICIAL_NAME}.`);
   await expect(details).toContainText("Role default");

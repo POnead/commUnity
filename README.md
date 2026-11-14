@@ -138,28 +138,52 @@ Set `APP_TIME_ZONE` to another IANA zone only if the deployment serves a differe
 
 Deploy this Node.js project on a host that supports Node.js and connect a managed PostgreSQL database. Configure these values using the host's **secret/environment-variable settings**, not source code:
 
-| Variable                   | Value                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                 | `production`                                                                                                                                |
-| `PORT`                     | Supplied by the host                                                                                                                        |
-| `DATABASE_URL`             | PostgreSQL connection string with TLS enabled                                                                                               |
-| `APP_ORIGIN`               | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash)                                                  |
-| `APP_TIME_ZONE`            | Optional IANA time zone for calendar days, deadlines, reminders and log timestamps (default `Asia/Manila`)                                  |
-| `INITIAL_ADMIN_EMAIL`      | Email for the first administrator                                                                                                           |
-| `INITIAL_ADMIN_PASSWORD`   | Unique password of at least 8 characters                                                                                                    |
-| `PG_POOL_MAX`              | Optional PostgreSQL pool size per instance (default `10`, maximum `100`)                                                                    |
-| `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`)                                                                     |
-| `TRUSTED_PROXY_IPS`        | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For`                                                 |
-| `UPLOADS_DIR`              | Photo upload directory (default `data/uploads`); use persistent storage in deployments                                                      |
-| `SMTP_HOST`                | Optional SMTP server hostname                                                                                                               |
-| `SMTP_PORT`                | Optional SMTP port, usually `587` or `465`                                                                                                  |
-| `SMTP_USER`                | Optional SMTP username                                                                                                                      |
-| `SMTP_PASS`                | Optional SMTP password                                                                                                                      |
-| `SMTP_FROM`                | Optional sender address, for example `CommUnity <no-reply@example.com>`                                                                     |
+| Variable                   | Value                                                                                                                                                                                                                                                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                 | `production`                                                                                                                                                                                                                                                                                                               |
+| `PORT`                     | Supplied by the host                                                                                                                                                                                                                                                                                                       |
+| `DATABASE_URL`             | PostgreSQL connection string with TLS enabled. The server always verifies the database certificate                                                                                                                                                                                                                         |
+| `DATABASE_CA`              | Optional; PEM CA bundle for a managed database that issues its own private certificate (for example Amazon RDS). Trusts only that CA for the database connection                                                                                                                                                           |
+| `APP_ORIGIN`               | Exact public HTTPS origin, for example `https://community.example.com` (no trailing slash)                                                                                                                                                                                                                                 |
+| `APP_TIME_ZONE`            | Optional IANA time zone for calendar days, deadlines, reminders and log timestamps (default `Asia/Manila`)                                                                                                                                                                                                                 |
+| `INITIAL_ADMIN_EMAIL`      | Email for the first administrator                                                                                                                                                                                                                                                                                          |
+| `INITIAL_ADMIN_PASSWORD`   | Unique password of at least 8 characters                                                                                                                                                                                                                                                                                   |
+| `PG_POOL_MAX`              | Optional PostgreSQL pool size per instance (default `10`, maximum `100`)                                                                                                                                                                                                                                                   |
+| `PG_CONNECTION_TIMEOUT_MS` | Optional PostgreSQL connection timeout in milliseconds (default `5000`)                                                                                                                                                                                                                                                    |
+| `TRUSTED_PROXY_IPS`        | Optional comma-separated proxy IPs; only configure proxies that overwrite `X-Forwarded-For`                                                                                                                                                                                                                                |
+| `UPLOADS_DIR`              | Photo upload directory (default `data/uploads`); use persistent storage in deployments                                                                                                                                                                                                                                     |
+| `SMTP_HOST`                | Optional SMTP server hostname                                                                                                                                                                                                                                                                                              |
+| `SMTP_PORT`                | Optional SMTP port, usually `587` or `465`                                                                                                                                                                                                                                                                                 |
+| `SMTP_USER`                | Optional SMTP username                                                                                                                                                                                                                                                                                                     |
+| `SMTP_PASS`                | Optional SMTP password                                                                                                                                                                                                                                                                                                     |
+| `SMTP_FROM`                | Optional sender address, for example `CommUnity <no-reply@example.com>`                                                                                                                                                                                                                                                    |
 | `SMTP_SETTINGS_KEY`        | Optional; manages the key used to encrypt saved SMTP credentials. If unset, the server generates a random key file next to the data directory (`data/smtp-settings.key`) on first boot so email works with no setup. Set this to manage the key yourself — and keep it stable so saved credentials can always be decrypted |
 
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
 The `/api/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
+
+A managed database is verified only with a public CA by default. Providers that issue their own private certificate will not be trusted until `DATABASE_CA` (or the process-wide `NODE_EXTRA_CA_CERTS`) is set.
+
+### Persistent photo storage
+
+Concern photos and profile photos are files, not database rows. Point `UPLOADS_DIR` at a **persistent disk or volume**, not the ephemeral application filesystem, and mount it at the same path on every instance:
+
+| Host type                 | What to do                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Render / Railway / Fly.io | Attach a persistent disk/volume and set `UPLOADS_DIR` to its mount path (for example `/var/data/community/uploads`) |
+| Docker / Kubernetes       | Mount a named volume or persistent volume claim at `UPLOADS_DIR`; do not store uploads in the image layer           |
+| Single VPS                | Use a directory outside the deploy/release folder so a redeploy does not delete it                                  |
+
+If the disk is lost, the database rows survive but every photo returns 404; restore the photo backup alongside the database. Photos are served only through authenticated routes (`/api/reports/:id/photos/...` and `/api/profile-photo/:id`), and resident access is limited to their own concern photos. Do not put `UPLOADS_DIR` behind the static file server or make it publicly listable.
+
+### External uptime monitoring
+
+Use a monitor outside the hosting provider to detect an outage that also takes down the provider's own checks. Point it at `https://<your-domain>/api/healthz` and alert when:
+
+- the request fails, times out, or returns anything other than `200`, and
+- the JSON body no longer contains `"status":"ok"` and `"database":"available"` (the endpoint returns `503` with `"database":"unavailable"` when PostgreSQL cannot be reached).
+
+Send an alert to a channel someone actually watches, and test the alert path once. Forward the server's structured error logs to an operational logging service; the in-app monitoring page is a summary of loaded records, not an independent uptime check.
 
 Schema setup is applied at startup. The database uses separate tables for accounts and password hashes, reports and status history, report photos, schedules and reminder deduplication, notifications, role permissions, activity, announcements, community locations, and recycling listings, with foreign keys, checks, and indexes. Sessions are stored as hashes in PostgreSQL. Configure the provider's automated backups and test restore procedures before using real information.
 
@@ -174,6 +198,16 @@ Rehearse a restore before real resident records live in this database.
 - **Managed PostgreSQL:** take a logical dump with `pg_dump` (for example `pg_dump --format=custom --file=backup.dump "$DATABASE_URL"`) and restore with `pg_restore` into a fresh database before going live and after every meaningful schema change. A restore into a migrated database is safe as long as the migration-owned seed rows (`schema_migrations`, `app_meta`, `role_permissions`, `community_locations`) are matched on conflict rather than duplicated. The rehearsed restore procedure recovers a logical dump into a freshly migrated database and verifies the row count of every public table.
 - **Local PGlite:** the database lives entirely in `data/pglite/`. Stop the server, copy the directory to backup storage, and restore by stopping the server and replacing the directory with the backup copy. Do not copy the directory while the server is running.
 - **Uploaded photos:** are stored in `data/uploads/` (or `UPLOADS_DIR`), not in either database, and need their own backup. Photo backups must be restored alongside the matching database.
+
+The same round trip — dump, restore into a fresh database, then verify every table — is automated against a throwaway PostgreSQL 18 cluster:
+
+```powershell
+# pg_dump/pg_restore must be on PATH, or point PG_BIN at the PostgreSQL bin directory.
+$env:PG_BIN = "C:\Program Files\PostgreSQL\18\bin"
+npm run rehearse:restore
+```
+
+It seeds a representative row set, takes a custom-format dump, restores it into an empty database, reruns the startup migration, and fails if any table's row count or content checksum differs. Run it after a schema change and before the first real deployment.
 
 ## Security notes
 
@@ -198,6 +232,8 @@ Run the API, authentication, role-access, and persistence checks with:
 ```powershell
 npm test
 ```
+
+The suite runs one file at a time. Every file starts its own database and HTTP server, and running them in parallel makes Windows contend for the embedded PostgreSQL and WASM database resources, which produces false failures and occasional cleanup hangs.
 
 Browser end-to-end tests live in `test/e2e/` and drive a real Chromium through the critical paths (register, sign in, report submission with a map pin and photos, official review, notifications, reopening, announcement approval, collection schedules, and form preservation during the automatic refresh). They use a throwaway embedded database seeded by the test server, so nothing is shared between runs.
 

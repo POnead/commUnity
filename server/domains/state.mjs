@@ -1,4 +1,6 @@
 import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
+import { hash } from "../platform/crypto.mjs";
+import { recordAttempt } from "../platform/ratelimit.mjs";
 import { MAX_STATE_BYTES } from "../platform/constants.mjs";
 import { hasPermission, publicUser, requireRole, getSessionUser, readVisibility } from "../platform/session.mjs";
 import {
@@ -18,7 +20,7 @@ import { REPORT_TRANSITIONS, insertReport, replaceReport, validateReport } from 
 import { syncSchedules } from "./schedules.mjs";
 import { syncLocations, syncRecyclingLocations } from "./locations.mjs";
 import { syncNotifications, insertNotification, validateNotificationsReadOnly } from "./notifications.mjs";
-import { syncActivities } from "./activity.mjs";
+import { syncActivities, insertActivity } from "./activity.mjs";
 
 export function validateState(data) {
   if (
@@ -106,14 +108,16 @@ function withholdState(state, user, visibility) {
   // Reports carry descriptions and photo metadata.
   const reportsVisible = user.role === "resident" ? visibility.submitReports : visibility.manageReports;
   if (!reportsVisible) state.reports = [];
-  // Schedules need the schedule permission of the caller's role.
+  // Schedules need the schedule permission of the caller's role. Calendar events
+  // are managed through the same endpoints with the same permission, so they
+  // follow the schedule grant, not the announcement grant.
   const schedulesVisible = user.role === "resident" ? visibility.viewSchedules : visibility.manageSchedules;
-  if (!schedulesVisible) state.schedules = [];
-  // Announcement information and pending events: staff workspace.
-  if (staff && !visibility.manageAnnouncements) {
-    state.announcements = [];
-    state.calendarEvents = [];
+  if (!schedulesVisible) {
+    state.schedules = [];
+    if (staff) state.calendarEvents = [];
   }
+  // Announcements are a staff workspace kept apart from the calendar.
+  if (staff && !visibility.manageAnnouncements) state.announcements = [];
   // Activities are the administrator's audit log.
   if (user.role === "administrator" && !visibility.viewAudit) state.activities = [];
   // Account management: administrators without it get the officials' card view.
@@ -388,6 +392,14 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
   const before = await readFullState(db, user);
   const visibleBefore = stateForRole(before, user);
   const visibility = await readVisibility(db, user);
+  // A new concern emails every active official and administrator. A resident may not
+  // file more than a few concerns inside one window, bounding staff mail even if the
+  // save is refused and rolls back after this point.
+  if (user?.role === "resident" && Array.isArray(body.data?.reports)) {
+    const known = new Set(visibleBefore.reports.map((report) => report.id));
+    const adding = body.data.reports.filter((report) => report && !known.has(report.id)).length;
+    if (adding) await recordAttempt(db, hash(`report-submit:${user.id}`), 10);
+  }
   let nextRevision = 0;
   await withTransaction(db, async (transaction) => {
     const db = transaction;
@@ -450,12 +462,14 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       if (!jsonEqual(immutableAccount(oldAccount), immutableAccount(nextAccount)))
         throw new HttpError(403, "Residents cannot change account access or sign-in details.");
       validateAccount(nextAccount);
+      const afterReportsById = new Map(after.reports.map((report) => [report.id, report]));
       for (const oldReport of visibleBefore.reports) {
-        const incoming = after.reports.find((report) => report.id === oldReport.id);
+        const incoming = afterReportsById.get(oldReport.id);
         if (!incoming || !jsonEqual(comparableReport(oldReport), comparableReport(incoming)))
           throw new HttpError(403, "Existing reports cannot be changed by residents.");
       }
-      const addedReports = after.reports.filter((report) => !visibleBefore.reports.some((old) => old.id === report.id));
+      const visibleReportIds = new Set(visibleBefore.reports.map((report) => report.id));
+      const addedReports = after.reports.filter((report) => !visibleReportIds.has(report.id));
       if (addedReports.length && !(await hasPermission(db, user, "submitReports"))) {
         throw new HttpError(403, "Submitting concerns is not enabled for this role.");
       }
@@ -493,7 +507,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         user.id,
       ]);
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
-      await syncActivities(db, visibleBefore.activities, after.activities, user);
+      await syncActivities(db, visibleBefore.activities, after.activities);
       for (const report of addedReports) {
         report.name = nextAccount.name;
         if (report.assignedTo) throw new HttpError(403, "New reports cannot be assigned by residents.");
@@ -524,6 +538,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           `Your concern ${report.id} was submitted and is now on file.`,
           report.id,
         );
+        await insertActivity(db, user, report.urgent ? "Submitted an urgent concern" : "Submitted a concern", `${report.id} · ${report.title}`);
       }
     } else if (user.role === "official") {
       // Officials are never allowed to change accounts, so the client's copy of
@@ -548,8 +563,9 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       }
       if (after.reports.length !== visibleBefore.reports.length)
         throw new HttpError(403, "Officials cannot add or remove resident reports.");
+      const afterReportsById = new Map(after.reports.map((report) => [report.id, report]));
       for (const oldReport of visibleBefore.reports) {
-        const incoming = after.reports.find((report) => report.id === oldReport.id);
+        const incoming = afterReportsById.get(oldReport.id);
         if (!incoming) throw new HttpError(403, "Officials cannot remove resident reports.");
         if (!jsonEqual(comparableReport(oldReport), comparableReport(incoming))) {
           const previousCore = comparableReport(oldReport, true);
@@ -624,7 +640,16 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           }
           validateReport(incoming);
           await replaceReport(db, incoming);
+          if (assignmentChanged) {
+            await insertActivity(
+              db,
+              user,
+              incoming.assignedTo ? "Claimed a concern" : "Released a concern",
+              `${incoming.id} · ${incoming.title}`,
+            );
+          }
           if (validStatusUpdate) {
+            await insertActivity(db, user, "Updated a report", `${incoming.id} · ${incoming.status}`);
             await insertNotification(
               db,
               incoming.userEmail,
@@ -643,7 +668,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       }
       await syncSchedules(db, visibleBefore.schedules, after.schedules, user);
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
-      await syncActivities(db, visibleBefore.activities, after.activities, user);
+      await syncActivities(db, visibleBefore.activities, after.activities);
     } else {
       requireRole(user, ["administrator"]);
       // Hiding a restricted page or button is not access control. An administrator
@@ -672,7 +697,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       const locationsChanged =
         !jsonEqual(before.locations, after.locations) || !jsonEqual(before.recyclingLocations, after.recyclingLocations);
       if (locationsChanged && !(await hasPermission(db, user, "manageUsers")))
-        throw new HttpError(403, "Account management is not enabled for this role.");
+        throw new HttpError(403, "Location and directory settings are bundled with account management for this role.");
       const permissionsChanged =
         !jsonEqual(before.permissions, after.permissions) || !jsonEqual(before.accountOverrides || {}, after.accountOverrides || {});
       if (permissionsChanged && !(await hasPermission(db, user, "manageRoles")))
@@ -727,12 +752,16 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           if (old.role === "official" && account.role !== "official") {
             await db.query("UPDATE users SET permission_overrides='{}'::jsonb WHERE id=$1", [account.id]);
           }
+          if (!jsonEqual(old, account)) {
+            await insertActivity(db, user, "Updated user account", `${account.name.trim()} · ${account.role}`);
+          }
         }
         const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
         if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
       }
+      const adminAfterReportsById = new Map(after.reports.map((report) => [report.id, report]));
       for (const old of before.reports) {
-        const incoming = after.reports.find((report) => report.id === old.id);
+        const incoming = adminAfterReportsById.get(old.id);
         if (!incoming) throw new HttpError(403, "Reports cannot be deleted from the administrator workspace.");
         if (!jsonEqual(old.assignedTo, incoming.assignedTo) || !jsonEqual(old.history, incoming.history)) {
           throw new HttpError(403, "Report assignments and status history can only be changed through the concern queue.");
@@ -749,18 +778,19 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         incoming.updatedAt = old.updatedAt;
       }
       for (const report of after.reports) {
-        const old = before.reports.find((item) => item.id === report.id);
+        const old = beforeReportsById.get(report.id);
         if (old && jsonEqual(comparableReport(old), comparableReport(report))) continue;
         await replaceReport(db, report);
       }
       await syncSchedules(db, before.schedules, after.schedules, user);
-      await syncLocations(db, before.locations, after.locations);
-      await syncRecyclingLocations(db, before.recyclingLocations, after.recyclingLocations);
+      await syncLocations(db, before.locations, after.locations, user);
+      await syncRecyclingLocations(db, before.recyclingLocations, after.recyclingLocations, user);
       if (!jsonEqual(before.announcements, after.announcements))
         throw new HttpError(403, "Announcements cannot be changed through this workspace.");
       if (!jsonEqual(before.calendarEvents, after.calendarEvents))
         throw new HttpError(403, "Calendar events cannot be changed through this workspace.");
       await syncNotifications(db, visibleBefore.notifications, after.notifications, user);
+      const changedPermissions = [];
       for (const role of ROLES) {
         if (!after.permissions[role] || typeof after.permissions[role] !== "object")
           throw new HttpError(400, "Role permissions are invalid.");
@@ -770,11 +800,15 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         for (const [permission, enabled] of Object.entries(after.permissions[role])) {
           if (typeof enabled !== "boolean" || !Object.hasOwn(PERMISSIONS[role], permission))
             throw new HttpError(400, "Role permissions are invalid.");
+          if (before.permissions?.[role]?.[permission] !== enabled) changedPermissions.push([role, permission]);
           await db.query(
             "INSERT INTO role_permissions(role,permission,enabled) VALUES($1,$2,$3) ON CONFLICT(role,permission) DO UPDATE SET enabled=excluded.enabled",
             [role, permission, enabled],
           );
         }
+      }
+      for (const [role, permission] of changedPermissions) {
+        await insertActivity(db, user, "Changed role permission", `${role} · ${permission}`);
       }
       const nextOverrides = after.accountOverrides || {};
       const beforeAccounts = new Map(before.users.map((account) => [account.id, account]));
@@ -810,7 +844,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       `);
       if (!capableAdmins.rows.length)
         throw new HttpError(400, "Keep at least one active administrator with both account and role management enabled.");
-      await syncActivities(db, before.activities, after.activities, user);
+      await syncActivities(db, before.activities, after.activities);
     }
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     nextRevision = Number(revision.rows[0].revision) + 1;

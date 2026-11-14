@@ -162,6 +162,8 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
 The `/api/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
 
+SMTP settings saved from the website take effect on the instance that saved them immediately. Other instances keep the settings they loaded at boot until they restart — either restart every instance after saving SMTP settings, or configure the SMTP values as environment variables on every instance instead of saving them in the UI.
+
 A managed database is verified only with a public CA by default. Providers that issue their own private certificate will not be trusted until `DATABASE_CA` (or the process-wide `NODE_EXTRA_CA_CERTS`) is set.
 
 ### Deployment rehearsals

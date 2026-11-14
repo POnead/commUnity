@@ -3,8 +3,7 @@ import path from "node:path";
 import express from "express";
 import { createApiRouter } from "./api-router.mjs";
 import { CONTENT_TYPES, MAX_STATE_BYTES } from "./constants.mjs";
-
-export { CONTENT_TYPES, MAX_STATE_BYTES };
+import { sendJson } from "./http.mjs";
 
 // The frontend is buildless ES modules under app/. Serve the directory — every
 // file under it is public app code — rather than maintain a per-file allowlist.
@@ -24,11 +23,6 @@ const PUBLIC_FILES = new Set([
   "node_modules/leaflet/dist/images/marker-icon-2x.png",
   "node_modules/leaflet/dist/images/marker-shadow.png",
 ]);
-
-function sendJson(response, status, value) {
-  response.writeHead(status, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(value));
-}
 
 function addSecurityHeaders(response, secure) {
   response.setHeader("Cache-Control", "no-store");
@@ -95,10 +89,19 @@ export function createExpressApp({
         response.writeHead(404).end("Not found");
         return;
       }
-      const body = await readFile(path.join(projectDir, filename));
+      let body;
+      try {
+        body = await readFile(path.join(projectDir, filename));
+      } catch (error) {
+        if (error.code === "ENOENT" || error.code === "EISDIR") {
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        throw error;
+      }
       response.writeHead(200, {
         "Content-Length": body.length,
-        "Content-Type": CONTENT_TYPES[path.extname(filename)],
+        "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
         "Cache-Control": filename === "index.html" ? "no-cache" : "public, max-age=300",
       });
       response.end(request.method === "HEAD" ? undefined : body);

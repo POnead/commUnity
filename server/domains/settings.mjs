@@ -44,6 +44,7 @@ export async function handleSettings(request, response, db, options, user) {
       [encryptSettings(settings, smtpSettingsKey)],
     );
     mailerState.settings = settings;
+    // shortcut: the in-memory mailer is per-process; other instances keep the settings they loaded at boot until restart, and the Database row is only re-read at boot. Upgrade path: reload-and-compare on a timer if SMTP changes become routine.
     mailerState.mailer = createMailer({
       smtpHost: settings.host,
       smtpPort: settings.port,

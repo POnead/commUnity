@@ -16,6 +16,7 @@ import {
   DEFAULT_OFFICIAL_DAYS,
 } from "../platform/validate.mjs";
 import { MAX_PHOTO_BYTES, PHOTO_EXTENSIONS, photoExtension } from "../platform/uploads.mjs";
+import { logError } from "../platform/log.mjs";
 import { ROLES } from "../platform/roles.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { insertActivity } from "./activity.mjs";
@@ -28,6 +29,30 @@ import { sendRecoveryVerification } from "./auth.mjs";
 function profilePhotoFilenameFromUrl(photoUrl) {
   const match = String(photoUrl || "").match(/^\/api\/profile-photo\/[^/]+\/([A-Za-z0-9._-]+\.(jpg|png))$/);
   return match ? match[1] : null;
+}
+
+// Every committed photo is a unique, immutable file: write it as <name>.tmp and
+// rename into place. The previous image is deleted only after the database
+// reference to the new one is committed.
+async function writeProfilePhoto(profileDir, userId, extension, data) {
+  const filename = `${userId}.${randomUUID()}${extension}`;
+  const filePath = path.join(profileDir, filename);
+  const temporaryPath = path.join(profileDir, `${filename}.tmp`);
+  try {
+    await writeFile(temporaryPath, data);
+    await rename(temporaryPath, filePath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => {});
+    throw error;
+  }
+  return { filename, filePath, photoUrl: `/api/profile-photo/${encodeURIComponent(userId)}/${filename}` };
+}
+
+async function removeProfilePhoto(profileDir, previousPhotoUrl, keepFilename) {
+  const previous = profilePhotoFilenameFromUrl(previousPhotoUrl);
+  if (previous && previous !== keepFilename) {
+    await unlink(path.join(profileDir, previous)).catch(() => {});
+  }
 }
 
 export async function createUser(db, user, body) {
@@ -142,7 +167,7 @@ export async function handleUsers(request, response, db, options, user) {
     // Every committed photo is a unique, immutable file: the previous image is only deleted
     // after the database commit that references the new one has succeeded, so a failed
     // save can never leave the database pointing at a file that no longer exists.
-    const previousPhotoFilename = profilePhotoFilenameFromUrl(previousPhotoUrl);
+    const profileDir = path.join(uploadsDir, "profiles");
     let renamedPhoto = null;
     try {
       await withTransaction(db, async (transaction) => {
@@ -156,21 +181,10 @@ export async function handleUsers(request, response, db, options, user) {
           user.id,
         ]);
         if (photoFile) {
-          const profileDir = path.join(uploadsDir, "profiles");
           await mkdir(profileDir, { recursive: true });
-          const filename = `${user.id}.${randomUUID()}${photoExtension_}`;
-          const filePath = path.join(profileDir, filename);
-          const temporaryPath = path.join(profileDir, `${filename}.tmp`);
-          const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}/${filename}`;
-          try {
-            await writeFile(temporaryPath, photoFile.data);
-            await rename(temporaryPath, filePath);
-          } catch (error) {
-            await unlink(temporaryPath).catch(() => {});
-            throw error;
-          }
-          renamedPhoto = filePath;
-          await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
+          const written = await writeProfilePhoto(profileDir, user.id, photoExtension_, photoFile.data);
+          renamedPhoto = written.filePath;
+          await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [written.photoUrl, user.id]);
         }
         if (emailChanged) {
           await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [user.id]);
@@ -192,10 +206,16 @@ export async function handleUsers(request, response, db, options, user) {
     }
     // The transaction committed and the database now references only the new
     // image; the previous image may safely leave the filesystem.
-    if (previousPhotoFilename && renamedPhoto && previousPhotoFilename !== path.basename(renamedPhoto)) {
-      await unlink(path.join(uploadsDir, "profiles", previousPhotoFilename)).catch(() => {});
+    if (renamedPhoto) await removeProfilePhoto(profileDir, previousPhotoUrl, path.basename(renamedPhoto));
+    let verificationSent = false;
+    if (needsVerification) {
+      try {
+        verificationSent = await sendRecoveryVerification(db, options, request, user, recoveryEmail);
+      } catch (error) {
+        // The profile is committed; a mail failure must not turn this save into an error.
+        logError("CommUnity could not send the recovery verification email.", error, { path: url.pathname, userId: user.id });
+      }
     }
-    const verificationSent = needsVerification ? await sendRecoveryVerification(db, options, request, user, recoveryEmail) : false;
     const updatedUser = await getSessionUser(request, db);
     const [state, revision] = await Promise.all([readFullState(db, updatedUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
     sendJson(response, 200, {
@@ -346,29 +366,14 @@ export async function handleUsers(request, response, db, options, user) {
     const previousPhotoUrl = stored.rows[0]?.photo_url || "";
     const profileDir = path.join(uploadsDir, "profiles");
     await mkdir(profileDir, { recursive: true });
-    // Every upload writes a unique, immutable file — the previous image is
-    // deleted only after the new reference has been committed to the database.
-    const filename = `${user.id}.${randomUUID()}${extension}`;
-    const filePath = path.join(profileDir, filename);
-    const temporaryPath = path.join(profileDir, `${filename}.tmp`);
-    const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}/${filename}`;
-    try {
-      await writeFile(temporaryPath, file.data);
-      await rename(temporaryPath, filePath);
-    } catch (error) {
-      await unlink(temporaryPath).catch(() => {});
-      throw error;
-    }
+    const { filename, filePath, photoUrl } = await writeProfilePhoto(profileDir, user.id, extension, file.data);
     try {
       await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
     } catch (error) {
       await unlink(filePath).catch(() => {});
       throw error;
     }
-    const previousPhotoFilename = profilePhotoFilenameFromUrl(previousPhotoUrl);
-    if (previousPhotoFilename && previousPhotoFilename !== filename) {
-      await unlink(path.join(profileDir, previousPhotoFilename)).catch(() => {});
-    }
+    await removeProfilePhoto(profileDir, previousPhotoUrl, filename);
     sendJson(response, 201, { photoUrl });
     return true;
   }

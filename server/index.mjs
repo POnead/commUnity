@@ -146,7 +146,7 @@ export async function createCommunityServer({
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 8768);
-  const { server, close } = await createCommunityServer({ port });
+  const { server, close } = await createCommunityServer();
   server.listen(port, process.env.DATABASE_URL ? "0.0.0.0" : "127.0.0.1", () => {
     console.log(`CommUnity running on port ${port}.`);
     console.log(`Open the website: ${process.env.APP_ORIGIN || `http://127.0.0.1:${port}`}`);

@@ -6,10 +6,11 @@ import { PERMISSIONS } from "../platform/roles.mjs";
 import migration001 from "./migrations/001-initial.mjs";
 import migration002 from "./migrations/002-additive.mjs";
 import migration003 from "./migrations/003-email-change-tokens.mjs";
+import migration004 from "./migrations/004-web-sessions-user-index.mjs";
 
 // The migrations are numbered files so a fresh deployment and an old database
 // both walk the same path. Never edit an applied migration — add a new one.
-export const MIGRATIONS = [migration001, migration002, migration003];
+export const MIGRATIONS = [migration001, migration002, migration003, migration004];
 
 async function readAppliedMigrationVersions(db) {
   const result = await db.query("SELECT version FROM schema_migrations ORDER BY version");

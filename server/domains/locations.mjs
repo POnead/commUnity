@@ -1,5 +1,6 @@
 import { HttpError, sendJson } from "../platform/http.mjs";
 import { jsonEqual, validId } from "../platform/validate.mjs";
+import { insertActivity } from "./activity.mjs";
 
 function validateLocations(locations) {
   const areas = new Set();
@@ -31,7 +32,7 @@ function validateLocations(locations) {
   }
 }
 
-export async function syncLocations(db, oldLocations, newLocations) {
+export async function syncLocations(db, oldLocations, newLocations, user) {
   validateLocations(newLocations);
   const oldById = new Map(oldLocations.map((item) => [item.id, item]));
   const newById = new Map(newLocations.map((item) => [item.id, item]));
@@ -54,6 +55,14 @@ export async function syncLocations(db, oldLocations, newLocations) {
     `,
       [item.id, item.area.trim(), item.barangay.trim(), item.street.trim(), item.purok.trim(), item.landmark.trim()],
     );
+    if (user) {
+      await insertActivity(
+        db,
+        user,
+        old ? "Updated a community location" : "Added a community location",
+        `${item.area.trim()} · ${item.barangay.trim()}`,
+      );
+    }
   }
   for (const old of oldLocations) {
     if (newById.has(old.id)) continue;
@@ -64,6 +73,7 @@ export async function syncLocations(db, oldLocations, newLocations) {
     if (references.rows[0].used)
       throw new HttpError(409, "This location is already used by an account, report, or schedule and cannot be removed.");
     await db.query("DELETE FROM community_locations WHERE id=$1", [old.id]);
+    if (user) await insertActivity(db, user, "Removed a community location", old.area);
   }
 }
 
@@ -102,7 +112,7 @@ function validateRecyclingLocations(locations) {
   }
 }
 
-export async function syncRecyclingLocations(db, oldLocations, newLocations) {
+export async function syncRecyclingLocations(db, oldLocations, newLocations, user) {
   validateRecyclingLocations(newLocations);
   const oldById = new Map(oldLocations.map((item) => [item.id, item]));
   const newById = new Map(newLocations.map((item) => [item.id, item]));
@@ -130,10 +140,16 @@ export async function syncRecyclingLocations(db, oldLocations, newLocations) {
           item.active,
         ],
       );
+      if (user) {
+        await insertActivity(db, user, old ? "Updated a recycling directory listing" : "Added a recycling directory listing", item.name.trim());
+      }
     }
   }
   for (const old of oldLocations) {
-    if (!newById.has(old.id)) await db.query("DELETE FROM recycling_locations WHERE id=$1", [old.id]);
+    if (!newById.has(old.id)) {
+      await db.query("DELETE FROM recycling_locations WHERE id=$1", [old.id]);
+      if (user) await insertActivity(db, user, "Removed a recycling directory listing", old.name);
+    }
   }
 }
 

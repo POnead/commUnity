@@ -1,116 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, sendJson } from "../platform/http.mjs";
 import { requireRole, hasPermission } from "../platform/session.mjs";
-import { jsonEqual, validId } from "../platform/validate.mjs";
+import { jsonEqual } from "../platform/validate.mjs";
 import { timestamp } from "../platform/time.mjs";
 import { withTransaction } from "../platform/db.mjs";
 
-// Residents and officials may only record activities the server can verify actually
-// happened. An administrator is trusted to manage the system, but the log is still
-// written from operations the server itself performed, so administrative appends are
-// held to the same server-generated action vocabulary instead of accepting any text.
-const RESIDENT_ACTIVITY_ACTIONS = new Set(["Submitted a concern", "Submitted an urgent concern"]);
-
-const OFFICIAL_ACTIVITY_ACTIONS = new Set([
-  "Updated a report",
-  "Claimed a concern",
-  "Released a concern",
-  "Changed a collection status",
-  "Updated a collection schedule",
-  "Added a collection schedule",
-  "Removed a collection schedule",
-]);
-
-const ADMIN_ACTIVITY_ACTIONS = new Set([
-  ...OFFICIAL_ACTIVITY_ACTIONS,
-  "Added user account",
-  "Created resident account",
-  "Changed account password",
-  "Changed account email",
-  "Set recovery email",
-  "Removed recovery email",
-  "Updated profile information",
-  "Updated user account",
-  "Deactivated user account",
-  "Reactivated user account",
-  "Submitted an announcement",
-  "Published an announcement",
-  "Updated an announcement",
-  "Approved an announcement",
-  "Declined an announcement",
-  "Removed an announcement",
-  "Approved a calendar event",
-  "Declined a calendar event",
-  "Added a community location",
-  "Updated a community location",
-  "Removed a community location",
-  "Added a recycling directory listing",
-  "Updated a recycling directory listing",
-  "Removed a recycling directory listing",
-  "Changed role permission",
-]);
-
-function activityActionsFor(user) {
-  if (user.role === "resident") return RESIDENT_ACTIVITY_ACTIONS;
-  if (user.role === "official") return OFFICIAL_ACTIVITY_ACTIONS;
-  if (user.role === "administrator") return ADMIN_ACTIVITY_ACTIONS;
-  return null;
-}
-
-function validateActivityAppend(oldItems, newItems, user) {
-  // Activities are append-only. The server may write newer rows (a failed sign-in,
-  // a refused request) between the client's read and its save, so match by id
-  // instead of by position; a newer row at the front must not look like an edit.
+// Activities are append-only server history. The server writes the log itself
+// inside the same transaction as the operation it records; the browser's copy is
+// never an authority. A row the client sends that the server did not create is
+// ignored, not validated and not stored. Existing rows are immutable: altering
+// one is refused.
+function validateActivityUnchanged(oldItems, newItems) {
   const oldById = new Map(oldItems.map((item) => [item.id, item]));
-  const allowedActions = activityActionsFor(user);
   for (const item of newItems) {
     const old = oldById.get(item?.id);
-    if (old) {
-      if (!jsonEqual(old, item)) throw new HttpError(403, "Activity history cannot be altered.");
-      continue;
-    }
-    if (
-      !item ||
-      !validId(item.id) ||
-      item.actor !== user.name ||
-      item.role !== user.role ||
-      typeof item.action !== "string" ||
-      item.action.length > 100 ||
-      typeof item.detail !== "string" ||
-      item.detail.length > 1000 ||
-      typeof item.result !== "string" ||
-      item.result.length > 80 ||
-      typeof item.at !== "string" ||
-      Number.isNaN(Date.parse(item.at))
-    ) {
-      throw new HttpError(400, "Activity entry is invalid.");
-    }
-    if (allowedActions !== null && !allowedActions.has(item.action)) {
-      throw new HttpError(403, "You cannot record this activity.");
-    }
+    if (old && !jsonEqual(old, item)) throw new HttpError(403, "Activity history cannot be altered.");
   }
 }
 
-export async function syncActivities(db, oldItems, newItems, user) {
-  validateActivityAppend(oldItems, newItems, user);
-  const oldIds = new Set(oldItems.map((item) => item.id));
-  const appended = newItems.filter((item) => !oldIds.has(item.id));
-  if (!appended.length) return;
-  // The archive job may move a record out of the live log while the browser
-  // still holds it. Such a row is server history, not a client append, and must
-  // never be written back into the live table.
-  const archived = await db.query("SELECT id FROM activity_archive WHERE id = ANY($1::text[])", [appended.map((item) => item.id)]);
-  const archivedIds = new Set(archived.rows.map((row) => row.id));
-  // The server owns the activity clock: a client cannot backdate or forward-date
-  // an event, and the actor is always the authenticated account.
-  const at = new Date().toISOString();
-  for (const item of appended) {
-    if (archivedIds.has(item.id)) continue;
-    await db.query(
-      "INSERT INTO activities (id,actor,role,action,detail,at,result) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING",
-      [item.id, user.name, user.role, item.action, item.detail.slice(0, 1000), at, item.result.slice(0, 80)],
-    );
-  }
+export async function syncActivities(db, oldItems, newItems) {
+  validateActivityUnchanged(oldItems, newItems);
 }
 
 export async function insertActivity(

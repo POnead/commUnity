@@ -3,8 +3,9 @@ import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 
 // PostgreSQL session settings drive CURRENT_DATE, and every pooled connection starts
-// from the server default. Pin the zone on each acquired connection so a managed
-// database running in UTC still reports the barangay's calendar day.
+// from the server default. PGlite takes its zone from its own session; managed
+// PostgreSQL gets the zone through the startup packet (`options`), so no extra
+// round trip is paid per borrowed connection.
 export async function createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeoutMillis, timeZone }) {
   const setSessionTimeZone = (client) => client.query("SELECT set_config('TimeZone', $1, false)", [timeZone]);
   if (databaseUrl) {
@@ -20,26 +21,8 @@ export async function createDatabase({ dataDir, databaseUrl, poolMax, connection
       max: poolMax,
       connectionTimeoutMillis,
       idleTimeoutMillis: 30000,
+      options: `-c TimeZone=${timeZone}`,
     });
-    const acquire = pool.connect.bind(pool);
-    pool.connect = async (...args) => {
-      const client = await acquire(...args);
-      try {
-        await setSessionTimeZone(client);
-      } catch (error) {
-        client.release();
-        throw error;
-      }
-      return client;
-    };
-    pool.query = async (text, values) => {
-      const client = await pool.connect();
-      try {
-        return await client.query(text, values);
-      } finally {
-        client.release();
-      }
-    };
     await pool.query("SELECT 1");
     return pool;
   }

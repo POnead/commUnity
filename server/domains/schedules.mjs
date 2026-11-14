@@ -3,7 +3,9 @@ import { assertKnownArea, jsonEqual, validId, validISODate } from "../platform/v
 import { appDateLabel, getAppTimeZone } from "../platform/time.mjs";
 import { ROLES } from "../platform/roles.mjs";
 import { insertNotification } from "./notifications.mjs";
+import { insertActivity } from "./activity.mjs";
 import { queueEmail } from "../platform/email.mjs";
+import { withTransaction } from "../platform/db.mjs";
 
 export const SCHEDULE_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
 
@@ -283,6 +285,13 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
       await db.query("DELETE FROM schedules WHERE id=$1", [item.id]);
     }
   }
+  // Fan out per area once; bulk edits send one summary per resident instead of one
+  // notification per row. The UI edits one occurrence at a time.
+  const updatesByArea = new Map();
+  const addUpdate = (area, entry) => {
+    if (!updatesByArea.has(area)) updatesByArea.set(area, []);
+    updatesByArea.get(area).push(entry);
+  };
   const additionsByGroup = new Map();
   for (const id of changed) {
     const schedule = newById.get(id);
@@ -293,19 +302,58 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
       continue;
     }
     const removed = oldById.get(id);
-    const message = schedule
-      ? scheduleUpdateMessage(schedule)
-      : `${removed.wasteType} collection previously scheduled for ${removed.area} has been removed.`;
-    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [
-      (schedule || removed).area,
-    ]);
-    for (const resident of residents.rows)
-      await insertNotification(
+    addUpdate((schedule || removed).area, {
+      title: schedule ? `Collection update for ${schedule.area}` : "Collection schedule removed",
+      message: schedule
+        ? scheduleUpdateMessage(schedule)
+        : `${removed.wasteType} collection previously scheduled for ${removed.area} has been removed.`,
+    });
+  }
+  for (const [area, entries] of updatesByArea) {
+    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [area]);
+    if (entries.length > 5) {
+      for (const resident of residents.rows)
+        await insertNotification(
+          db,
+          resident.email,
+          `Collection updates for ${area}`,
+          `${entries.length} collection updates for ${area}. Open the schedule to see the latest pickups.`,
+        );
+      continue;
+    }
+    for (const entry of entries) {
+      for (const resident of residents.rows) await insertNotification(db, resident.email, entry.title, entry.message);
+    }
+  }
+  // The server records who changed what; the browser cannot write the log.
+  const addedSchedules = [];
+  for (const id of changed) {
+    const schedule = newById.get(id);
+    if (schedule && !oldById.has(id)) addedSchedules.push(schedule);
+  }
+  if (addedSchedules.length) {
+    const first = addedSchedules[0];
+    const detail =
+      addedSchedules.length === 1
+        ? `${first.id} · ${first.area} · ${first.status}`
+        : `${first.id} · ${first.area} · ${addedSchedules.length} recurring pickups`;
+    await insertActivity(db, user, "Added a collection schedule", detail);
+  }
+  for (const id of changed) {
+    const schedule = newById.get(id);
+    const removed = oldById.get(id);
+    if (schedule && !removed) continue;
+    if (schedule) {
+      const note = String(schedule.history?.at(-1)?.note || "").trim();
+      await insertActivity(
         db,
-        resident.email,
-        schedule ? `Collection update for ${schedule.area}` : "Collection schedule removed",
-        message,
+        user,
+        schedule.status !== removed.status ? "Changed a collection status" : "Updated a collection schedule",
+        `${schedule.id} · ${schedule.area} · ${schedule.status}${note ? ` · ${note}` : ""}`,
       );
+    } else if (removed) {
+      await insertActivity(db, user, "Removed a collection schedule", `${removed.id} · ${removed.area}`);
+    }
   }
   for (const group of additionsByGroup.values()) {
     group.sort((left, right) => left.date.localeCompare(right.date));
@@ -322,34 +370,37 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
 }
 
 export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } = {}) {
-  const due = await db.query(
-    `
+  // Claim, notify and advance the shared revision atomically: a crash between the
+  // claim and the insert would otherwise mark a reminder as sent and lose it.
+  // shortcut: email delivery is not retried (queueEmail is fire-and-forget); upgrade when a durable mail outbox exists.
+  let created = 0;
+  await withTransaction(db, async (transaction) => {
+    const due = await transaction.query(
+      `
     SELECT s.id AS schedule_id, s.area, to_char(s.date, 'YYYY-MM-DD') AS date, s.start_time, s.waste_type, u.email AS user_email
     FROM schedules s
     JOIN users u ON u.area=s.area AND u.role='resident' AND u.status='Active'
     WHERE s.date = (now() AT TIME ZONE $1::text)::date + 1 AND s.status NOT IN ('Completed','Cancelled')
   `,
-    [getAppTimeZone()],
-  );
-  let created = 0;
-  for (const reminder of due.rows) {
-    const claimed = await db.query(
-      "INSERT INTO schedule_reminders (schedule_id,user_email) VALUES ($1,$2) ON CONFLICT (schedule_id,user_email) DO NOTHING",
-      [reminder.schedule_id, reminder.user_email],
+      [getAppTimeZone()],
     );
-    if (!claimed.rowCount) continue;
-    const body = `${reminder.waste_type} collection for ${reminder.area} is scheduled tomorrow, ${appDateLabel(reminder.date, { month: "long", day: "numeric" })} at ${reminder.start_time}.`;
-    await insertNotification(db, reminder.user_email, "Collection reminder", body);
-    queueEmail(mailer, {
-      from: smtpFrom,
-      to: reminder.user_email,
-      subject: `Collection reminder for ${reminder.area}`,
-      text: `${body}\n\nView your collection schedule in CommUnity: ${appOrigin || ""}/#/resident/collection`,
-    });
-    created += 1;
-  }
-  // Notifications are part of the shared state browsers sync against, so a
-  // background write must advance the same revision a browser save does.
-  if (created) await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    for (const reminder of due.rows) {
+      const claimed = await transaction.query(
+        "INSERT INTO schedule_reminders (schedule_id,user_email) VALUES ($1,$2) ON CONFLICT (schedule_id,user_email) DO NOTHING",
+        [reminder.schedule_id, reminder.user_email],
+      );
+      if (!claimed.rowCount) continue;
+      const body = `${reminder.waste_type} collection for ${reminder.area} is scheduled tomorrow, ${appDateLabel(reminder.date, { month: "long", day: "numeric" })} at ${reminder.start_time}.`;
+      await insertNotification(transaction, reminder.user_email, "Collection reminder", body);
+      queueEmail(mailer, {
+        from: smtpFrom,
+        to: reminder.user_email,
+        subject: `Collection reminder for ${reminder.area}`,
+        text: `${body}\n\nView your collection schedule in CommUnity: ${appOrigin || ""}/#/resident/collection`,
+      });
+      created += 1;
+    }
+    if (created) await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+  });
   return created;
 }

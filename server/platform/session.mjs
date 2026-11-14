@@ -81,8 +81,15 @@ export async function readVisibility(db, user) {
       : user.role === "official"
         ? ["manageReports", "manageSchedules", "manageAnnouncements"]
         : ["manageReports", "manageSchedules", "manageAnnouncements", "manageUsers", "manageRoles", "viewAudit"];
-  const entries = await Promise.all(keys.map(async (key) => [key, await hasPermission(db, user, key)]));
-  return Object.fromEntries(entries);
+  const result = await db.query("SELECT permission, enabled FROM role_permissions WHERE role=$1", [user.role]);
+  const enabledByPermission = new Map(result.rows.map((row) => [row.permission, Boolean(row.enabled)]));
+  const overrides = user.permissionOverrides || {};
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      Object.hasOwn(overrides, key) ? Boolean(overrides[key]) : enabledByPermission.get(key) === true,
+    ]),
+  );
 }
 
 export async function issueSession(response, db, user, remember, secure) {

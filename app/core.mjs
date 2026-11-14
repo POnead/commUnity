@@ -647,18 +647,6 @@ export function displayReportId(id) {
   return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
 }
 
-export function addActivity(action, detail, result = "Success") {
-  data.activities.push({
-    id: idFor("A"),
-    actor: currentUser?.name || "Resident",
-    role: currentUser?.role || "resident",
-    action,
-    detail,
-    at: new Date().toISOString(),
-    result,
-  });
-}
-
 export function addNotification(targetEmail, title, body, reportId = "") {
   data.notifications.unshift({
     id: idFor("N"),

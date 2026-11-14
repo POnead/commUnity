@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { startServer, api, signIn, registerResident, createOfficial, seedReport } from "./helpers.mjs";
 
-test("residents cannot forge activity log entries through the account editor", async () => {
+test("a resident cannot forge activity log entries through the account editor", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-forge-resident-"));
   const app = await startServer(dataDir);
   try {
@@ -33,12 +33,13 @@ test("residents cannot forge activity log entries through the account editor", a
       at: new Date().toISOString(),
       result: "Success",
     });
-    const rejected = await api(app, "/api/state", {
+    const saved = await api(app, "/api/state", {
       method: "PUT",
       cookie: resident.cookie,
       body: { revision: state.revision, data: forged },
     });
-    assert.equal(rejected.status, 403, await rejected.text());
+    // A client-authored actor entry is ignored, never stored: the server owns the log.
+    assert.equal(saved.status, 200, await saved.text());
 
     const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action=$1", ["Deleted a report"]);
     assert.equal(stored.rows[0].count, 0, "a resident cannot fabricate a deletion event");
@@ -81,12 +82,12 @@ test("officials cannot forge activity log entries through the account editor", a
       at: new Date().toISOString(),
       result: "Success",
     });
-    const rejected = await api(app, "/api/state", {
+    const saved = await api(app, "/api/state", {
       method: "PUT",
       cookie: official.cookie,
       body: { revision: state.revision, data: forged },
     });
-    assert.equal(rejected.status, 403, await rejected.text());
+    assert.equal(saved.status, 200, await saved.text());
 
     const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action=$1", ["Changed report priority"]);
     assert.equal(stored.rows[0].count, 0, "an official cannot fabricate a priority change through state sync");
@@ -113,12 +114,12 @@ test("administrators cannot forge activity log entries through the state save", 
       at: new Date().toISOString(),
       result: "Success",
     });
-    const rejected = await api(app, "/api/state", {
+    const saved = await api(app, "/api/state", {
       method: "PUT",
       cookie: admin.cookie,
       body: { revision: state.revision, data: forged },
     });
-    assert.equal(rejected.status, 403, await rejected.text());
+    assert.equal(saved.status, 200, await saved.text());
 
     const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action=$1", ["Deleted a report"]);
     assert.equal(stored.rows[0].count, 0, "an administrator cannot fabricate a deletion event");
@@ -128,75 +129,98 @@ test("administrators cannot forge activity log entries through the state save", 
   }
 });
 
-test("administrators can record legitimate workspace activity", async () => {
+test("the server records an administrator's location change in the audit log", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-activity-"));
   const app = await startServer(dataDir);
   try {
     const admin = await signIn(app);
     const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
-    const legitimate = structuredClone(state.data);
-    legitimate.activities.push({
-      id: "ACT-admin-legit-0001",
-      actor: state.data.users.find((item) => item.role === "administrator")?.name || "Portal administrator",
-      role: "administrator",
-      action: "Added a community location",
-      detail: "Purok 1 · Palsara",
-      at: new Date().toISOString(),
-      result: "Success",
-    });
+    const payload = structuredClone(state.data);
+    payload.locations.push({ id: "ACT-TEST-LOC-1", area: "Purok 6", barangay: "Palsara", street: "", purok: "Purok 6", landmark: "" });
     const saved = await api(app, "/api/state", {
       method: "PUT",
       cookie: admin.cookie,
-      body: { revision: state.revision, data: legitimate },
+      body: { revision: state.revision, data: payload },
     });
     assert.equal(saved.status, 200, await saved.text());
-    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-admin-legit-0001"]);
-    assert.equal(stored.rows[0].count, 1, "the legitimate administrator activity is stored");
+    const stored = await app.db.query(
+      "SELECT actor, role FROM activities WHERE action='Added a community location' AND detail LIKE 'Purok 6%'",
+    );
+    assert.equal(stored.rows.length, 1, "the server records the location the administrator actually added");
+    assert.equal(stored.rows[0].role, "administrator");
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
   }
 });
 
-test("administrators can record legitimate community and account management activity", async () => {
+test("the server records community and account management operations in the audit log", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-activity-suite-"));
   const app = await startServer(dataDir);
   try {
     const admin = await signIn(app);
-    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
-    const adminName = state.data.users.find((item) => item.role === "administrator")?.name || "Portal administrator";
-    const legitimateActions = [
-      ["Added a community location", "Purok 1 · Palsara"],
-      ["Updated a community location", "Purok 2 · Palsara"],
-      ["Removed a community location", "LOC-1 · Palsara"],
-      ["Added a recycling directory listing", "Recycling Hub · Palsara"],
-      ["Updated a recycling directory listing", "Recycling Hub · Palsara"],
-      ["Removed a recycling directory listing", "RRL-1 · Palsara"],
-      ["Updated user account", `${adminName} · admin@example.test`],
-      ["Changed role permission", "official · manageReports"],
-    ];
-    for (const [action, detail] of legitimateActions) {
-      const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
-      const legitimate = structuredClone(state.data);
-      legitimate.activities.push({
-        id: `ACT-admin-legit-${action.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-        actor: adminName,
-        role: "administrator",
-        action,
-        detail,
-        at: new Date().toISOString(),
-        result: "Success",
-      });
-      const saved = await api(app, "/api/state", {
+    await createOfficial(app, admin.cookie, "audit-official@example.test", "Audit Official");
+    const load = async () => api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const save = async (data, revision) => {
+      const response = await api(app, "/api/state", {
         method: "PUT",
         cookie: admin.cookie,
-        body: { revision: state.revision, data: legitimate },
+        body: { revision, data },
       });
-      assert.equal(saved.status, 200, await saved.text());
-      const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", [
-        `ACT-admin-legit-${action.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-      ]);
-      assert.equal(stored.rows[0].count, 1, `the legitimate activity is stored: ${action}`);
+      const body = await response.json();
+      assert.equal(response.status, 200, body?.error || JSON.stringify(body));
+      return body;
+    };
+
+    let state = await load();
+    // Locations: add, update, remove.
+    state.data.locations.push({ id: "ACT-SUITE-LOC", area: "Purok 6", barangay: "Palsara", street: "", purok: "Purok 6", landmark: "" });
+    state = await save(state.data, state.revision);
+    state.data.locations.find((item) => item.id === "ACT-SUITE-LOC").street = "St. Therese Street";
+    state = await save(state.data, state.revision);
+    state.data.locations = state.data.locations.filter((item) => item.id !== "ACT-SUITE-LOC");
+    state = await save(state.data, state.revision);
+
+    // Recycling listings: add, update, remove.
+    state.data.recyclingLocations.push({
+      id: "ACT-SUITE-RRL",
+      name: "Audit Recyclers",
+      barangay: "Palsara",
+      street: "Side street",
+      purok: "",
+      landmark: "",
+      materials: "Glass, paper",
+      phone: "",
+      hours: "9 AM-5 PM",
+      active: true,
+    });
+    state = await save(state.data, state.revision);
+    state.data.recyclingLocations.find((item) => item.id === "ACT-SUITE-RRL").hours = "10 AM-6 PM";
+    state = await save(state.data, state.revision);
+    state.data.recyclingLocations = state.data.recyclingLocations.filter((item) => item.id !== "ACT-SUITE-RRL");
+    state = await save(state.data, state.revision);
+
+    // Account edit and role permission change.
+    state.data.users.find((item) => item.email === "audit-official@example.test").phone = "09170000000";
+    state = await save(state.data, state.revision);
+    state.data.permissions.official = { ...state.data.permissions.official, manageReports: false };
+    await save(state.data, state.revision);
+
+    const actions = await app.db.query(
+      "SELECT DISTINCT action FROM activities WHERE action IN ('Added a community location','Updated a community location','Removed a community location','Added a recycling directory listing','Updated a recycling directory listing','Removed a recycling directory listing','Updated user account','Changed role permission')",
+    );
+    const found = new Set(actions.rows.map((row) => row.action));
+    for (const action of [
+      "Added a community location",
+      "Updated a community location",
+      "Removed a community location",
+      "Added a recycling directory listing",
+      "Updated a recycling directory listing",
+      "Removed a recycling directory listing",
+      "Updated user account",
+      "Changed role permission",
+    ]) {
+      assert.ok(found.has(action), `the server recorded: ${action}`);
     }
   } finally {
     await app.close();
@@ -204,31 +228,50 @@ test("administrators can record legitimate community and account management acti
   }
 });
 
-test("officials can record legitimate removal of a collection schedule", async () => {
+test("the server records an official's collection-schedule removal in the audit log", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-official-activity-"));
   const app = await startServer(dataDir);
   try {
     const admin = await signIn(app);
     const officialCookie = await createOfficial(app, admin.cookie, "activity-official-2@example.test", "Activity Official 2");
-    const state = await api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
-    const legitimate = structuredClone(state.data);
-    legitimate.activities.push({
-      id: "ACT-official-legit-0001",
-      actor: "Activity Official 2",
-      role: "official",
-      action: "Removed a collection schedule",
-      detail: "SCHED-1 · Purok 2",
-      at: new Date().toISOString(),
-      result: "Success",
+    const load = async () => api(app, "/api/state", { cookie: officialCookie }).then((response) => response.json());
+    const save = async (data, revision) => {
+      const response = await api(app, "/api/state", {
+        method: "PUT",
+        cookie: officialCookie,
+        body: { revision, data },
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, body?.error || JSON.stringify(body));
+      return body;
+    };
+    let state = await load();
+    const pickup = new Date(Date.now() + 86400000 * 14).toISOString().slice(0, 10);
+    state.data.schedules.push({
+      id: "SCHED-ACT-1",
+      area: "Purok 1",
+      zone: "Zone A",
+      date: pickup,
+      wasteType: "Recyclables",
+      start: "6:00 AM",
+      end: "9:00 AM",
+      frequency: "Weekly",
+      team: "Team A",
+      status: "Scheduled",
     });
-    const saved = await api(app, "/api/state", {
-      method: "PUT",
-      cookie: officialCookie,
-      body: { revision: state.revision, data: legitimate },
-    });
-    assert.equal(saved.status, 200, await saved.text());
-    const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-official-legit-0001"]);
-    assert.equal(stored.rows[0].count, 1, "the legitimate official activity is stored");
+    state = await save(state.data, state.revision);
+    state.data.schedules = state.data.schedules.filter((item) => item.id !== "SCHED-ACT-1");
+    await save(state.data, state.revision);
+
+    const added = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE action='Added a collection schedule'");
+    assert.equal(
+      added.rows[0].count,
+      1,
+      "the server records the schedule the official added",
+    );
+    const removed = await app.db.query("SELECT actor FROM activities WHERE action='Removed a collection schedule' AND detail LIKE 'SCHED-ACT-1%'");
+    assert.equal(removed.rows.length, 1, "the server records the schedule the official removed");
+    assert.equal(removed.rows[0].actor, "Activity Official 2");
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });
@@ -252,12 +295,13 @@ test("officials cannot record administrator-only activity through the state save
       at: new Date().toISOString(),
       result: "Success",
     });
-    const rejected = await api(app, "/api/state", {
+    const saved = await api(app, "/api/state", {
       method: "PUT",
       cookie: officialCookie,
       body: { revision: state.revision, data: unauthorized },
     });
-    assert.equal(rejected.status, 403, await rejected.text());
+    // A client claim that an operation happened is not evidence; the entry is dropped.
+    assert.equal(saved.status, 200, await saved.text());
 
     const stored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id=$1", ["ACT-official-admin-0001"]);
     assert.equal(stored.rows[0].count, 0, "an official cannot record an administrator-only activity");
@@ -285,27 +329,37 @@ test("the server stamps activity timestamps, not the browser", async () => {
     assert.equal(resident.response.status, 200);
 
     const state = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
-    const backdated = structuredClone(state.data);
-    backdated.activities.push({
-      id: "A-backdated",
-      actor: "Timestamp Resident",
-      role: "resident",
-      action: "Submitted a concern",
-      detail: "RPT-1 · backdated by the client",
-      at: new Date("2020-01-01T00:00:00.000Z").toISOString(),
-      result: "Success",
+    const now = new Date().toISOString();
+    const payload = structuredClone(state.data);
+    payload.reports.unshift({
+      id: "RPT-act-time-1",
+      userEmail: "timestamp-resident@example.test",
+      name: "Timestamp Resident",
+      category: "Road damage",
+      title: "Road damage · Purok 1",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the chapel",
+      description: "A pothole in the road near the chapel is deep enough to damage motorcycles.",
+      urgent: false,
+      priority: "Medium",
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
     });
     const created = await api(app, "/api/state", {
       method: "PUT",
       cookie: resident.cookie,
-      body: { revision: state.revision, data: backdated },
+      body: { revision: state.revision, data: payload },
     });
-    assert.equal(created.status, 200);
+    assert.equal(created.status, 200, await created.text());
 
-    const stored = await app.db.query("SELECT at FROM activities WHERE id=$1", ["A-backdated"]);
-    assert.equal(stored.rows.length, 1, "the whitelisted activity was stored");
+    const stored = await app.db.query("SELECT at FROM activities WHERE action='Submitted a concern' AND actor='Timestamp Resident'");
+    assert.equal(stored.rows.length, 1, "the concern submission produced a server-generated entry");
     const storedAt = new Date(stored.rows[0].at).getTime();
-    assert.ok(storedAt > new Date("2021-01-01").getTime(), "the server stamp overwrote the client timestamp");
+    assert.ok(storedAt > new Date("2021-01-01").getTime(), "the entry is stamped by the server, not the browser");
     assert.ok(Math.abs(storedAt - Date.now()) < 60000, "the stored time is near now");
   } finally {
     await app.close();
@@ -321,7 +375,7 @@ test("a forged Activity Log entry cannot be appended and existing history cannot
     const officialCookie = await createOfficial(app, admin.cookie, "activity-official@example.test", "Activity Official");
 
     // An official cannot record an action the server never observed them take:
-    // account administration is not in an official's allowed action set.
+    // the claim is ignored, not stored.
     const officialState = await api(app, "/api/state", { cookie: officialCookie }).then((r) => r.json());
     const forged = structuredClone(officialState.data);
     forged.activities.push({
@@ -338,11 +392,14 @@ test("a forged Activity Log entry cannot be appended and existing history cannot
       cookie: officialCookie,
       body: { revision: officialState.revision, data: forged },
     });
-    assert.equal(forgedAttempt.status, 403);
+    const forgedBody = await forgedAttempt.json();
+    assert.equal(forgedAttempt.status, 200, forgedBody?.error || JSON.stringify(forgedBody));
+    const forgedStored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id='ACT-forged-0001'");
+    assert.equal(forgedStored.rows[0].count, 0, "the unsupported claim was not recorded");
 
     // Neither can they record a permitted action under someone else's name:
     // the server stamps the authenticated account as the actor.
-    const impersonated = structuredClone(officialState.data);
+    const impersonated = structuredClone(forgedBody.data);
     impersonated.activities.push({
       id: "ACT-forged-0002",
       actor: "Portal Administrator",
@@ -355,9 +412,12 @@ test("a forged Activity Log entry cannot be appended and existing history cannot
     const impersonatedAttempt = await api(app, "/api/state", {
       method: "PUT",
       cookie: officialCookie,
-      body: { revision: officialState.revision, data: impersonated },
+      body: { revision: forgedBody.revision, data: impersonated },
     });
-    assert.equal(impersonatedAttempt.status, 400);
+    const impersonatedBody = await impersonatedAttempt.json();
+    assert.equal(impersonatedAttempt.status, 200, impersonatedBody?.error || JSON.stringify(impersonatedBody));
+    const impersonatedStored = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE id='ACT-forged-0002'");
+    assert.equal(impersonatedStored.rows[0].count, 0, "the impersonated entry was not recorded");
 
     // The administrator cannot rewrite a row the server already recorded.
     const adminState = await api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());

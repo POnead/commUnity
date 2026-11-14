@@ -25,7 +25,6 @@ import {
   announceSessionChange,
   startStateUpdates,
   stopStateUpdates,
-  addActivity,
   getUser,
   getReport,
   userReports,
@@ -911,7 +910,6 @@ async function submitReportDraft() {
     history: [{ status: "Submitted", at: now, note: "Report received." }],
   };
   data.reports.unshift(report);
-  addActivity(report.urgent ? "Submitted an urgent concern" : "Submitted a concern", `${report.id} · ${report.title}`);
   if (!(await localSave())) {
     data.reports = data.reports.filter((item) => item.id !== report.id);
     return;
@@ -954,7 +952,6 @@ async function updateReportStatus(form) {
   report.status = status;
   report.updatedAt = now;
   report.history.push({ status, at: now, note: note || `Status updated to ${status}.` });
-  addActivity("Updated a report", `${report.id} · ${status}`);
   if (!(await localSave())) return;
   setState({ selectedReportId: null });
   render();
@@ -974,7 +971,6 @@ async function updateReportAssignment(id, claim) {
   });
   if (!confirmed) return;
   report.assignedTo = claim ? { id: currentUser.id, name: currentUser.name } : null;
-  addActivity(claim ? "Claimed a concern" : "Released a concern", `${report.id} · ${report.title}`);
   if (!(await localSave())) return;
   render();
   toast(claim ? `${report.id} assigned to you.` : `${report.id} released to the queue.`, "success");
@@ -1186,10 +1182,6 @@ async function updateCollection(form) {
   if (existing) {
     if (historyEntry) existing.history = [...(existing.history || []), historyEntry];
     Object.assign(existing, record);
-    addActivity(
-      statusChanged ? "Changed a collection status" : "Updated a collection schedule",
-      `${record.id} · ${record.area} · ${existing.status}${statusNote ? ` · ${statusNote}` : ""}`,
-    );
   } else {
     const seriesId = occurrenceDates.length > 1 ? nextScheduleId(occurrenceDates[0]) : null;
     const creationEntry = scheduleStatusEntry(null, {
@@ -1209,12 +1201,6 @@ async function updateCollection(form) {
       history: [{ ...creationEntry }],
     }));
     data.schedules.push(...records);
-    addActivity(
-      "Added a collection schedule",
-      records.length > 1
-        ? `${records[0].id} · ${record.area} · ${records.length} recurring pickups`
-        : `${records[0].id} · ${record.area} · ${status}`,
-    );
   }
   if (!(await localSave())) return;
   setState({ modalState: null });
@@ -1245,7 +1231,6 @@ async function saveLocation(form) {
   if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.locations.push(record);
-  addActivity(existing ? "Updated a community location" : "Added a community location", `${record.area} · ${record.barangay}`);
   if (!(await localSave())) return;
   setState({ modalState: null });
   render();
@@ -1278,7 +1263,6 @@ async function saveRecyclingLocation(form) {
   if (!confirmed) return;
   if (existing) Object.assign(existing, record);
   else data.recyclingLocations.push(record);
-  addActivity(existing ? "Updated a recycling directory listing" : "Added a recycling directory listing", record.name);
   if (!(await localSave())) return;
   setState({ modalState: null });
   render();
@@ -1582,7 +1566,7 @@ function profileSavedMessage(recovery = {}) {
   if (recovery.verified) return "Profile saved. Recovery email verified.";
   if (recovery.verificationSent) return "Profile saved. A verification link was sent to your recovery email.";
   if (currentUser.recoveryEmail)
-    return "Profile saved. The recovery email is not verified because the email service is not configured, so no verification link was sent.";
+    return "Profile saved. The recovery email is not verified, so no verification link was sent this time.";
   return "Profile saved.";
 }
 
@@ -1976,7 +1960,6 @@ async function addOrEditUser(form) {
         if (report.userEmail === oldEmail) report.userEmail = email;
       });
     }
-    addActivity("Updated user account", `${name} · ${ROLES[role]}`);
   } else {
     const response = await fetch("/api/users", {
       method: "POST",
@@ -2272,7 +2255,6 @@ async function handleAction(button, clickEvent) {
     });
     if (confirmed) {
       data.schedules = data.schedules.filter((item) => item.id !== schedule.id);
-      addActivity("Removed a collection schedule", `${schedule.id} · ${schedule.area}`);
       if (await localSave()) {
         closeModal();
         toast("Schedule removed and residents notified.", "success");
@@ -2303,7 +2285,6 @@ async function handleAction(button, clickEvent) {
     });
     if (confirmed) {
       data.locations = data.locations.filter((item) => item.id !== location.id);
-      addActivity("Removed a community location", location.area);
       if (await localSave()) {
         setState({ modalState: null });
         render();
@@ -2325,7 +2306,6 @@ async function handleAction(button, clickEvent) {
     });
     if (confirmed) {
       data.recyclingLocations = data.recyclingLocations.filter((record) => record.id !== item.id);
-      addActivity("Removed a recycling directory listing", item.name);
       if (await localSave()) {
         setState({ modalState: null });
         render();
@@ -2497,7 +2477,6 @@ async function handleAction(button, clickEvent) {
     });
     if (!confirmed) return;
     data.permissions[role] = { ...draft };
-    changes.forEach((permission) => addActivity("Changed role permission", `${ROLES[role]} · ${permission.label}`));
     if (await localSave()) {
       delete permissionDrafts[role];
       render();

@@ -36,7 +36,8 @@ export function validateNotificationsReadOnly(oldItems, newItems, user) {
 
 export async function syncNotifications(db, oldItems, newItems, user) {
   validateNotificationsReadOnly(oldItems, newItems, user);
-  const changed = newItems.filter((item) => oldItems.find((old) => old.id === item.id)?.read !== item.read);
+  const oldById = new Map(oldItems.map((item) => [item.id, item]));
+  const changed = newItems.filter((item) => oldById.get(item.id)?.read !== item.read);
   for (const item of changed) await db.query("UPDATE notifications SET read=true WHERE id=$1 AND target_email=$2", [item.id, user.email]);
 }
 

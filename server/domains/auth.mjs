@@ -304,13 +304,19 @@ export async function handleAuth(request, response, db, options, user) {
         "INSERT INTO password_reset_tokens(user_id, token_hash, expires_at) VALUES($1,$2, now() + ($3 || ' minutes')::interval)",
         [account.rows[0].id, tokenHash, String(RESET_TOKEN_MINUTES)],
       );
+      // shortcut: a failed delivery clears the resend cooldown so the user can retry; upgrade to a durable mail outbox if delivery failures prove common
       const resetLink = `${emailLinkOrigin(request, appOrigin)}/#/reset-password?token=${rawToken}`;
-      await mailer.sendMail({
-        from: mailerState.settings.from,
-        to: recoveryEmail,
-        subject: "CommUnity password reset",
-        text: `Reset your CommUnity password using this link (valid for ${RESET_TOKEN_MINUTES} minutes): ${resetLink}`,
-      });
+      try {
+        await mailer.sendMail({
+          from: mailerState.settings.from,
+          to: recoveryEmail,
+          subject: "CommUnity password reset",
+          text: `Reset your CommUnity password using this link (valid for ${RESET_TOKEN_MINUTES} minutes): ${resetLink}`,
+        });
+      } catch (error) {
+        await db.query("DELETE FROM recovery_email_requests WHERE recovery_email=$1", [recoveryEmail]).catch(() => {});
+        throw error;
+      }
     }
     sendJson(response, 200, generic);
     return true;

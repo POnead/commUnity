@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, sendJson } from "../platform/http.mjs";
-import { requireRole } from "../platform/session.mjs";
+import { requireRole, hasPermission } from "../platform/session.mjs";
 import { jsonEqual, validId } from "../platform/validate.mjs";
 import { timestamp } from "../platform/time.mjs";
 import { withTransaction } from "../platform/db.mjs";
@@ -218,6 +218,8 @@ export async function handleActivity(request, response, db, options, user) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/community/activity" && request.method === "GET") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "viewAudit")))
+      throw new HttpError(403, "Reviewing activity history is not enabled for this role.");
     const filters = activityLogFilters(url);
     const { where, values } = activityLogWhere(filters);
     const summary = await db.query(
@@ -261,6 +263,8 @@ export async function handleActivity(request, response, db, options, user) {
   }
   if (url.pathname === "/api/community/activity/export" && request.method === "GET") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "viewAudit")))
+      throw new HttpError(403, "Reviewing activity history is not enabled for this role.");
     const filters = activityLogFilters(url);
     const { where, values } = activityLogWhere(filters);
     const rows = await db.query(

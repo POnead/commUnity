@@ -7,7 +7,9 @@ export function jsonEqual(left, right) {
 export const MAX_PASSWORD_LENGTH = 200;
 
 export function validId(value) {
-  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,100}$/.test(value);
+  // "." and ".." are path segments, not identifiers: callers join the result into
+  // filesystem paths, so they must never pass validation.
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,100}$/.test(value) && value !== "." && value !== "..";
 }
 
 export function validISODate(value) {

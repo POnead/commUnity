@@ -372,6 +372,9 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           throw new HttpError(403, "Existing reports cannot be changed by residents.");
       }
       const addedReports = after.reports.filter((report) => !visibleBefore.reports.some((old) => old.id === report.id));
+      if (addedReports.length && !(await hasPermission(db, user, "submitReports"))) {
+        throw new HttpError(403, "Submitting concerns is not enabled for this role.");
+      }
       for (const report of addedReports) {
         validateReport(report);
         if (!report.barangay?.trim() || !report.locationDetail?.trim()) {
@@ -559,6 +562,37 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       await syncActivities(db, visibleBefore.activities, after.activities, user);
     } else {
       requireRole(user, ["administrator"]);
+      // Hiding a restricted page or button is not access control. An administrator
+      // whose permission has been disabled must not change that workspace area,
+      // even with a hand-crafted request. The comparisons run before any write.
+      const beforeUsersById = new Map(before.users.map((account) => [account.id, account]));
+      const accountsChanged =
+        after.users.length !== before.users.length ||
+        after.users.some((account) => {
+          const old = beforeUsersById.get(account.id);
+          return !old || !jsonEqual(old, account);
+        });
+      if (accountsChanged && !(await hasPermission(db, user, "manageUsers")))
+        throw new HttpError(403, "Account management is not enabled for this role.");
+      const beforeReportsById = new Map(before.reports.map((report) => [report.id, report]));
+      const reportsChanged =
+        after.reports.length !== before.reports.length ||
+        after.reports.some((report) => {
+          const old = beforeReportsById.get(report.id);
+          return !old || !jsonEqual(comparableReport(old), comparableReport(report));
+        });
+      if (reportsChanged && !(await hasPermission(db, user, "manageReports")))
+        throw new HttpError(403, "Report management is not enabled for this role.");
+      if (!jsonEqual(before.schedules, after.schedules) && !(await hasPermission(db, user, "manageSchedules")))
+        throw new HttpError(403, "Schedule management is not enabled for this role.");
+      const locationsChanged =
+        !jsonEqual(before.locations, after.locations) || !jsonEqual(before.recyclingLocations, after.recyclingLocations);
+      if (locationsChanged && !(await hasPermission(db, user, "manageUsers")))
+        throw new HttpError(403, "Account management is not enabled for this role.");
+      const permissionsChanged =
+        !jsonEqual(before.permissions, after.permissions) || !jsonEqual(before.accountOverrides || {}, after.accountOverrides || {});
+      if (permissionsChanged && !(await hasPermission(db, user, "manageRoles")))
+        throw new HttpError(403, "Role management is not enabled for this role.");
       if (after.users.length !== before.users.length) throw new HttpError(403, "Create accounts through the account management form.");
       const oldUsers = new Map(before.users.map((account) => [account.id, account]));
       for (const account of after.users) {

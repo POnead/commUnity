@@ -32,8 +32,24 @@ export const REPORT_TRANSITIONS = {
   Resolved: [],
 };
 
+// The position in a photo URL is derived from the photo's slot in the array,
+// never from whatever the client captured at upload time. Two single-file
+// uploads to the same draft both land at position 0, so trusting the URL
+// keeps a saved concern's second photo permanently unreachable.
+function normalizeReportPhotos(report) {
+  if (!Array.isArray(report?.photos)) return;
+  const prefix = `/api/reports/${encodeURIComponent(report.id)}/photos/`;
+  for (const [position, photo] of report.photos.entries()) {
+    const tail = String(photo?.photoUrl || "").startsWith(prefix) ? photo.photoUrl.slice(prefix.length) : "";
+    const match = /^\d+\/([A-Za-z0-9-]+\.(jpg|png))$/.exec(tail);
+    if (!match) continue; // validateReport rejects it below
+    photo.photoUrl = `${prefix}${position}/${match[1]}`;
+  }
+}
+
 export function validateReport(report) {
   normalizeReportPriority(report);
+  if (report && validId(report.id)) normalizeReportPhotos(report);
   if (
     !report ||
     !validId(report.id) ||
@@ -78,12 +94,14 @@ export function validateReport(report) {
     throw new HttpError(400, "A report contains invalid or excessive data.");
   }
   for (const photo of report.photos) {
+    const photoPrefix = `/api/reports/${encodeURIComponent(report.id)}/photos/`;
     if (
       !photo ||
       typeof photo.name !== "string" ||
       photo.name.length > 120 ||
       typeof photo.photoUrl !== "string" ||
-      !photo.photoUrl.startsWith(`/api/reports/${encodeURIComponent(report.id)}/photos/`)
+      !photo.photoUrl.startsWith(photoPrefix) ||
+      !/^\d+\/[A-Za-z0-9-]+\.(jpg|png)$/.test(photo.photoUrl.slice(photoPrefix.length))
     ) {
       throw new HttpError(400, "A report photo is invalid or too large.");
     }
@@ -255,6 +273,9 @@ async function serveReportPhoto(request, response, db, options, user, url, photo
   const reportId = decodeURIComponent(photoMatch[1]);
   requireRole(user, ROLES);
   if (!validId(reportId)) throw new HttpError(404, "The report photo could not be found.");
+  const uploadsRoot = path.resolve(uploadsDir);
+  const reportDirectory = path.resolve(uploadsRoot, reportId);
+  if (path.dirname(reportDirectory) !== uploadsRoot) throw new HttpError(404, "The report photo could not be found.");
   const position = Number(photoMatch[2]);
   const report = await db.query("SELECT user_email FROM reports WHERE id=$1", [reportId]);
   if (!report.rows.length) throw new HttpError(404, "The report photo could not be found.");
@@ -266,7 +287,7 @@ async function serveReportPhoto(request, response, db, options, user, url, photo
   if (photoUrl !== url.pathname) throw new HttpError(404, "The report photo could not be found.");
   const filename = path.basename(photoUrl);
   if (!filename || filename === "." || filename === "..") throw new HttpError(404, "The report photo could not be found.");
-  const image = await readFile(path.join(uploadsDir, reportId, filename)).catch(() => {
+  const image = await readFile(path.join(reportDirectory, filename)).catch(() => {
     throw new HttpError(404, "The report photo could not be found.");
   });
   response.writeHead(200, {
@@ -288,6 +309,8 @@ export async function handleReports(request, response, db, options, user) {
   }
   if (url.pathname === "/api/report-photos" && request.method === "POST") {
     requireRole(user, ["resident"]);
+    if (!(await hasPermission(db, user, "submitReports")))
+      throw new HttpError(403, "Submitting concerns is not enabled for this role.");
     await recordAttempt(db, hash(`report-photo:${user.id}`), 20);
     const reportId = url.searchParams.get("reportId") || "";
     if (!validId(reportId)) throw new HttpError(400, "The report identifier is invalid.");
@@ -301,7 +324,12 @@ export async function handleReports(request, response, db, options, user) {
     }
     const files = await readMultipart(request);
     if (!files.length) throw new HttpError(400, "Choose at least one JPG or PNG photo.");
-    const reportUploadDir = path.join(uploadsDir, reportId);
+    const uploadsRoot = path.resolve(uploadsDir);
+    const reportUploadDir = path.resolve(uploadsRoot, reportId);
+    // validId already rules out "." and "..", and never matches a separator, so a
+    // resolved child must sit directly inside the uploads directory. Refuse
+    // anything else before a single byte is written.
+    if (path.dirname(reportUploadDir) !== uploadsRoot) throw new HttpError(400, "The report identifier is invalid.");
     await mkdir(reportUploadDir, { recursive: true });
     const uploaded = [];
     try {
@@ -325,6 +353,8 @@ export async function handleReports(request, response, db, options, user) {
   }
   if (url.pathname === "/api/community/follow-up" && request.method === "POST") {
     requireRole(user, ["resident"]);
+    if (!(await hasPermission(db, user, "submitReports")))
+      throw new HttpError(403, "Submitting concerns is not enabled for this role.");
     requireJsonBody(request);
     const reportId = String(request.body.reportId || "");
     const message = String(request.body.message || "").trim();
@@ -376,7 +406,7 @@ export async function handleReports(request, response, db, options, user) {
     const reportId = String(request.body.reportId || "");
     const priority = String(request.body.priority || "");
     if (!REPORT_PRIORITIES.includes(priority)) throw new HttpError(400, "Choose a valid concern priority.");
-    if (user.role === "official" && !(await hasPermission(db, user, "manageReports"))) {
+    if (!(await hasPermission(db, user, "manageReports"))) {
       throw new HttpError(403, "Report management is not enabled for this role.");
     }
     await withTransaction(db, async (transaction) => {
@@ -433,6 +463,8 @@ export async function handleReports(request, response, db, options, user) {
   }
   if (url.pathname === "/api/community/report-confirm" && request.method === "POST") {
     requireRole(user, ["resident"]);
+    if (!(await hasPermission(db, user, "submitReports")))
+      throw new HttpError(403, "Submitting concerns is not enabled for this role.");
     requireJsonBody(request);
     const reportId = String(request.body.reportId || "");
     const note = String(request.body.note || "").trim();
@@ -488,6 +520,8 @@ export async function handleReports(request, response, db, options, user) {
   }
   if (url.pathname === "/api/community/report-reopen" && request.method === "POST") {
     requireRole(user, ["resident"]);
+    if (!(await hasPermission(db, user, "submitReports")))
+      throw new HttpError(403, "Submitting concerns is not enabled for this role.");
     requireJsonBody(request);
     const reportId = String(request.body.reportId || "");
     const reason = String(request.body.reason || "").trim();

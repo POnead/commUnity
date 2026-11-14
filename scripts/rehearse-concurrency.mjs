@@ -7,18 +7,19 @@
 //   A. many authenticated sessions polling the state endpoint at once;
 //   B. two writers editing from the same stale revision simultaneously;
 //   C. every seeded resident submitting a concern at the same moment;
-//   D. several residents uploading photos to their own concerns at once;
-//   E. several officials approving (or declining) one pending announcement at once;
-//   F. all accounts marking notifications read at once;
-//   G. officials claiming different concerns at the same moment.
+//   D. the attached photos serving their owner and refusing other residents;
+//   E. several administrators approving the same pending announcement at once;
+//   F. every signed-in account reading its unread-count at once;
+//   G. officials claiming concerns at the same moment (different concerns, then the same one).
 //
 // Revision conflicts are the app's documented guard against silent overwrite,
 // so instead of hiding them the probe records exactly who got the 200 and who
 // got the 409, and asserts the server never corrupted or half-applied state.
 //
 // Requires: embedded-postgres, openssl for the rehearsal certificates (PG_BIN
-// is reused for the cluster, and the Git for Windows openssl is used when
-// openssl is not on PATH).
+// is reused for the cluster, and a usable openssl binary is resolved for real
+// — PATH lookup first, then the platform's well-known locations — by
+// scripts/rehearsal-openssl.mjs).
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, scryptSync } from "node:crypto";
@@ -31,9 +32,9 @@ import { promisify } from "node:util";
 import { performance } from "node:perf_hooks";
 import EmbeddedPostgres from "embedded-postgres";
 import pg from "pg";
+import { findOpenSSL } from "./rehearsal-openssl.mjs";
 
 const run = promisify(execFile);
-const GIT_OPENSSL = "C:/Program Files/Git/usr/bin/openssl.exe";
 const PASSWORD = "ConcurrencyTest-2026!";
 
 const TEST_JPEG = Buffer.from(
@@ -118,7 +119,7 @@ function multipartRequest(port, { path: requestPath, cookie, origin, fields = []
 async function issueCertificates(base) {
   const certs = path.join(base, "certs");
   await mkdir(certs, { recursive: true });
-  const openssl = process.env.PATH?.includes("openssl") ? "openssl" : GIT_OPENSSL;
+  const openssl = await findOpenSSL();
   await run(openssl, [
     "req",
     "-x509",
@@ -270,6 +271,10 @@ async function main() {
     }
     for (const n of [1, 2, 3])
       users.push({ id: `C-O${n}`, role: "official", name: `Concurrency Official ${n}`, email: `official.${n}@concurrency.test` });
+    // Four extra administrators so the announcement fan-out can be decided by
+    // four different signed-in accounts, not by one session racing itself.
+    for (const n of [1, 2, 3, 4])
+      users.push({ id: `C-A${n}`, role: "administrator", name: `Concurrency Administrator ${n}`, email: `admin.${n}@concurrency.test` });
     const hashed = passwordHash(PASSWORD);
     for (const user of users) {
       await seedPool.query(
@@ -352,10 +357,12 @@ async function main() {
         responses.every((res) => res.status === 200),
         "all concurrent reads must succeed",
       );
+      assert.ok(
+        responses.every((res) => Number.isSafeInteger(JSON.parse(res.body).revision)),
+        "every concurrent read must return a well-formed state with a numeric revision",
+      );
       console.log(`A. 30 concurrent reads: all 200 (${timings.readsMs}ms)`);
     }
-
-    const submissions = [];
 
     // B. Two writers from the same stale revision — exactly one must win.
     {
@@ -383,25 +390,35 @@ async function main() {
       ]);
       const winners = results.filter((res) => res.status === 200).map((res) => res.status);
       const conflicts = results.filter((res) => res.status === 409);
-      assert.ok(winners.length + conflicts.length === results.length, `unexpected result: ${results.map((r) => r.status)}`);
+      assert.equal(
+        results.length - winners.length - conflicts.length,
+        0,
+        `only 200 and 409 are legal outcomes here: ${results.map((r) => r.status)}`,
+      );
       assert.equal(winners.length, 1, "exactly one writer must win the revision race");
       assert.equal(conflicts.length, 1, "exactly one writer must be refused with 409");
+      assert.match(conflicts[0].body, /Data changed in another session/, "the refused writer must get the documented revision conflict");
       const winnerResultIndex = results.findIndex((res) => res.status === 200);
-      submissions.push({
-        resident: winnerResultIndex === 0 ? "C-R1" : "C-R2",
-        status: 200,
-        reportId: winnerResultIndex === 0 ? reportOne.id : reportTwo.id,
-      });
+      const winnerReport = winnerResultIndex === 0 ? reportOne : reportTwo;
       const loaded = await getState("admin");
-      const titles = loaded.data.reports.map((report) => report.title);
-      assert.ok(titles.includes("Concurrency test concern 1") || titles.includes("Concurrency test concern 2"));
-      assert.ok(!titles.includes("Concurrency test concern 1") || !titles.includes("Concurrency test concern 2"));
+      const competing = loaded.data.reports.filter((report) => [reportOne.id, reportTwo.id].includes(report.id));
+      assert.equal(competing.length, 1, "the shared workspace must contain exactly the winner's report");
+      assert.equal(competing[0].id, winnerReport.id, "the surviving report must be the winner's");
+      // The database — not just the API read — contains exactly one competing report.
+      const stored = await seedPool.query("SELECT count(*)::integer AS count FROM reports WHERE id = ANY($1::text[])", [
+        [reportOne.id, reportTwo.id],
+      ]);
+      assert.equal(stored.rows[0].count, 1, "exactly one competing report may be persisted");
       console.log(`B. stale-revision double write: 1 × 200, 1 × 409, state contains exactly the winner's report`);
     }
 
     // C. Every resident submits at once. Each resident: fetch a fresh
     // revision, upload draft photos, then submit the concern with the photos.
     // This is what several browsers doing the real flow at the same moment look like.
+    // Residents who lose the revision race are settled exactly the way the
+    // browser recovers — re-read the workspace, splice their own concern in,
+    // try again, bounded — so the rehearsal can assert the end state instead
+    // of merely "at least one made it".
     {
       const residents = users.filter((u) => u.role === "resident");
       const started = performance.now();
@@ -435,59 +452,90 @@ async function main() {
             .filter(Boolean);
           payload.reports.push(report);
           const res = await putState(resident.id, { ...snapshot, data: payload });
-          results.push({ resident: resident.id, status: res.status, reportId, uploads: uploads.map((row) => row.status) });
-          submissions.push({ resident: resident.id, status: res.status, reportId });
+          results.push({ resident: resident.id, status: res.status, reportId, uploads: uploads.map((row) => row.status), report });
         }),
       );
+      const firstAttempt = results.map((row) => row.status);
+      // Settle the losers: sequential, fresh read each attempt, bounded.
+      for (const row of results.filter((entry) => entry.status !== 200)) {
+        for (let attempt = 0; attempt < 5 && row.status !== 200; attempt += 1) {
+          const snapshot = await getState(row.resident);
+          const payload = structuredClone(snapshot.data);
+          if (!payload.reports.some((report) => report.id === row.reportId)) {
+            payload.reports.push(structuredClone(row.report));
+          }
+          const res = await putState(row.resident, { ...snapshot, data: payload });
+          row.status = res.status;
+        }
+      }
       timings.submitMs = Math.round(performance.now() - started);
       timings.uploadMaxMs = Math.max(...uploadDurations, 0);
-      const succeeded = results.filter((row) => row.status === 200).length;
-      const conflicts = results.filter((row) => row.status === 409).length;
-      const unexpected = results.map((row) => row.status).filter((status) => ![200, 409].includes(status));
-      assert.equal(unexpected.length, 0, `unexpected statuses: ${unexpected}`);
+      const firstAttemptOk = firstAttempt.filter((status) => status === 200).length;
+      const unexpected = results.map((row) => row.status).filter((status) => status !== 200);
+      assert.equal(unexpected.length, 0, `every concern must be on file after the settle loop: ${JSON.stringify(unexpected)}`);
       const accepted = results.flatMap((row) => row.uploads).filter((status) => status === 201).length;
       console.log(
-        `C. ${residents.length} concurrent draft-photo + submit flows: ${accepted}/${results.length * 2} photos accepted, ${succeeded} × 200, ${conflicts} × 409 (${timings.submitMs}ms, max upload ${timings.uploadMaxMs}ms)`,
+        `C. ${residents.length} concurrent draft-photo + submit flows: ${accepted}/${results.length * 2} photos accepted, ${firstAttemptOk}/${residents.length} won the race outright, all settled (${timings.submitMs}ms, max upload ${timings.uploadMaxMs}ms)`,
       );
-      assert.ok(succeeded >= 1, "at least one concurrent submission must succeed");
+      const settled = (await getState("admin")).data.reports;
+      for (const { reportId } of results) {
+        const onFile = settled.filter((report) => report.id === reportId);
+        assert.equal(onFile.length, 1, `concern ${reportId} must be on file exactly once`);
+        assert.equal(onFile[0].history.length, 1, "each settled concern carries exactly one history entry");
+      }
     }
 
     const created = (await getState("admin")).data.reports;
     const createdIds = created.map((report) => report.id);
 
-    // D. The created reports carry their attached photos, and each photo URL serves the owner.
+    // D. The created reports carry their attached photos, each photo serves the
+    // owning resident, and every other resident is refused.
     if (createdIds.length) {
       const started = performance.now();
       const adminView = (await getState("admin")).data.reports;
       const withPhotos = adminView.filter((report) => report.photos.length === 2);
-      let served200 = 0;
-      for (const report of adminView) {
+      assert.ok(withPhotos.length >= 1, "at least one concern must carry its attached photos");
+      const residentsByEmail = new Map(users.filter((entry) => entry.role === "resident").map((entry) => [entry.email, entry.id]));
+      const residentIds = [...residentsByEmail.values()];
+      let served = 0;
+      let refused = 0;
+      let checked = 0;
+      for (const report of withPhotos) {
+        const owner = residentsByEmail.get(report.userEmail);
+        const stranger = residentIds.find((id) => id !== owner);
         for (const photo of report.photos) {
-          const res = await rawRequest(appPort, { path: photo.photoUrl, cookie: sessions["admin"].cookie });
-          if (res.status === 200) served200 += 1;
+          const ownerRes = await rawRequest(appPort, { path: photo.photoUrl, cookie: sessions[owner].cookie });
+          if (ownerRes.status === 200) served += 1;
+          const strangerRes = await rawRequest(appPort, { path: photo.photoUrl, cookie: sessions[stranger].cookie });
+          if (strangerRes.status === 403) refused += 1;
+          checked += 1;
         }
       }
       timings.photoFetchMs = Math.round(performance.now() - started);
       console.log(
-        `D. ${withPhotos.length} report(s) carry both photos; admin fetched ${served200} photo files (${timings.photoFetchMs}ms)`,
+        `D. ${withPhotos.length} report(s) carry both photos; owner 200 for ${served}/${checked}, another resident 403 for ${refused}/${checked} (${timings.photoFetchMs}ms)`,
       );
+      assert.equal(served, checked, "every attached photo must serve its owner");
+      assert.equal(refused, checked, "no resident may fetch another resident's photo");
     }
 
     // E. Four administrators approve the same pending announcement at once.
+    // The announcement row lock must let exactly one decision commit.
     {
       const announce = await seedPool.query(
         "INSERT INTO announcements (title, detail, date, approval_status, created_by) VALUES ($1,$2,$3,'pending',$4) RETURNING id",
         ["Concurrency test announcement", "Pending approval for the concurrency rehearsal.", "2026-11-20", "C-O1"],
       );
       const announcementId = announce.rows[0].id;
+      const approvers = ["C-A1", "C-A2", "C-A3", "C-A4"];
       const started = performance.now();
       const decisions = await Promise.all(
-        Array.from({ length: 4 }, () =>
+        approvers.map((id) =>
           rawRequest(appPort, {
             method: "POST",
             path: "/api/announcements/approval",
             origin,
-            cookie: sessions["admin"].cookie,
+            cookie: sessions[id].cookie,
             body: JSON.stringify({ id: announcementId, status: "approved" }),
           }),
         ),
@@ -505,6 +553,8 @@ async function main() {
         "SELECT count(*)::int AS count FROM notifications WHERE target_email='official.1@concurrency.test' AND title='Announcement approved'",
       );
       assert.equal(decidedNotifications.rows[0].count, 1, "only one approval notification must be sent");
+      const approved = await seedPool.query("SELECT approval_status FROM announcements WHERE id=$1", [announcementId]);
+      assert.equal(approved.rows[0].approval_status, "approved", "the decided announcement must be approved in the database");
       console.log(
         `E. 4 concurrent approvals of one announcement: 1 × 200, 3 × 409, exactly one audit row and one notification (${timings.approvalMs}ms)`,
       );
@@ -518,32 +568,86 @@ async function main() {
       );
       timings.unreadMs = Math.round(performance.now() - started);
       assert.ok(results.every((res) => res.status === 200));
+      assert.ok(
+        results.every((res) => Number.isSafeInteger(JSON.parse(res.body).count)),
+        "every signed-in account must get a well-formed unread count",
+      );
       console.log(`F. ${results.length} concurrent unread-count checks: all 200 (${timings.unreadMs}ms)`);
     }
 
-    // G. Officials claim the same one report at once; only one may hold it.
-    if (createdIds.length) {
-      const target = createdIds[0];
+    // G. Officials claim concerns at the same moment. First different concerns —
+    // every claim may land, each report going to its own claimant; then the same
+    // concern — the assignment may hold exactly one official.
+    assert.ok(createdIds.length >= 4, "the submitted concerns must be on file before the claim test");
+    {
+      // G1. Different concerns: all three claims land. Every save shares one
+      // revision counter, so the losers of the race are refused with 409 and
+      // their browsers retry — settle the same way here.
+      const claimants = ["C-O1", "C-O2", "C-O3"];
+      const targets = [createdIds[0], createdIds[1], createdIds[2]];
       const started = performance.now();
-      const claims = await Promise.all(
+      const claims = claimants.map((id, index) => ({ claimant: id, target: targets[index], status: 0 }));
+      await Promise.all(
+        claims.map(async (claim) => {
+          const snapshot = await getState(claim.claimant);
+          const payload = structuredClone(snapshot.data);
+          const report = payload.reports.find((item) => item.id === claim.target);
+          report.assignedTo = { id: claim.claimant, name: `Concurrency Official ${claim.claimant.slice(-1)}` };
+          const res = await putState(claim.claimant, { ...snapshot, data: payload });
+          claim.status = res.status;
+        }),
+      );
+      for (const claim of claims.filter((entry) => entry.status !== 200)) {
+        for (let attempt = 0; attempt < 5 && claim.status !== 200; attempt += 1) {
+          const snapshot = await getState(claim.claimant);
+          const payload = structuredClone(snapshot.data);
+          const report = payload.reports.find((item) => item.id === claim.target);
+          if (report.assignedTo) break; // another official holds it now
+          report.assignedTo = { id: claim.claimant, name: `Concurrency Official ${claim.claimant.slice(-1)}` };
+          const res = await putState(claim.claimant, { ...snapshot, data: payload });
+          claim.status = res.status;
+        }
+      }
+      timings.claimDifferentMs = Math.round(performance.now() - started);
+      assert.ok(
+        claims.every((claim) => claim.status === 200),
+        `every claim on a different concern must succeed: ${claims.map((claim) => claim.status)}`,
+      );
+      const assigned = await seedPool.query("SELECT id, assigned_to FROM reports WHERE id = ANY($1::text[]) ORDER BY id", [targets]);
+      for (const claim of claims) {
+        const row = assigned.rows.find((item) => item.id === claim.target);
+        assert.equal(row.assigned_to, claim.claimant, `concern ${claim.target} must be assigned to its own claimant`);
+      }
+
+      // G2. The same concern: exactly one official may hold it afterwards.
+      const target = createdIds[3];
+      const sameStarted = performance.now();
+      const same = await Promise.all(
         ["C-O1", "C-O2", "C-O3"].map(async (id) => {
           const snapshot = await getState(id);
           const payload = structuredClone(snapshot.data);
           const report = payload.reports.find((item) => item.id === target);
           if (!report) return { id, status: 404 };
-          report.assignedTo = { id: `C-O${id.slice(-1)}`, name: `Concurrency Official ${id.slice(-1)}` };
+          report.assignedTo = { id, name: `Concurrency Official ${id.slice(-1)}` };
           const res = await putState(id, { ...snapshot, data: payload });
           return { id, status: res.status };
         }),
       );
-      timings.claimMs = Math.round(performance.now() - started);
-      const accepted = claims.filter((claim) => claim.status === 200).length;
-      const refused = claims.filter((claim) => claim.status === 409).length;
-      console.log(`G. 3 concurrent claims on one concern: ${accepted} × 200, ${refused} × 409 (${timings.claimMs}ms)`);
-      assert.ok(accepted >= 1 && accepted + refused <= 3, "claims must settle: at least one accepted");
-      const after = await getState("admin");
-      const owned = after.data.reports.find((item) => item.id === target);
-      assert.ok(owned.assignedTo === null || owned.assignedTo.id.startsWith("C-O"), "the claim must not corrupt the assignment");
+      timings.claimSameMs = Math.round(performance.now() - sameStarted);
+      const accepted = same.filter((claim) => claim.status === 200).length;
+      // A loser who read before the winner committed loses the revision race
+      // (409); a loser who read after the winner committed is refused because
+      // the concern is no longer unassigned (403). Both are correct refusals —
+      // what may never happen is a second claimant succeeding.
+      const refused = same.filter((claim) => [409, 403].includes(claim.status)).length;
+      console.log(
+        `G. different concerns: all ${claims.length} claimed (${timings.claimDifferentMs}ms); same concern: ${accepted} × 200, ${refused} × refused (${timings.claimSameMs}ms)`,
+      );
+      assert.equal(accepted, 1, "exactly one official may claim the concern");
+      assert.equal(refused, 2, "the other claimants must be refused (409 losing the race, or 403 because another official holds it)");
+      const holder = await seedPool.query("SELECT assigned_to FROM reports WHERE id=$1", [target]);
+      const winner = same.find((claim) => claim.status === 200);
+      assert.equal(holder.rows[0].assigned_to, winner.id, "the official who won the revision race must hold the concern");
     }
 
     console.log("\nConcurrency rehearsal finished:", JSON.stringify(timings));

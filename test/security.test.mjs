@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { startServer, api, signIn, startSmtpSink, mailText, ADMIN_EMAIL, ADMIN_PASSWORD } from "./helpers.mjs";
+import {
+  startServer,
+  api,
+  signIn,
+  startSmtpSink,
+  mailText,
+  registerResident,
+  uploadPhoto,
+  TEST_JPEG,
+  ADMIN_EMAIL,
+  ADMIN_PASSWORD,
+} from "./helpers.mjs";
 import { pruneExpiredAuthState } from "../server/index.mjs";
 
 test("limits repeated login attempts and prunes expired authentication data", async () => {
@@ -541,7 +552,10 @@ test("administrator password reset succeeds and delivers the temporary password 
       body: { email: "reset-target@example.test" },
     });
     assert.equal(reset.status, 200, "Password reset must succeed when email service delivers");
-    assert.equal((await reset.json()).ok, true);
+    const resetBody = await reset.json();
+    assert.ok(resetBody.data, "the reset response carries the updated state");
+    assert.ok(Number.isSafeInteger(resetBody.revision) && resetBody.revision >= 1, "the reset response carries the new revision");
+    assert.equal(resetBody.user?.email, ADMIN_EMAIL, "the reset response returns the signed-in administrator");
 
     // Resident's sessions are closed
     const sessions = await app.db.query(
@@ -870,6 +884,348 @@ test("admin reset requests are rate limited so notifications cannot be flooded",
     }
     assert.ok(limited, "Repeated admin reset requests should be rate limited");
     assert.match((await limited.json()).error, /Too many attempts/);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+const PERMISSION_REPORT = {
+  id: "RPT-permission-enforcement",
+  userEmail: ADMIN_EMAIL,
+  name: "Portal administrator",
+  category: "Flooding",
+  title: "Permission enforcement concern",
+  area: "Purok 2",
+  barangay: "Palsara",
+  locationDetail: "Near the covered court",
+  latitude: 14.01799,
+  longitude: 121.09465,
+  description: "Concern used to prove the permission boundary on concern writes.",
+  urgent: false,
+  status: "Submitted",
+  submittedAt: "2026-11-14T00:00:00.000Z",
+  updatedAt: "2026-11-14T00:00:00.000Z",
+  photos: [],
+  history: [{ status: "Submitted", at: "2026-11-14T00:00:00.000Z", note: "Report received." }],
+};
+
+test("administrators with a disabled permission are refused the corresponding restricted operations", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-permission-admin-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const setAdminPermission = (permission, enabled) =>
+      app.db.query("UPDATE role_permissions SET enabled=$1 WHERE role='administrator' AND permission=$2", [enabled, permission]);
+    const getState = () => api(app, "/api/state", { cookie: admin.cookie }).then((r) => r.json());
+    const putState = (revision, data) => api(app, "/api/state", { method: "PUT", cookie: admin.cookie, body: { revision, data } });
+
+    // Disabling report and schedule management does not stop unrelated saves:
+    // a save that changes nothing restricted is still accepted.
+    await setAdminPermission("manageReports", false);
+    await setAdminPermission("manageSchedules", false);
+    const pristine = await getState();
+    const noOp = await putState(pristine.revision, pristine.data);
+    assert.equal(noOp.status, 200, "a save with no restricted changes must still be accepted");
+    const afterNoOp = await noOp.json();
+
+    // A new concern is refused while manageReports is disabled.
+    const withReport = structuredClone(afterNoOp.data);
+    withReport.reports.push(PERMISSION_REPORT);
+    const refusedReport = await putState(afterNoOp.revision, withReport);
+    assert.equal(refusedReport.status, 403, "report creation must be refused without manageReports");
+    assert.match((await refusedReport.json()).error, /Report management/);
+
+    // Re-enabling the permission lets the same concern through.
+    await setAdminPermission("manageReports", true);
+    const seeded = await putState(afterNoOp.revision, withReport);
+    assert.equal(seeded.status, 200);
+    const seededState = await seeded.json();
+
+    // Editing the concern is refused once manageReports is disabled again.
+    await setAdminPermission("manageReports", false);
+    const editedReport = structuredClone(seededState.data);
+    editedReport.reports[0].title = "Hand-edited title";
+    const refusedEdit = await putState(seededState.revision, editedReport);
+    assert.equal(refusedEdit.status, 403, "report edits must be refused without manageReports");
+    await setAdminPermission("manageReports", true);
+    await setAdminPermission("manageSchedules", true);
+
+    // Editing the collection schedule is refused without manageSchedules.
+    const forSchedules = await getState(); // now carries the seeded concern
+    const withSchedule = structuredClone(forSchedules.data);
+    withSchedule.schedules.push({
+      id: "S-permission-enforcement",
+      area: "Purok 2",
+      zone: "Zone 2",
+      date: "2026-12-01",
+      wasteType: "Residual waste",
+      start: "08:00 AM",
+      end: "10:00 AM",
+      frequency: "One-time",
+      team: "Collection crew A",
+      status: "Scheduled",
+      seriesId: null,
+      recurrenceEnd: null,
+      history: [],
+    });
+    const seededSchedule = await putState(forSchedules.revision, withSchedule);
+    assert.equal(seededSchedule.status, 200);
+    const scheduleState = await seededSchedule.json();
+    await setAdminPermission("manageSchedules", false);
+    const editedSchedule = structuredClone(scheduleState.data);
+    editedSchedule.schedules[0].wasteType = "Bulk items";
+    const refusedSchedule = await putState(scheduleState.revision, editedSchedule);
+    assert.equal(refusedSchedule.status, 403, "schedule edits must be refused without manageSchedules");
+    await setAdminPermission("manageSchedules", true);
+
+    // Account management: account creation and lifecycle endpoints are refused without manageUsers.
+    await registerResident(app, "permission-target@example.test", "Permission Target");
+    await setAdminPermission("manageUsers", false);
+    const createdAccount = await api(app, "/api/users", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        name: "Ungated Account",
+        email: "ungated@example.test",
+        area: "Purok 1",
+        role: "resident",
+        password: "A-gated-password-2026!",
+      },
+    });
+    assert.equal(createdAccount.status, 403, "account creation must be refused without manageUsers");
+    const passwordReset = await api(app, "/api/users/password-reset", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "permission-target@example.test" },
+    });
+    assert.equal(passwordReset.status, 403, "password reset must be refused without manageUsers");
+    const deactivated = await api(app, "/api/users/deactivate", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "permission-target@example.test", reason: "No longer eligible." },
+    });
+    assert.equal(deactivated.status, 403, "deactivation must be refused without manageUsers");
+    const reactivated = await api(app, "/api/users/reactivate", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { email: "permission-target@example.test" },
+    });
+    assert.equal(reactivated.status, 403, "reactivation must be refused without manageUsers");
+    const setPassword = await api(app, "/api/users/password", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: {
+        email: "permission-target@example.test",
+        newPassword: "A-different-password-2026!",
+        confirmPassword: "A-different-password-2026!",
+      },
+    });
+    assert.equal(setPassword.status, 403, "password change must be refused without manageUsers");
+
+    // Editing an account through a state save is refused without manageUsers.
+    const beforeEdit = await getState();
+    const account = beforeEdit.data.users.find((item) => item.email === "permission-target@example.test");
+    assert.ok(account, "the seeded resident should appear in the administrator state");
+    const renamed = structuredClone(beforeEdit.data);
+    renamed.users.find((item) => item.email === "permission-target@example.test").name = "Renamed Without Permission";
+    const refusedRename = await putState(beforeEdit.revision, renamed);
+    assert.equal(refusedRename.status, 403, "account edits through a state save must be refused without manageUsers");
+
+    // Changing the community location directory is refused without manageUsers.
+    const withLocation = structuredClone(beforeEdit.data);
+    withLocation.locations.push({
+      id: "LOC-permission-test",
+      area: "Purok 9",
+      barangay: "Palsara",
+      street: "Side Street",
+      purok: "Purok 9",
+      landmark: "",
+    });
+    const refusedLocation = await putState(beforeEdit.revision, withLocation);
+    assert.equal(refusedLocation.status, 403, "location edits must be refused without manageUsers");
+    await setAdminPermission("manageUsers", true);
+
+    // Role permission changes through a state save are refused without manageRoles.
+    await setAdminPermission("manageRoles", false);
+    const beforeRoles = await getState();
+    const permissionFlip = structuredClone(beforeRoles.data);
+    permissionFlip.permissions.official.viewSchedules = false;
+    const refusedRoles = await putState(beforeRoles.revision, permissionFlip);
+    assert.equal(refusedRoles.status, 403, "role permission edits must be refused without manageRoles");
+    assert.match((await refusedRoles.json()).error, /Role management/);
+    const overrideFlip = structuredClone(beforeRoles.data);
+    overrideFlip.accountOverrides = { "official@example.test": { manageSchedules: false } };
+    const refusedOverrides = await putState(beforeRoles.revision, overrideFlip);
+    assert.equal(refusedOverrides.status, 403, "permission override edits must be refused without manageRoles");
+    await setAdminPermission("manageRoles", true);
+
+    // The announcement decision endpoint is refused without manageAnnouncements.
+    await setAdminPermission("manageAnnouncements", false);
+    const refusedAnnouncement = await api(app, "/api/announcements/approval", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { id: "1", status: "approved" },
+    });
+    assert.equal(refusedAnnouncement.status, 403, "announcement approval must be refused without manageAnnouncements");
+    await setAdminPermission("manageAnnouncements", true);
+
+    // The calendar-event decision endpoint is refused without manageSchedules.
+    await setAdminPermission("manageSchedules", false);
+    const refusedEvent = await api(app, "/api/calendar/events/approval", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { id: 1, status: "approved" },
+    });
+    assert.equal(refusedEvent.status, 403, "calendar event approval must be refused without manageSchedules");
+    await setAdminPermission("manageSchedules", true);
+
+    // The priority endpoint is refused without manageReports.
+    await setAdminPermission("manageReports", false);
+    const refusedPriority = await api(app, "/api/community/report-priority", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { reportId: PERMISSION_REPORT.id, priority: "Low" },
+    });
+    assert.equal(refusedPriority.status, 403, "priority changes must be refused without manageReports");
+    await setAdminPermission("manageReports", true);
+
+    // The audit log endpoints are refused without viewAudit.
+    await setAdminPermission("viewAudit", false);
+    const refusedLog = await api(app, "/api/community/activity", { cookie: admin.cookie });
+    assert.equal(refusedLog.status, 403, "the activity log must be refused without viewAudit");
+    const refusedExport = await api(app, "/api/community/activity/export", { cookie: admin.cookie });
+    assert.equal(refusedExport.status, 403, "the activity export must be refused without viewAudit");
+    await setAdminPermission("viewAudit", true);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a resident with submitReports disabled cannot submit or act on concerns", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-permission-resident-"));
+  const app = await startServer(dataDir);
+  try {
+    const registered = await api(app, "/api/auth/register", {
+      method: "POST",
+      body: {
+        name: "Quiet Resident",
+        email: "quiet-resident@example.test",
+        area: "Purok 1",
+        password: "A-unique-quiet-password!",
+        confirmPassword: "A-unique-quiet-password!",
+      },
+    });
+    assert.equal(registered.status, 201);
+    const residentCookie = registered.headers.get("set-cookie").split(";")[0];
+    const getState = () => api(app, "/api/state", { cookie: residentCookie }).then((r) => r.json());
+    const putState = (revision, data) => api(app, "/api/state", { method: "PUT", cookie: residentCookie, body: { revision, data } });
+    const now = new Date().toISOString();
+    const residentReport = (id) => ({
+      id,
+      userEmail: "quiet-resident@example.test",
+      name: "Quiet Resident",
+      category: "Drainage problem",
+      title: "Drainage problem",
+      area: "Purok 1",
+      barangay: "Palsara",
+      locationDetail: "Near the school entrance",
+      description: "Water is pooling across the road near the school entrance.",
+      urgent: false,
+      status: "Submitted",
+      priority: "Medium",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
+    });
+
+    // Sanity check: with the default permission the resident can submit a concern.
+    const initial = await getState();
+    const firstState = structuredClone(initial.data);
+    firstState.reports.push(residentReport("RPT-permission-quiet-1"));
+    const created = await putState(initial.revision, firstState);
+    assert.equal(created.status, 200, "a concern can be submitted while submitReports is enabled");
+
+    await app.db.query("UPDATE role_permissions SET enabled=false WHERE role='resident' AND permission='submitReports'");
+
+    // A second concern is refused while the permission is disabled.
+    const afterDisable = await getState();
+    const secondState = structuredClone(afterDisable.data);
+    secondState.reports.push(residentReport("RPT-permission-quiet-2"));
+    const refusedReport = await putState(afterDisable.revision, secondState);
+    assert.equal(refusedReport.status, 403, "report submission must be refused without submitReports");
+    assert.match((await refusedReport.json()).error, /Submitting concerns/);
+
+    // Concern actions are refused too.
+    const followUp = await api(app, "/api/community/follow-up", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-permission-quiet-1", message: "The pool is still there after the rain." },
+    });
+    assert.equal(followUp.status, 403, "follow-ups must be refused without submitReports");
+    const confirm = await api(app, "/api/community/report-confirm", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-permission-quiet-1", note: "" },
+    });
+    assert.equal(confirm.status, 403, "confirmations must be refused without submitReports");
+    const reopen = await api(app, "/api/community/report-reopen", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-permission-quiet-1", reason: "The drain is blocked again." },
+    });
+    assert.equal(reopen.status, 403, "reopening must be refused without submitReports");
+    const photos = await api(app, "/api/report-photos", {
+      method: "POST",
+      cookie: residentCookie,
+      body: { reportId: "RPT-permission-quiet-photos" },
+    });
+    assert.equal(photos.status, 403, "photo uploads must be refused without submitReports");
+
+    // A save that does not add a concern still succeeds with the permission disabled.
+    const unchanged = await putState(afterDisable.revision, afterDisable.data);
+    assert.equal(unchanged.status, 200, "a save with no new concern must still be accepted");
+
+    // Re-enabling the permission restores concern submission.
+    await app.db.query("UPDATE role_permissions SET enabled=true WHERE role='resident' AND permission='submitReports'");
+    const restored = await getState();
+    const thirdState = structuredClone(restored.data);
+    thirdState.reports.push(residentReport("RPT-permission-quiet-3"));
+    const resubmitted = await putState(restored.revision, thirdState);
+    assert.equal(resubmitted.status, 200, "concern submission is restored once submitReports is enabled");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("report photo uploads cannot escape the uploads directory", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-traversal-"));
+  const uploadsDir = path.join(dataDir, "uploads");
+  const app = await startServer(dataDir, {}, { uploadsDir });
+  try {
+    const { cookie } = await registerResident(app, "traversal@example.test", "Traversal Resident");
+    const attempts = [
+      ["..", "the parent directory"],
+      [".", "the current directory"],
+      ["../escape", "a nested traversal"],
+      ["..%2f..%2fescape", "percent-encoded separators"],
+    ];
+    for (const [reportId, label] of attempts) {
+      const response = await uploadPhoto(app, `/api/report-photos?reportId=${reportId}`, cookie, TEST_JPEG);
+      assert.equal(response.status, 400, `${label} must be refused`);
+    }
+
+    // Nothing may be written outside the uploads directory.
+    const outside = (await readdir(dataDir)).filter((entry) => /\.(jpe?g|png)$/i.test(entry));
+    assert.deepEqual(outside, [], "no image may be written outside the uploads directory");
+
+    // A legitimate draft upload still works and lands inside the uploads directory.
+    const ok = await uploadPhoto(app, "/api/report-photos?reportId=R-TRAVERSAL-OK", cookie, TEST_JPEG);
+    assert.equal(ok.status, 201, await ok.text());
+    assert.equal((await readdir(path.join(uploadsDir, "R-TRAVERSAL-OK"))).length, 1);
   } finally {
     await app.close();
     await rm(dataDir, { recursive: true, force: true });

@@ -21,7 +21,9 @@ export function requireJsonBody(request) {
   }
 }
 
-export async function readMultipart(request, { maxFiles = 3 } = {}) {
+// withFields keeps the parsed text fields as well; the default preserves the
+// historical behaviour of resolving with just the files array.
+export async function readMultipart(request, { maxFiles = 3, withFields = false } = {}) {
   const contentType = request.headers["content-type"] || "";
   if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
     throw new HttpError(415, "Content-Type must be multipart/form-data.");
@@ -29,7 +31,11 @@ export async function readMultipart(request, { maxFiles = 3 } = {}) {
   return new Promise((resolve, reject) => {
     const parser = Busboy({ headers: request.headers, limits: { files: maxFiles, fileSize: MAX_PHOTO_BYTES } });
     const files = [];
+    const fields = {};
     let failed = false;
+    parser.on("field", (name, value) => {
+      fields[name] = String(value);
+    });
     parser.on("file", (fieldName, stream, info) => {
       if (fieldName !== "photos") {
         stream.resume();
@@ -52,7 +58,9 @@ export async function readMultipart(request, { maxFiles = 3 } = {}) {
     parser.on("filesLimit", () => reject(new HttpError(400, "Attach up to three photos to one report.")));
     parser.on("error", reject);
     parser.on("finish", () => {
-      if (!failed) resolve(files);
+      if (failed) return;
+      if (withFields) resolve({ files, fields });
+      else resolve(files);
     });
     request.pipe(parser);
   });

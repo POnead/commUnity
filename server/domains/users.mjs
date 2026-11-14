@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { CONTENT_TYPES } from "../platform/constants.mjs";
 import { passwordHash, hash } from "../platform/crypto.mjs";
 import { HttpError, readMultipart, requireJsonBody, sendJson } from "../platform/http.mjs";
-import { getSessionUser, requireRole, publicUser } from "../platform/session.mjs";
+import { getSessionUser, requireRole, publicUser, hasPermission } from "../platform/session.mjs";
 import { recordAttempt } from "../platform/ratelimit.mjs";
 import {
   assertKnownArea,
@@ -12,6 +12,7 @@ import {
   validateAvailableDays,
   validatePassword,
   validateWorkingHours,
+  validId,
   DEFAULT_OFFICIAL_DAYS,
 } from "../platform/validate.mjs";
 import { MAX_PHOTO_BYTES, PHOTO_EXTENSIONS, photoExtension } from "../platform/uploads.mjs";
@@ -23,6 +24,8 @@ import { sendRecoveryVerification } from "./auth.mjs";
 
 export async function createUser(db, user, body) {
   requireRole(user, ["administrator"]);
+  if (!(await hasPermission(db, user, "manageUsers")))
+    throw new HttpError(403, "Account management is not enabled for this role.");
   const {
     email,
     name,
@@ -81,8 +84,21 @@ export async function handleUsers(request, response, db, options, user) {
   }
   if (url.pathname === "/api/profile" && request.method === "PUT") {
     requireRole(user, ROLES);
-    requireJsonBody(request);
-    const body = request.body;
+    // One profile save is one request: either JSON (fields only) or multipart
+    // (fields plus the optional photo). A single request means a failure
+    // anywhere in the save leaves nothing half-applied.
+    const contentType = String(request.headers["content-type"] || "").toLowerCase();
+    let body = request.body;
+    let photoFile = null;
+    if (contentType.startsWith("multipart/form-data")) {
+      const form = await readMultipart(request, { maxFiles: 1, withFields: true });
+      body = form.fields;
+      photoFile = form.files[0] || null;
+    } else {
+      requireJsonBody(request);
+      body = request.body;
+    }
+    // Validate everything before any row or file is written.
     validateAccount({ ...body, email: user.email });
     if (user.role === "resident") await assertKnownArea(db, body.area);
     const recoveryEmail =
@@ -93,6 +109,13 @@ export async function handleUsers(request, response, db, options, user) {
           : "";
     if (recoveryEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryEmail))
       throw new HttpError(400, "Enter a valid recovery email address.");
+    let photoExtension_ = null;
+    if (photoFile) {
+      await recordAttempt(db, hash(`profile-photo:${user.id}`), 10);
+      photoExtension_ = photoExtension(photoFile.data);
+      if (!photoExtension_) throw new HttpError(400, `${photoFile.name}: choose a JPG or PNG image.`);
+      if (photoFile.data.length > MAX_PHOTO_BYTES) throw new HttpError(413, `${photoFile.name}: photo files must be 5 MB or smaller.`);
+    }
     const stored = await db.query(
       'SELECT recovery_email AS "recoveryEmail", recovery_email_verified AS "recoveryEmailVerified" FROM users WHERE id=$1',
       [user.id],
@@ -106,28 +129,57 @@ export async function handleUsers(request, response, db, options, user) {
     if (needsVerification) {
       await recordAttempt(db, hash(`recovery-verify-send:${user.id}`), 5);
     }
-    await withTransaction(db, async (transaction) => {
-      const db = transaction;
-      await db.query("UPDATE users SET name=$1,area=$2,phone=$3,recovery_email=$4,recovery_email_verified=$5 WHERE id=$6", [
-        body.name.trim(),
-        body.area.trim(),
-        String(body.phone || "").trim(),
-        recoveryEmail,
-        verified,
-        user.id,
-      ]);
-      if (emailChanged) {
-        await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [user.id]);
-        await insertActivity(
-          db,
-          { ...user, name: body.name.trim() },
-          recoveryEmail ? "Set recovery email" : "Removed recovery email",
-          recoveryEmail || previousEmail,
-        );
-      }
-      await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
-      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    });
+    let renamedPhoto = null;
+    try {
+      await withTransaction(db, async (transaction) => {
+        const db = transaction;
+        await db.query("UPDATE users SET name=$1,area=$2,phone=$3,recovery_email=$4,recovery_email_verified=$5 WHERE id=$6", [
+          body.name.trim(),
+          body.area.trim(),
+          String(body.phone || "").trim(),
+          recoveryEmail,
+          verified,
+          user.id,
+        ]);
+        if (photoFile) {
+          const profileDir = path.join(uploadsDir, "profiles");
+          await mkdir(profileDir, { recursive: true });
+          const filename = `${user.id}${photoExtension_}`;
+          const filePath = path.join(profileDir, filename);
+          const temporaryPath = path.join(profileDir, `${user.id}.${randomUUID()}.tmp`);
+          const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}`;
+          // Replace the old image atomically.
+          try {
+            await writeFile(temporaryPath, photoFile.data);
+            await rename(temporaryPath, filePath);
+          } catch (error) {
+            await unlink(temporaryPath).catch(() => {});
+            throw error;
+          }
+          renamedPhoto = filePath;
+          await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
+          for (const other of PHOTO_EXTENSIONS) {
+            if (other !== photoExtension_) await unlink(path.join(profileDir, `${user.id}${other}`)).catch(() => {});
+          }
+        }
+        if (emailChanged) {
+          await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [user.id]);
+          await insertActivity(
+            db,
+            { ...user, name: body.name.trim() },
+            recoveryEmail ? "Set recovery email" : "Removed recovery email",
+            recoveryEmail || previousEmail,
+          );
+        }
+        await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
+        await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      });
+    } catch (error) {
+      // The new photo is this request's only filesystem write; remove it so a
+      // failed save never leaves the new image behind.
+      if (renamedPhoto) await unlink(renamedPhoto).catch(() => {});
+      throw error;
+    }
     const verificationSent = needsVerification ? await sendRecoveryVerification(db, options, request, user, recoveryEmail) : false;
     const updatedUser = await getSessionUser(request, db);
     const [state, revision] = await Promise.all([readFullState(db, updatedUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
@@ -141,6 +193,8 @@ export async function handleUsers(request, response, db, options, user) {
   }
   if (url.pathname === "/api/users/password-reset" && request.method === "POST") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "manageUsers")))
+      throw new HttpError(403, "Account management is not enabled for this role.");
     requireJsonBody(request);
     const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
     const target = await db.query("SELECT id, name, email FROM users WHERE email=$1 AND email<>$2", [email, user.email]);
@@ -170,11 +224,19 @@ export async function handleUsers(request, response, db, options, user) {
       await insertActivity(transaction, user, "Generated temporary password", target.rows[0].name);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    sendJson(response, 200, { ok: true });
+    const currentUser = await getSessionUser(request, db);
+    const [state, revision] = await Promise.all([readFullState(db, currentUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
+    sendJson(response, 200, {
+      data: stateForRole(state, currentUser),
+      revision: Number(revision.rows[0].revision),
+      user: publicUser(currentUser),
+    });
     return true;
   }
   if (url.pathname === "/api/users/deactivate" && request.method === "POST") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "manageUsers")))
+      throw new HttpError(403, "Account management is not enabled for this role.");
     requireJsonBody(request);
     const email = String(request.body.email || "")
       .trim()
@@ -198,6 +260,8 @@ export async function handleUsers(request, response, db, options, user) {
   }
   if (url.pathname === "/api/users/reactivate" && request.method === "POST") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "manageUsers")))
+      throw new HttpError(403, "Account management is not enabled for this role.");
     requireJsonBody(request);
     const email = String(request.body.email || "")
       .trim()
@@ -217,6 +281,8 @@ export async function handleUsers(request, response, db, options, user) {
   }
   if (url.pathname === "/api/users/password" && request.method === "POST") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "manageUsers")))
+      throw new HttpError(403, "Account management is not enabled for this role.");
     requireJsonBody(request);
     const body = request.body;
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
@@ -286,6 +352,9 @@ export async function handleUsers(request, response, db, options, user) {
   if (profilePhotoMatch && request.method === "GET") {
     requireRole(user, ROLES);
     const requestedId = decodeURIComponent(profilePhotoMatch[1]);
+    // The id is percent-decoded before it reaches a filesystem path; reject
+    // anything that is not a plain identifier, including embedded separators.
+    if (!validId(requestedId)) throw new HttpError(404, "The profile photo could not be found.");
     // Residents can see their own photo, administrators can see every photo,
     // and officials can see resident photos (they handle the concern queue the
     // residents file into). Staff-to-staff photos stay administrator-only.

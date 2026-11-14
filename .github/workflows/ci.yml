@@ -32,3 +32,44 @@ jobs:
 
       - name: Run browser tests
         run: npm run test:e2e
+
+  rehearsals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install PostgreSQL 18 client tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-client-18
+
+      # The restore rehearsal dumps and restores a PostgreSQL 18 cluster with
+      # pg_dump/pg_restore, so the client tools must match the major version.
+      - name: Rehearse backup restore
+        run: npm run rehearse:restore
+        env:
+          PG_BIN: /usr/lib/postgresql/18/bin
+
+      - name: Verify production SMTP delivery
+        run: npm run verify:smtp
+
+      - name: Verify photo persistence
+        run: npm run verify:photo-persistence
+
+      - name: Rehearse concurrent use
+        run: npm run rehearse:concurrency

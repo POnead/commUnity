@@ -1520,33 +1520,37 @@ async function updateProfile(form) {
     confirmLabel: "Save profile",
   });
   if (!confirmed) return;
-  let photoUrl = "";
+  const fields = {
+    name,
+    area,
+    phone: String(form.get("phone") || "").trim(),
+    recoveryEmail: String(form.get("recoveryEmail") || "").trim(),
+  };
+  // Either everything is saved in one request (fields plus photo) or nothing is.
+  let response;
   if (profilePhotoFile) {
-    const photoForm = new FormData();
-    photoForm.append("photos", profilePhotoFile, profilePhotoFile.name);
-    const photoResponse = await fetch("/api/profile-photo", { method: "POST", body: photoForm });
-    const photoResult = await photoResponse.json();
-    if (!photoResponse.ok) throw new Error(photoResult.error || "The profile photo could not be uploaded.");
-    photoUrl = photoResult.photoUrl;
+    const body = new FormData();
+    body.append("name", fields.name);
+    body.append("area", fields.area);
+    body.append("phone", fields.phone);
+    body.append("recoveryEmail", fields.recoveryEmail);
+    body.append("photos", profilePhotoFile, profilePhotoFile.name);
+    response = await fetch("/api/profile", { method: "PUT", body });
+  } else {
+    response = await fetch("/api/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fields),
+    });
+  }
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
+  if (profilePhotoFile) {
     profilePhotoFile = null;
     profilePhotoPreview = null;
     const input = app.querySelector("#profile-photo");
     if (input) input.value = "";
   }
-
-  const response = await fetch("/api/profile", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name,
-      area,
-      phone: String(form.get("phone") || "").trim(),
-      recoveryEmail: String(form.get("recoveryEmail") || "").trim(),
-      photoUrl,
-    }),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Profile changes could not be saved.");
   setState({ currentUser: result.user });
   setState({ data: result.data });
   setState({ dataRevision: result.revision });

@@ -86,6 +86,8 @@ export async function handleAnnouncements(request, response, db, options, user) 
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/announcements/approval" && request.method === "POST") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "manageAnnouncements")))
+      throw new HttpError(403, "Announcement management is not enabled for this role.");
     requireJsonBody(request);
     const status = String(request.body.status || "");
     const reason = status === "declined" ? String(request.body.reason || "").trim() : "";
@@ -252,6 +254,8 @@ export async function handleAnnouncements(request, response, db, options, user) 
   }
   if (url.pathname === "/api/calendar/events/approval" && request.method === "POST") {
     requireRole(user, ["administrator"]);
+    if (!(await hasPermission(db, user, "manageSchedules")))
+      throw new HttpError(403, "Calendar event management is not enabled for this role.");
     requireJsonBody(request);
     const id = Number(request.body.id);
     const status = String(request.body.status || "");

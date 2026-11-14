@@ -175,11 +175,11 @@ npm run verify:photo-persistence # photos survive a redeploy with the uploads di
 npm run rehearse:concurrency   # simultaneous reads, submissions, photo uploads, approvals, and claims
 ```
 
-Run them after a schema change and before a release that touches persistence, mail, or shared state.
+Run them after a schema change and before a release that touches persistence, mail, or shared state. CI runs all four on every push and pull request (the `rehearsals` job in `.github/workflows/ci.yml`). `rehearse:restore` needs `pg_dump`/`pg_restore` matching the cluster's major version — CI installs PostgreSQL 18's client tools for it. `verify:smtp` and `rehearse:concurrency` need openssl; they resolve a working `openssl` binary (PATH lookup first, then common install locations such as Git for Windows and Homebrew) before failing.
 
 ### Verify the mail delivery path
 
-`npm run verify:smtp` boots the application in production mode against a TLS-verified local PostgreSQL and an SMTP server with STARTTLS and a dedicated CA, then confirms the administrator's test email and a password-recovery mail actually reach the wire with TLS and authentication. It proves the mail path (TLS, auth, message construction) — not any particular provider's acceptance; a provider still needs its own credentials and a real recipient to confirm deliverability. Requires Node and Git for Windows' openssl (or openssl on PATH).
+`npm run verify:smtp` boots the application in production mode against a TLS-verified local PostgreSQL and an SMTP server with STARTTLS and a dedicated CA, then confirms the administrator's test email and a password-recovery mail actually reach the wire with TLS and authentication. It proves the mail path (TLS, auth, message construction) — not any particular provider's acceptance; a provider still needs its own credentials and a real recipient to confirm deliverability. Requires Node and a working `openssl` binary (resolved from PATH or from common install locations such as Git for Windows).
 
 ### Persistent photo storage
 

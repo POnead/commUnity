@@ -19,8 +19,9 @@
 // that can only be confirmed with real credentials and a recipient.
 //
 // Requires: embedded-postgres and openssl for the rehearsal certificates
-// (the repository bundles neither; PG_BIN is reused for the cluster, and the
-// Git for Windows openssl is used when openssl is not on PATH).
+// (the repository bundles neither; PG_BIN is reused for the cluster, and a
+// usable openssl binary is resolved for real — PATH lookup first, then the
+// platform's well-known locations — by scripts/rehearsal-openssl.mjs).
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm, readFile, appendFile, mkdir } from "node:fs/promises";
@@ -31,9 +32,9 @@ import http from "node:http";
 import { promisify } from "node:util";
 import EmbeddedPostgres from "embedded-postgres";
 import pg from "pg";
+import { findOpenSSL } from "./rehearsal-openssl.mjs";
 
 const run = promisify(execFile);
-const GIT_OPENSSL = "C:/Program Files/Git/usr/bin/openssl.exe";
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -90,7 +91,7 @@ async function startTlsCluster(base, port, password) {
 async function issueCertificates(base) {
   const certs = path.join(base, "certs");
   await mkdir(certs, { recursive: true });
-  const openssl = process.env.PATH?.includes("openssl") ? "openssl" : GIT_OPENSSL;
+  const openssl = await findOpenSSL();
   await run(openssl, [
     "req",
     "-x509",

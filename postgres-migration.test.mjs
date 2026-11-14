@@ -81,7 +81,7 @@ test("migrations apply against a real PostgreSQL database and are idempotent", a
   const { pool, stop } = await startPostgres();
   try {
     await migrate(pool);
-    assert.deepEqual(await appliedVersions(pool), [1, 2]);
+    assert.deepEqual(await appliedVersions(pool), [1, 2, 3]);
 
     const tables = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename");
     const names = new Set(tables.rows.map((row) => row.tablename));
@@ -107,6 +107,7 @@ test("migrations apply against a real PostgreSQL database and are idempotent", a
       "recycling_locations",
       "password_reset_tokens",
       "recovery_email_tokens",
+      "email_change_tokens",
     ]) {
       assert.ok(names.has(expected), `missing table: ${expected}`);
     }
@@ -119,7 +120,7 @@ test("migrations apply against a real PostgreSQL database and are idempotent", a
 
     // Re-running the suite applies nothing and does not fail.
     await migrate(pool);
-    assert.deepEqual(await appliedVersions(pool), [1, 2]);
+    assert.deepEqual(await appliedVersions(pool), [1, 2, 3]);
   } finally {
     await stop();
   }
@@ -164,7 +165,7 @@ test("a PostgreSQL database from migration v1 upgrades and backfills service-cyc
     }
 
     await migrate(pool);
-    assert.deepEqual(await appliedVersions(pool), [1, 2]);
+    assert.deepEqual(await appliedVersions(pool), [1, 2, 3]);
 
     const backfilled = await pool.query(
       "SELECT service_cycle_started_at, responded_at, resolved_at, response_deadline, resolution_deadline, priority FROM reports WHERE id = 'R-LEGACY-UPGRADE'",

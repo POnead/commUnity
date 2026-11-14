@@ -909,6 +909,11 @@ export function emailPage() {
 }
 
 export function emailDeliverySection() {
+  if (smtpSettings.encryptionReady === false) {
+    // Encryption is a server concern, so say so plainly instead of offering a form
+    // that can only fail with a 503 at save time.
+    return `<section class="settings-section"><h2>Email</h2><div class="empty-state" role="status"><strong>Email is not set up on this server yet</strong><p>Set the <code>SMTP_SETTINGS_KEY</code> environment variable to a long random secret, then restart the server. The SMTP password is stored AES-GCM encrypted in the database, and the encryption key never comes from the database. See the environment variable table in the README (<code>SMTP_SETTINGS_KEY</code>).</p></div></section>`;
+  }
   return `<section class="settings-section"><h2>Email</h2><form id="smtp-settings-form" class="settings-email"><div class="settings-email-head"><span class="settings-row-icon">${icon("mail")}</span><div><strong>SMTP email</strong><small>Report and collection notifications</small></div><span class="settings-row-arrow">${icon("arrow")}</span></div><div class="smtp-guide"><strong>Start with your email provider</strong><span>Choose a provider to fill the server details. Use an app password or service API key when your provider offers one; do not use your normal email password.</span><div class="smtp-provider-list"><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="gmail">Gmail</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="outlook">Outlook</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="sendgrid">SendGrid</button><button class="button secondary small" type="button" data-action="smtp-preset" data-provider="custom">Other provider</button></div><p class="field-help" id="smtp-provider-help">Select a provider to see where its SMTP password or API key comes from.</p></div><div class="form-grid mt-16">${inputField("SMTP host", "host", smtpSettings.host, { required: true })}${inputField("SMTP port", "port", smtpSettings.port || "587", { type: "number", required: true, min: 1, max: 65535 })}${inputField("SMTP username", "user", smtpSettings.user, { required: true })}${inputField("Sender address", "from", smtpSettings.from, { required: true })}${inputField("SMTP password", "pass", "", { type: "password", autocomplete: "new-password", placeholder: smtpSettings.configured ? "Leave blank to keep current password" : "" })}</div><div class="form-actions"><button class="button" type="submit">Save SMTP settings</button><button class="button secondary" type="button" data-action="test-smtp">Send test email</button></div><p class="field-help">The password is encrypted on the server and never returned to this browser.</p></form></section>`;
 }
 
@@ -1342,13 +1347,21 @@ export function profilePage(role) {
               <div class="section-heading"><div><h2>Personal information</h2></div></div>
               <div class="form-grid">
                 ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
-                ${inputField("Email address", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
+                ${inputField("Sign-in email", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
                 ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
                 ${role === "resident" ? selectField("Purok or area", "area", locationAreas().length ? locationAreas() : AREAS, currentUser.area || (locationAreas().length ? locationAreas()[0] : "Purok 1"), { required: true }) : inputField("Barangay", "area", currentUser.area || "Palsara", { readonly: true })}
                 ${role === "resident" ? inputField("Recovery email", "recoveryEmail", recoveryEmail, { type: "email", placeholder: "Optional", autocomplete: "email", help: recoveryHelp }) : ""}
               </div>
               <input type="file" id="profile-photo" accept="image/jpeg,image/png" class="visually-hidden">
               <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
+            </form>
+            <form id="change-email-form" class="form-stack mt-16">
+              <div class="section-heading"><div><h2>Change sign-in email</h2><p class="field-help">Your email changes only after you confirm the verification link sent to the new address. You will sign in with it afterward.</p></div></div>
+              <div class="form-grid">
+                ${inputField("New email address", "email", "", { required: true, type: "email", autocomplete: "email" })}
+                ${inputField("Current password", "currentPassword", "", { required: true, type: "password", autocomplete: "current-password" })}
+              </div>
+              <div class="form-actions"><button class="button secondary" type="submit">Send verification link</button></div>
             </form>
           </div>
         </section>
@@ -1695,6 +1708,26 @@ export function verifyRecoveryMarkup(token) {
         <form class="login-form" id="verify-recovery-form">
           <input type="hidden" name="token" value="${esc(token)}">
           <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Verify email</button></div>
+        </form>
+      </div></section>
+    </main>`;
+}
+
+export function verifyEmailChangeMarkup(token) {
+  return `
+    <main class="login-page" id="main-content">
+      <section class="login-story" aria-label="About CommUnity">
+        <div class="auth-brand">
+          ${brandMark()}
+          <div class="auth-brand-copy"><strong>CommUnity</strong><span>Palsara community desk</span></div>
+        </div>
+      </section>
+      <section class="login-pane" aria-labelledby="verify-email-title"><div class="login-box">
+        <h1 id="verify-email-title">Confirm new email</h1>
+        <p class="field-help">Confirm that you own this address to change the email used to sign in to CommUnity.</p>
+        <form class="login-form" id="verify-email-form">
+          <input type="hidden" name="token" value="${esc(token)}">
+          <div class="form-actions"><a class="button secondary" href="#/login">Back to sign in</a><button class="button" type="submit">Confirm email</button></div>
         </form>
       </div></section>
     </main>`;

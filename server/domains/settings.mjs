@@ -13,7 +13,11 @@ export async function handleSettings(request, response, db, options, user) {
   }
   if (url.pathname === "/api/settings/smtp" && request.method === "PUT") {
     requireRole(user, ["administrator"]);
-    if (!smtpSettingsKey) throw new HttpError(503, "Configure SMTP_SETTINGS_KEY on the server before saving SMTP settings.");
+    if (!smtpSettingsKey)
+      throw new HttpError(
+        503,
+        "The server could not prepare the encryption key for saved email settings. Set SMTP_SETTINGS_KEY to a long random secret, or make the data directory writable so a local key file can be generated, then restart the server.",
+      );
     requireJsonBody(request);
     const body = request.body;
     const settings = {
@@ -53,12 +57,17 @@ export async function handleSettings(request, response, db, options, user) {
   if (url.pathname === "/api/settings/smtp/test" && request.method === "POST") {
     requireRole(user, ["administrator"]);
     if (!mailerState.mailer) throw new HttpError(400, "Save complete SMTP settings before sending a test email.");
-    await mailerState.mailer.sendMail({
-      from: mailerState.settings.from,
-      to: user.email,
-      subject: "CommUnity SMTP test",
-      text: "CommUnity successfully sent this test email.",
-    });
+    try {
+      await mailerState.mailer.sendMail({
+        from: mailerState.settings.from,
+        to: user.email,
+        subject: "CommUnity SMTP test",
+        text: "CommUnity successfully sent this test email.",
+      });
+    } catch (error) {
+      const detail = String(error?.message || "The mail server rejected the message.").slice(0, 200);
+      throw new HttpError(502, `The test email could not be sent: ${detail}`);
+    }
     sendJson(response, 200, { ok: true });
     return true;
   }

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { hash, passwordHash, verifyPassword } from "../platform/crypto.mjs";
 import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
-import { issueSession, requireRole, publicUser, requestClientAddress } from "../platform/session.mjs";
+import { getSessionUser, issueSession, requireRole, publicUser, requestClientAddress } from "../platform/session.mjs";
 import { recordAttempt } from "../platform/ratelimit.mjs";
 import { cookieValue, SESSION_COOKIE, clearSessionCookie } from "../platform/cookies.mjs";
 import { assertKnownArea, validateAccount, validatePassword, MAX_PASSWORD_LENGTH } from "../platform/validate.mjs";
@@ -15,12 +15,25 @@ const RESET_EMAIL_COOLDOWN_MINUTES = 2;
 const FORGOT_PASSWORD_IP_LIMIT = 10;
 const FORGOT_PASSWORD_EMAIL_LIMIT = 3;
 const RECOVERY_VERIFY_LIMIT = 5;
+const EMAIL_CHANGE_TOKEN_MINUTES = 30;
+
+function emailLinkOrigin(request, appOrigin) {
+  if (appOrigin) return appOrigin;
+  const protocol = request.socket.encrypted ? "https:" : "http:";
+  try {
+    const origin = new URL(`${protocol}//${request.headers.host}`);
+    if (origin.username || origin.password || origin.pathname !== "/") throw new Error("invalid host");
+    return origin.origin;
+  } catch {
+    throw new HttpError(400, "The website address could not be determined for this email.");
+  }
+}
 
 // A recovery link is only sent to an address the owner has confirmed, and only the
 // account's name and role go into the verification email. Returns false when no
 // mailer is configured so the caller can decide what the UI should show.
-export async function sendRecoveryVerification(db, options, user, recoveryEmail) {
-  const { mailerState, smtpFrom, appOrigin } = options;
+export async function sendRecoveryVerification(db, options, request, user, recoveryEmail) {
+  const { mailerState, appOrigin } = options;
   const mailer = mailerState.mailer;
   if (!mailer) return false;
   const rawToken = randomBytes(32).toString("base64url");
@@ -30,9 +43,9 @@ export async function sendRecoveryVerification(db, options, user, recoveryEmail)
     "INSERT INTO recovery_email_tokens(user_id, email, token_hash, expires_at) VALUES($1,$2,$3, now() + ($4 || ' minutes')::interval)",
     [user.id, recoveryEmail, tokenHash, String(RESET_TOKEN_MINUTES)],
   );
-  const verifyLink = `${appOrigin || ""}/#/verify-recovery?token=${rawToken}`;
+  const verifyLink = `${emailLinkOrigin(request, appOrigin)}/#/verify-recovery?token=${rawToken}`;
   await mailer.sendMail({
-    from: smtpFrom,
+    from: mailerState.settings.from,
     to: recoveryEmail,
     subject: "Verify your CommUnity recovery email",
     text: `Confirm this email address for CommUnity password recovery (valid for ${RESET_TOKEN_MINUTES} minutes): ${verifyLink}\n\nPassword reset links are only sent to a recovery email you have confirmed. If you did not request this, ignore this message.`,
@@ -41,7 +54,7 @@ export async function sendRecoveryVerification(db, options, user, recoveryEmail)
 }
 
 export async function handleAuth(request, response, db, options, user) {
-  const { secureCookies, trustedProxyAddresses } = options;
+  const { secureCookies, trustedProxyAddresses, mailerState, appOrigin } = options;
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/auth/login" && request.method === "POST") {
     requireJsonBody(request);
@@ -128,6 +141,79 @@ export async function handleAuth(request, response, db, options, user) {
     sendJson(response, 200, { ok: true });
     return true;
   }
+  if (url.pathname === "/api/auth/change-email" && request.method === "POST") {
+    requireRole(user, ROLES);
+    requireJsonBody(request);
+    await recordAttempt(db, hash(`change-email:${user.id}`), 5);
+    const newEmail = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
+    const currentPassword =
+      typeof request.body.currentPassword === "string" && request.body.currentPassword.length <= MAX_PASSWORD_LENGTH
+        ? request.body.currentPassword
+        : "";
+    validateAccount({ email: newEmail, name: user.name, area: user.area });
+    if (newEmail === user.email) throw new HttpError(400, "Enter a different email address.");
+    const credentials = await db.query("SELECT password_hash FROM user_credentials WHERE user_id=$1", [user.id]);
+    if (!(await verifyPassword(currentPassword, credentials.rows[0]?.password_hash))) {
+      throw new HttpError(400, "The current password is incorrect.");
+    }
+    const exists = await db.query("SELECT 1 FROM users WHERE email=$1 AND id<>$2", [newEmail, user.id]);
+    if (exists.rows.length) throw new HttpError(409, "An account already uses this email address.");
+    if (!mailerState.mailer) throw new HttpError(503, "Email service is not configured. Set up SMTP before changing your email address.");
+
+    const rawToken = randomBytes(32).toString("base64url");
+    const tokenHash = hash(rawToken);
+    await withTransaction(db, async (transaction) => {
+      await transaction.query("DELETE FROM email_change_tokens WHERE user_id=$1", [user.id]);
+      await transaction.query(
+        "INSERT INTO email_change_tokens(user_id,current_email,new_email,token_hash,expires_at) VALUES($1,$2,$3,$4,now()+($5 || ' minutes')::interval)",
+        [user.id, user.email, newEmail, tokenHash, String(EMAIL_CHANGE_TOKEN_MINUTES)],
+      );
+    });
+    const verifyLink = `${emailLinkOrigin(request, appOrigin)}/#/verify-email?token=${rawToken}`;
+    await mailerState.mailer.sendMail({
+      from: mailerState.settings.from,
+      to: newEmail,
+      subject: "Confirm your CommUnity email address",
+      text: `Confirm this email address for your CommUnity account (valid for ${EMAIL_CHANGE_TOKEN_MINUTES} minutes): ${verifyLink}\n\nIf you did not request this change, ignore this message.`,
+    });
+    sendJson(response, 200, {
+      ok: true,
+      message: `A verification link was sent to ${newEmail}. Your sign-in email will change after you confirm it.`,
+    });
+    return true;
+  }
+  if (url.pathname === "/api/auth/verify-email" && request.method === "POST") {
+    requireJsonBody(request);
+    await recordAttempt(db, hash(`verify-email:${requestClientAddress(request, trustedProxyAddresses)}`), RECOVERY_VERIFY_LIMIT * 4);
+    const token = typeof request.body.token === "string" ? request.body.token : "";
+    if (!token) throw new HttpError(400, "A valid verification token is required.");
+    const pending = await db.query(
+      "SELECT user_id,current_email,new_email FROM email_change_tokens WHERE token_hash=$1 AND expires_at>now()",
+      [hash(token)],
+    );
+    if (!pending.rows.length) throw new HttpError(400, "This verification link is invalid or expired.");
+    const { user_id: userId, current_email: currentEmail, new_email: newEmail } = pending.rows[0];
+    try {
+      await withTransaction(db, async (transaction) => {
+        const account = await transaction.query("SELECT id,email,name,role FROM users WHERE id=$1 FOR UPDATE", [userId]);
+        if (!account.rows.length || account.rows[0].email !== currentEmail) {
+          throw new HttpError(400, "This verification link is no longer valid.");
+        }
+        const duplicate = await transaction.query("SELECT 1 FROM users WHERE email=$1 AND id<>$2", [newEmail, userId]);
+        if (duplicate.rows.length) throw new HttpError(409, "An account already uses this email address.");
+        await transaction.query("UPDATE users SET email=$1 WHERE id=$2", [newEmail, userId]);
+        await transaction.query("DELETE FROM email_change_tokens WHERE user_id=$1", [userId]);
+        await insertActivity(transaction, account.rows[0], "Changed account email", `${currentEmail} to ${newEmail}`);
+        await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      });
+    } catch (error) {
+      if (error.code === "23505") throw new HttpError(409, "An account already uses this email address.");
+      throw error;
+    }
+    const sessionUser = user?.id === userId ? await getSessionUser(request, db) : null;
+    sendJson(response, 200, { ok: true, user: sessionUser ? publicUser(sessionUser) : null });
+    return true;
+  }
   if (url.pathname === "/api/auth/password" && request.method === "POST") {
     requireRole(user, ROLES);
     requireJsonBody(request);
@@ -179,7 +265,7 @@ export async function handleAuth(request, response, db, options, user) {
     const clientAddress = requestClientAddress(request, trustedProxyAddresses);
     await recordAttempt(db, hash(`forgot-password-ip:${clientAddress}`), FORGOT_PASSWORD_IP_LIMIT);
     await recordAttempt(db, hash(`forgot-password-email:${recoveryEmail}`), FORGOT_PASSWORD_EMAIL_LIMIT);
-    const { mailerState, smtpFrom, appOrigin } = options;
+    const { mailerState, appOrigin } = options;
     const mailer = mailerState.mailer;
     if (!mailer)
       throw new HttpError(503, "Email service is not configured. Ask an administrator to set up SMTP before requesting a password reset.");
@@ -210,9 +296,9 @@ export async function handleAuth(request, response, db, options, user) {
         "INSERT INTO password_reset_tokens(user_id, token_hash, expires_at) VALUES($1,$2, now() + ($3 || ' minutes')::interval)",
         [account.rows[0].id, tokenHash, String(RESET_TOKEN_MINUTES)],
       );
-      const resetLink = `${appOrigin || ""}/#/reset-password?token=${rawToken}`;
+      const resetLink = `${emailLinkOrigin(request, appOrigin)}/#/reset-password?token=${rawToken}`;
       await mailer.sendMail({
-        from: smtpFrom,
+        from: mailerState.settings.from,
         to: recoveryEmail,
         subject: "CommUnity password reset",
         text: `Reset your CommUnity password using this link (valid for ${RESET_TOKEN_MINUTES} minutes): ${resetLink}`,

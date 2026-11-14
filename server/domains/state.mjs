@@ -699,11 +699,12 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
 }
 
 export async function handleState(request, response, db, options, user) {
-  // TODO(maintainer): `mailer` and `smtpFrom` were never present in options here,
-  // so resident notifications from a /api/state save have only ever been inserted
-  // in-app while queueEmail silently no-ops. Left exactly as the previous behavior;
-  // wire mailerState here deliberately if status-change emails should actually send.
-  const { mailer, smtpFrom, appOrigin } = options;
+  // The application provides the configured transport as `mailerState`; the
+  // sender is the one saved with the SMTP settings. Deriving both here is what
+  // actually delivers report submission and status-change emails.
+  const { mailerState, appOrigin } = options;
+  const mailer = mailerState?.mailer;
+  const smtpFrom = mailerState?.settings?.from;
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/state/revision" && request.method === "GET") {
     // Cheap live-update check: browsers poll this instead of the full state and

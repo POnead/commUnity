@@ -151,6 +151,42 @@ test("the reported-by panel shows the reporter's photo when one exists, initials
   assert.match(withoutPhoto, />RE</, "initials are the fallback");
 });
 
+test("the email settings page shows a setup notice instead of a save-failing form when SMTP_SETTINGS_KEY is missing", async () => {
+  const settings = { host: "smtp.example.test", port: "587", user: "mailer", from: "no-reply@example.test", configured: true };
+
+  core.__setTestState({ smtpSettings: { ...settings, encryptionReady: false } });
+  const blocked = views.emailDeliverySection();
+  assert.match(blocked, /Email is not set up on this server yet/);
+  assert.match(blocked, /SMTP_SETTINGS_KEY/);
+  assert.doesNotMatch(blocked, /id="smtp-settings-form"/);
+
+  core.__setTestState({ smtpSettings: { ...settings, encryptionReady: true } });
+  const ready = views.emailDeliverySection();
+  assert.match(ready, /id="smtp-settings-form"/);
+  assert.match(ready, /smtp\.example\.test/);
+  assert.doesNotMatch(ready, /not set up on this server yet/);
+
+  core.__setTestState({ smtpSettings: { host: "", port: "", user: "", from: "", configured: false, encryptionReady: undefined } });
+});
+
+test("the profile page offers a verified sign-in email change", async () => {
+  core.__setTestState({
+    currentUser: {
+      id: "admin-one",
+      name: "Portal Admin",
+      email: "admin@example.test",
+      role: "administrator",
+      area: "Palsara",
+    },
+  });
+  const profile = views.profilePage("administrator");
+  assert.match(profile, /id="change-email-form"/);
+  assert.match(profile, /name="currentPassword"/);
+  assert.match(profile, /confirm the verification link/);
+  assert.match(profile, /name="email"[^>]*readonly/);
+  core.__setTestState({ currentUser: null });
+});
+
 test("renders community-wide official hours on the resident dashboard", async () => {
   core.__setTestState({
     currentUser: { role: "resident", area: "Purok 1", email: "resident@example.test" },

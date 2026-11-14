@@ -26,6 +26,7 @@ const ADMIN_ACTIVITY_ACTIONS = new Set([
   "Added user account",
   "Created resident account",
   "Changed account password",
+  "Changed account email",
   "Set recovery email",
   "Removed recovery email",
   "Updated profile information",

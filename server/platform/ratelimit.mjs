@@ -19,6 +19,7 @@ export async function pruneExpiredAuthState(db) {
   const sessions = await db.query("DELETE FROM web_sessions WHERE expires_at <= now()");
   await db.query("DELETE FROM password_reset_tokens WHERE expires_at <= now()");
   await db.query("DELETE FROM recovery_email_tokens WHERE expires_at <= now()");
+  await db.query("DELETE FROM email_change_tokens WHERE expires_at <= now()");
   await db.query("DELETE FROM recovery_email_requests WHERE last_requested_at < now() - interval '24 hours'");
   return { attempts: attempts.rowCount, sessions: sessions.rowCount };
 }

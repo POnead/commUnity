@@ -68,7 +68,8 @@ export async function createUser(db, user, body) {
 }
 
 export async function handleUsers(request, response, db, options, user) {
-  const { uploadsDir, mailerState, smtpFrom } = options;
+  const { uploadsDir, mailerState } = options;
+  const smtpFrom = mailerState?.settings?.from;
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/community/working-hours" && request.method === "GET") {
     requireRole(user, ROLES);
@@ -127,7 +128,7 @@ export async function handleUsers(request, response, db, options, user) {
       await insertActivity(db, { ...user, name: body.name.trim() }, "Updated profile information", user.email);
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const verificationSent = needsVerification ? await sendRecoveryVerification(db, options, user, recoveryEmail) : false;
+    const verificationSent = needsVerification ? await sendRecoveryVerification(db, options, request, user, recoveryEmail) : false;
     const updatedUser = await getSessionUser(request, db);
     const [state, revision] = await Promise.all([readFullState(db, updatedUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
     sendJson(response, 200, {

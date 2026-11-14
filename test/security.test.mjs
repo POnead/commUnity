@@ -675,6 +675,10 @@ async function setupVerifiedRecovery(app, smtpServer, accountEmail, recoveryEmai
   });
   const message = smtpServer.messages.find((item) => item.includes("verify-recovery"));
   assert.ok(message, "A recovery verification link should have been emailed");
+  assert.ok(
+    mailText(message).includes(`${app.origin}/#/verify-recovery?token=`),
+    "The email should contain an absolute link to the local app",
+  );
   const token = mailText(message).match(/token=([A-Za-z0-9_-]{20,})/);
   assert.ok(token, "The verification email should carry a token");
   const verified = await api(app, "/api/auth/verify-recovery", { method: "POST", body: { token: token[1] } });
@@ -822,6 +826,10 @@ test("a repeat reset request leaves the link already sent usable", async () => {
     // The earlier link still works
     const resetMessages = smtpServer.messages.filter((item) => item.includes("reset-password"));
     assert.equal(resetMessages.length, 2);
+    assert.ok(
+      mailText(resetMessages[0]).includes(`${app.origin}/#/reset-password?token=`),
+      "Reset emails should contain an absolute app link",
+    );
     const firstToken = mailText(resetMessages[0]).match(/token=([A-Za-z0-9_-]{20,})/);
     const used = await api(app, "/api/auth/reset-password", {
       method: "POST",

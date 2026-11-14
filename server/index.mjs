@@ -11,6 +11,7 @@ import { handleApi } from "./handle-api.mjs";
 import { configureAppTimeZone, getAppTimeZone, DEFAULT_TIME_ZONE } from "./platform/time.mjs";
 import { parseTrustedProxyAddresses } from "./platform/session.mjs";
 import { loadSmtpSettings, createMailer } from "./platform/email.mjs";
+import { resolveSmtpKey } from "./platform/smtp-key.mjs";
 import { pruneExpiredAuthState } from "./platform/ratelimit.mjs";
 import { sweepOrphanUploads } from "./platform/uploads.mjs";
 import { migrate, ensureAdministrator } from "./db/migrate.mjs";
@@ -70,8 +71,19 @@ export async function createCommunityServer({
   const appTimeZone = getAppTimeZone();
   const db = await createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeoutMillis, timeZone: appTimeZone });
   await migrate(db);
+  // The SMTP password is stored encrypted; the key comes from the environment when
+  // the operator provides it, otherwise a random key is generated and kept in a
+  // file next to the data directory. Email settings therefore work out of the
+  // box with no environment configuration.
+  const smtpKey = await resolveSmtpKey({ dataDir, envKey: smtpSettingsKey });
+  if (!smtpKey.key) {
+    console.warn(
+      `CommUnity could not prepare the SMTP settings key. Email settings cannot be saved until this is fixed: set SMTP_SETTINGS_KEY or make the data directory writable (failed at ${smtpKey.keyPath || "unknown path"}).`,
+    );
+  }
+  const effectiveSmtpKey = smtpKey.key;
   const mailerState = {
-    settings: await loadSmtpSettings(db, smtpSettingsKey, {
+    settings: await loadSmtpSettings(db, effectiveSmtpKey, {
       host: smtpHost,
       port: smtpPort,
       user: smtpUser,
@@ -112,7 +124,7 @@ export async function createCommunityServer({
     trustedProxyAddresses,
     uploadsDir,
     mailerState,
-    smtpSettingsKey,
+    smtpSettingsKey: effectiveSmtpKey,
     handleApi,
     HttpError,
     logError,

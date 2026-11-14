@@ -107,6 +107,7 @@ import {
   forgotPasswordMarkup,
   resetPasswordMarkup,
   verifyRecoveryMarkup,
+  verifyEmailChangeMarkup,
   registerMarkup,
 } from "./views.mjs";
 import {
@@ -139,6 +140,7 @@ function routeState() {
   const path = currentPath();
   // Reachable whether or not the visitor is signed in: the emailed link proves the address.
   if (path[0] === "verify-recovery") return { type: "verify-recovery" };
+  if (path[0] === "verify-email") return { type: "verify-email" };
   if (!currentUser) {
     if (path[0] === "register") return { type: "register" };
     if (path[0] === "forgot-password") return { type: "forgot-password" };
@@ -274,6 +276,9 @@ export function render() {
     } else if (route.type === "verify-recovery") {
       const token = new URLSearchParams(window.location.hash.split("?")[1] || "").get("token") || "";
       app.innerHTML = verifyRecoveryMarkup(token);
+    } else if (route.type === "verify-email") {
+      const token = new URLSearchParams(window.location.hash.split("?")[1] || "").get("token") || "";
+      app.innerHTML = verifyEmailChangeMarkup(token);
     } else app.innerHTML = loginMarkup();
     if (modalState) app.insertAdjacentHTML("beforeend", modalMarkup());
   }
@@ -1524,6 +1529,7 @@ async function updateProfile(form) {
     const input = app.querySelector("#profile-photo");
     if (input) input.value = "";
   }
+
   const response = await fetch("/api/profile", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1545,6 +1551,22 @@ async function updateProfile(form) {
   toast(profileSavedMessage(result.recoveryEmail), "success");
 }
 
+async function requestEmailChange(form) {
+  const email = String(form.get("email") || "")
+    .trim()
+    .toLowerCase();
+  const currentPassword = String(form.get("currentPassword") || "");
+  const response = await fetch("/api/auth/change-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, currentPassword }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "The email change could not be requested.");
+  form.reset();
+  toast(result.message || "A verification link was sent to your new email address.", "success");
+}
+
 function profileSavedMessage(recovery = {}) {
   if (recovery.verified) return "Profile saved. Recovery email verified.";
   if (recovery.verificationSent) return "Profile saved. A verification link was sent to your recovery email.";
@@ -1557,7 +1579,9 @@ async function loadSmtpSettings() {
   const response = await fetch("/api/settings/smtp");
   const result = await response.json();
   if (!response.ok) return;
-  setState({ smtpSettings: result.settings });
+  // Keep the server's encryption-readiness flag so the settings page can show a
+  // clear notice instead of a form that would fail at save time.
+  setState({ smtpSettings: { ...result.settings, encryptionReady: result.encryptionReady === true } });
   const form = app.querySelector("#smtp-settings-form");
   if (!form) return;
   for (const [name, value] of Object.entries(smtpSettings)) {
@@ -1838,6 +1862,27 @@ async function verifyRecovery(form) {
   if (!response.ok) throw new Error(result.error || "This verification link is invalid or expired.");
   toast("Recovery email verified. Password reset links will be sent there.", "success");
   window.location.hash = "#/login";
+}
+
+async function verifyEmailChange(form) {
+  const token = String(form.get("token") || "").trim();
+  if (!token) throw new Error("This verification link is missing its code.");
+  const response = await fetch("/api/auth/verify-email", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "This verification link is invalid or expired.");
+  if (result.user) {
+    setState({ currentUser: result.user });
+    window.location.hash = `#/${result.user.role}/profile`;
+    render();
+    toast("Email address updated. Use it the next time you sign in.", "success");
+  } else {
+    toast("Email address updated. Use it the next time you sign in.", "success");
+    window.location.hash = "#/login";
+  }
 }
 
 async function addOrEditUser(form) {
@@ -2642,6 +2687,8 @@ async function handleSubmit(formEvent) {
       await updateCollection(fields);
     } else if (formId === "profile-form") {
       await updateProfile(fields);
+    } else if (formId === "change-email-form") {
+      await requestEmailChange(fields);
     } else if (formId === "smtp-settings-form") {
       await saveSmtpSettings(form);
     } else if (formId === "password-form") {
@@ -2662,7 +2709,9 @@ async function handleSubmit(formEvent) {
     } else if (formId === "reset-password-form") {
       await resetPassword(form);
     } else if (formId === "verify-recovery-form") {
-      await verifyRecovery(form);
+      await verifyRecovery(fields);
+    } else if (formId === "verify-email-form") {
+      await verifyEmailChange(fields);
     } else if (formId === "activity-filter-form") {
       const fields = new FormData(form);
       setState({

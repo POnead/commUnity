@@ -202,6 +202,14 @@ export async function handleAuth(request, response, db, options, user) {
         const duplicate = await transaction.query("SELECT 1 FROM users WHERE email=$1 AND id<>$2", [newEmail, userId]);
         if (duplicate.rows.length) throw new HttpError(409, "An account already uses this email address.");
         await transaction.query("UPDATE users SET email=$1 WHERE id=$2", [newEmail, userId]);
+        // reports.user_email and notifications.target_email both reference the
+        // account email with ON UPDATE CASCADE, so the rename above already follows
+        // the resident's concerns and inbox. Repeat it explicitly so this endpoint
+        // keeps working if those constraints are ever relaxed. The parent update
+        // goes first: a live foreign key requires the new address to exist before
+        // child rows can point at it.
+        await transaction.query("UPDATE reports SET user_email=$1 WHERE user_email=$2", [newEmail, currentEmail]);
+        await transaction.query("UPDATE notifications SET target_email=$1 WHERE target_email=$2", [newEmail, currentEmail]);
         await transaction.query("DELETE FROM email_change_tokens WHERE user_id=$1", [userId]);
         await insertActivity(transaction, account.rows[0], "Changed account email", `${currentEmail} to ${newEmail}`);
         await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");

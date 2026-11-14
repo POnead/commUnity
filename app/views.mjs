@@ -1390,7 +1390,7 @@ export function userRowsMarkup(users) {
     .map(
       (
         user,
-      ) => `<div class="record-row user-record filter-item" role="row" data-search="${esc(`${user.name} ${user.email} ${ROLES[user.role]} ${user.area} ${user.status}`.toLowerCase())}">
+      ) => `<div class="record-row user-record filter-item" role="row" data-account-status="${esc(user.status)}" data-search="${esc(`${user.name} ${user.email} ${ROLES[user.role]} ${user.area} ${user.status}`.toLowerCase())}">
     <div class="identity" role="cell">${userAvatar(user)}<span><strong class="record-primary">${esc(user.name)}</strong><span class="record-secondary">${esc(user.email)}</span>${user.resetRequested ? `<span class="record-secondary" style="color:var(--warning,#b45309)">Reset requested</span>` : ""}</span></div>
     <div class="record-meta" role="cell" data-label="Role">${esc(ROLES[user.role] || user.role)}</div>
     <div class="record-meta" role="cell" data-label="Area">${esc(user.area || "—")}</div>

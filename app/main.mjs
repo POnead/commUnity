@@ -612,7 +612,7 @@ function refreshSearch(searchValue) {
   app.querySelectorAll(".filter-item").forEach((row) => {
     const matchesText = !query || row.dataset.search.includes(query);
     const matchesRole = roleFilter === "all" || row.dataset.search.includes(ROLES[roleFilter].toLowerCase());
-    const matchesStatus = statusFilter === "all" || row.dataset.search.includes(statusFilter.toLowerCase());
+    const matchesStatus = statusFilter === "all" || row.dataset.accountStatus === statusFilter;
     row.dataset.filteredOut = String(!(matchesText && matchesRole && matchesStatus));
   });
   updatePagination();

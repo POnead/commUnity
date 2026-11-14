@@ -11,7 +11,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:e2e": "playwright test",
-    "rehearse:restore": "node scripts/rehearse-restore.mjs"
+    "rehearse:restore": "node scripts/rehearse-restore.mjs",
+    "verify:smtp": "node scripts/verify-smtp-delivery.mjs",
+    "rehearse:concurrency": "node scripts/rehearse-concurrency.mjs",
+    "verify:photo-persistence": "node scripts/verify-photo-persistence.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.13",
@@ -26,6 +29,7 @@
     "@playwright/test": "^1.65.0",
     "embedded-postgres": "^18.6.0-beta.19",
     "eslint": "^10.14.0",
-    "prettier": "^3.10.1"
+    "prettier": "^3.10.1",
+    "smtp-server": "^3.21.4"
   }
 }

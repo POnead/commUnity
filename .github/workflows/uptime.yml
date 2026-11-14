@@ -1,0 +1,47 @@
+# Independent, external check of the deployed application — deliberately not
+# the hosting provider's own health check, so a provider-wide outage still shows
+# up here. It activates once the PRODUCTION_BASE_URL **variable** is set to the
+# public origin (Settings → Secrets and variables → Actions → Variables), for example
+# `https://community.example.com`. Until then this workflow skips itself.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe the public health endpoint
+        env:
+          PRODUCTION_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PRODUCTION_BASE_URL}" ]; then
+            {
+              echo "PRODUCTION_BASE_URL is not configured."
+              echo "Set it to the public HTTPS origin of the deployed application to activate external uptime monitoring."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          body_file=$(mktemp)
+          http_code=$(curl -sS -o "${body_file}" -w "%{http_code}" -m 15 "${PRODUCTION_BASE_URL%/}/api/healthz")
+          echo "/api/healthz answered HTTP ${http_code}"
+          cat "${body_file}"
+          echo
+          if [ "${http_code}" != "200" ]; then
+            echo "::error::the public health endpoint returned HTTP ${http_code}"
+            cat "${body_file}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if ! grep -qF '"status":"ok"' "${body_file}"; then
+            echo "::error::the public health endpoint did not answer the expected body"
+            cat "${body_file}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "The outside world can reach CommUnity and its database." >> "$GITHUB_STEP_SUMMARY"

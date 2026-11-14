@@ -871,7 +871,7 @@ test("the browser retries a save once when only server-owned notifications moved
 
 function noopToast() {}
 
-test("the browser does not retry a save when shared data moved with the revision", async () => {
+test("the browser retry merges its own additive changes into the fresh server state", async () => {
   const base = {
     version: 1,
     users: [],
@@ -901,10 +901,43 @@ test("the browser does not retry a save when shared data moved with the revision
     history: [],
   });
   const edited = structuredClone(base);
-  edited.reports.push({ id: "RPT-mine", userEmail: "r@example.test", title: "My concern" });
+  edited.reports.push({
+    id: "RPT-mine",
+    userEmail: "r@example.test",
+    name: "Resident Example",
+    category: "Drainage problem",
+    title: "My concern",
+    area: "Purok 1",
+    barangay: "Palsara",
+    locationDetail: "Beside the hall",
+    description: "A long enough description to pass validation.",
+    priority: "Medium",
+    urgent: false,
+    submittedAt: "2026-01-02T00:00:00.000Z",
+    updatedAt: "2026-01-02T00:00:00.000Z",
+    status: "Submitted",
+    assignedTo: null,
+    responseDeadline: null,
+    respondedAt: null,
+    resolutionDeadline: null,
+    resolvedAt: null,
+    history: [
+      { status: "Submitted", at: "2026-01-02T00:00:00.000Z", note: "Received.", actorName: "Resident Example", actorRole: "resident" },
+    ],
+    photos: [],
+  });
 
+  const saved = structuredClone(fresh);
+  saved.reports.push(structuredClone(edited.reports[0]));
+  const calls = [];
+  let putAttempts = 0;
   globalThis.fetch = async (url, options = {}) => {
-    if (options.method === "PUT") return stubJsonResponse(409, { error: "Data changed in another session. Reload before saving." });
+    calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+    if (options.method === "PUT") {
+      putAttempts += 1;
+      if (putAttempts === 1) return stubJsonResponse(409, { error: "Data changed in another session. Reload before saving." });
+      return stubJsonResponse(200, { revision: 8, data: saved, user: { role: "resident" } });
+    }
     return stubJsonResponse(200, { data: fresh, revision: 7, user: { role: "resident" } });
   };
 
@@ -912,12 +945,74 @@ test("the browser does not retry a save when shared data moved with the revision
     data: structuredClone(edited),
     dataRevision: 6,
     lastPersistedSnapshot: JSON.stringify(base),
-    currentUser: { role: "resident", email: "r@example.test" },
+    currentUser: { role: "resident", name: "Resident Example", email: "r@example.test", id: "u" },
   });
   globalThis.toast = noopToast;
 
   const outcome = await core.localSave();
-  assert.equal(outcome, false, "the save is refused when shared data really moved");
+  assert.equal(outcome, true, "the save succeeds after the merge-and-retry");
+  assert.equal(calls.length, 3, "one save attempt, one state refresh, one retry");
+  const mergedData = calls[2].body.data;
+  assert.equal(calls[2].body.revision, 7, "the retry carries the refreshed revision");
+  assert.ok(
+    mergedData.reports.some((item) => item.id === "RPT-mine"),
+    "the retry keeps the browser's own new report",
+  );
+  assert.ok(
+    mergedData.schedules.some((item) => item.id === "GCS-other"),
+    "the retry keeps the server's own row",
+  );
+  assert.equal(mergedData.users.length, 0, "the retry takes the server's copy of the user list, not the stale client's");
+  assert.equal(core.dataRevision, 8);
+});
+
+test("officials and administrators still fail cleanly without merging shared edits", async () => {
+  const base = {
+    version: 1,
+    users: [],
+    reports: [],
+    schedules: [],
+    activities: [],
+    permissions: {},
+    accountOverrides: {},
+    announcements: [],
+    calendarEvents: [],
+    locations: [],
+    recyclingLocations: [],
+    notifications: [],
+  };
+  const fresh = structuredClone(base);
+  fresh.schedules.push({
+    id: "GCS-other",
+    area: "Purok 2",
+    zone: "Zone A",
+    date: "2026-01-02",
+    wasteType: "Recyclables",
+    start: "6:00 AM",
+    end: "9:00 AM",
+    frequency: "Weekly",
+    team: "Team A",
+    status: "Scheduled",
+    history: [],
+  });
+  const edited = structuredClone(base);
+  edited.reports.push({ id: "RPT-mine", userEmail: "official@example.test", title: "Official concern" });
+
+  globalThis.fetch = async (url, options = {}) => {
+    if (options.method === "PUT") return stubJsonResponse(409, { error: "Data changed in another session. Reload before saving." });
+    return stubJsonResponse(200, { data: fresh, revision: 7, user: { role: "official" } });
+  };
+
+  core.__setTestState({
+    data: structuredClone(edited),
+    dataRevision: 6,
+    lastPersistedSnapshot: JSON.stringify(base),
+    currentUser: { role: "official", email: "official@example.test" },
+  });
+  globalThis.toast = noopToast;
+
+  const outcome = await core.localSave();
+  assert.equal(outcome, false, "officials do not have additive writes auto-merged");
   assert.equal(JSON.stringify(core.data), JSON.stringify(base), "the browser rolls back to its last persisted snapshot");
 });
 

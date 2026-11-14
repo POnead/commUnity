@@ -252,6 +252,54 @@ export function emptyState() {
   };
 }
 
+// Merge the browser's own pending changes into a fresh copy of the server
+// state for the retry the browser performs when the revision moved while it
+// was working. Deliberately small: the client may only grow reports and
+// activities (their ids are random), flip its own read flags on notifications,
+// and, for residents, change the three own-profile fields the server lets
+// residents change. Everything else comes from the server; the PUT
+// revalidates all of it.
+function byId(items = []) {
+  return new Map((items || []).filter(Boolean).map((item) => [item.id, item]));
+}
+
+export function mergeStateForRetry(localData, serverData, snapshotData) {
+  const merged = structuredClone(serverData);
+  const snapshotReports = byId(snapshotData?.reports);
+  const localReports = byId(localData?.reports);
+  const serverReports = byId(merged.reports);
+  for (const [id, report] of localReports) if (!snapshotReports.has(id)) serverReports.set(id, report);
+  merged.reports = [...serverReports.values()];
+
+  const snapshotActivities = byId(snapshotData?.activities);
+  const localActivities = byId(localData?.activities);
+  const serverActivities = byId(merged.activities);
+  for (const [id, item] of localActivities) if (!snapshotActivities.has(id)) serverActivities.set(id, item);
+  merged.activities = [...serverActivities.values()];
+
+  // Read flags are the only writable part of a notification the client may touch;
+  // take the server's copy and flip read on for items the browser also marked read.
+  const localNotifications = byId(localData?.notifications);
+  merged.notifications = (merged.notifications || []).map((item) => {
+    const local = localNotifications.get(item.id);
+    return local && local.read ? { ...item, read: true } : item;
+  });
+
+  if (currentUser?.role === "resident") {
+    const edited = (localData?.users || []).find((item) => item.id === currentUser?.id);
+    const before = (snapshotData?.users || []).find((item) => item.id === currentUser?.id);
+    const profileEdited = JSON.stringify(edited || null) !== JSON.stringify(before || null);
+    if (edited && profileEdited) {
+      merged.users = (merged.users || []).map((item) =>
+        item.id === currentUser.id
+          ? { ...item, name: edited.name ?? item.name, area: edited.area ?? item.area, phone: edited.phone ?? item.phone }
+          : item,
+      );
+    }
+  }
+  return merged;
+}
+
 // The browser's base snapshot and the server's current state can differ in
 // server-owned rows (a collection reminder, a pruned notification) without the
 // user's change being stale. Compare everything except notifications to decide
@@ -286,6 +334,19 @@ export async function localSave() {
             state.revision !== dataRevision &&
             stateMatchesIgnoringNotifications(state.data, JSON.parse(lastPersistedSnapshot || "null"))
           ) {
+            dataRevision = state.revision;
+            refreshed = true;
+            continue;
+          }
+          // The merge preserves this browser's own pending changes when the
+          // revision moved. It is limited to the resident role: residents are
+          // the role whose shared save is most likely to collide in practice
+          // and whose writes are safely additive (new report, notification read
+          // flags, own profile). Officials and administrators still get a clean
+          // rollback and a clear error instead of a guessed write.
+          if (stateResponse.ok && data && currentUser?.role === "resident") {
+            const snapshot = JSON.parse(lastPersistedSnapshot || "null");
+            data = mergeStateForRetry(data, state.data, snapshot);
             dataRevision = state.revision;
             refreshed = true;
             continue;

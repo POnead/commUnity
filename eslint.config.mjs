@@ -27,7 +27,7 @@ const nodeGlobals = {
 
 export default [
   {
-    ignores: ["node_modules/**", "data/**", "ui-screenshot/**", "pdf files/**", "logo/**", ".github/**"],
+    ignores: ["node_modules/**", "data/**", "ui-screenshot/**", "pdf files/**", "logo/**", ".github/**", ".run/**"],
   },
   js.configs.recommended,
   {
@@ -35,7 +35,8 @@ export default [
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: "module",
-      globals: nodeGlobals,
+      // Browser globals for the expressions Playwright evaluates in page.evaluate().
+      globals: { ...nodeGlobals, document: "readonly", window: "readonly" },
     },
     rules: {
       "no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_", ignoreRestSiblings: true }],

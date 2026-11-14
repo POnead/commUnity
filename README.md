@@ -164,6 +164,23 @@ The `/api/healthz` endpoint checks database readiness. Configure the hosting pro
 
 A managed database is verified only with a public CA by default. Providers that issue their own private certificate will not be trusted until `DATABASE_CA` (or the process-wide `NODE_EXTRA_CA_CERTS`) is set.
 
+### Deployment rehearsals
+
+The database backups, the mail path, photo storage, and simultaneous use are all rehearsed against throwaway infrastructure rather than asserted in prose:
+
+```powershell
+npm run rehearse:restore       # pg_dump & pg_restore against a fresh database, then verify every table
+npm run verify:smtp            # production server delivers mail over verified STARTTLS against a local SMTP server
+npm run verify:photo-persistence # photos survive a redeploy with the uploads directory intact, and 404 with it empty
+npm run rehearse:concurrency   # simultaneous reads, submissions, photo uploads, approvals, and claims
+```
+
+Run them after a schema change and before a release that touches persistence, mail, or shared state.
+
+### Verify the mail delivery path
+
+`npm run verify:smtp` boots the application in production mode against a TLS-verified local PostgreSQL and an SMTP server with STARTTLS and a dedicated CA, then confirms the administrator's test email and a password-recovery mail actually reach the wire with TLS and authentication. It proves the mail path (TLS, auth, message construction) — not any particular provider's acceptance; a provider still needs its own credentials and a real recipient to confirm deliverability. Requires Node and Git for Windows' openssl (or openssl on PATH).
+
 ### Persistent photo storage
 
 Concern photos and profile photos are files, not database rows. Point `UPLOADS_DIR` at a **persistent disk or volume**, not the ephemeral application filesystem, and mount it at the same path on every instance:
@@ -178,12 +195,9 @@ If the disk is lost, the database rows survive but every photo returns 404; rest
 
 ### External uptime monitoring
 
-Use a monitor outside the hosting provider to detect an outage that also takes down the provider's own checks. Point it at `https://<your-domain>/api/healthz` and alert when:
+`.github/workflows/uptime.yml` is an independent probe of the public health endpoint on a 15-minute cron, run by GitHub rather than by this repository or its host provider. It activates when you set the **`PRODUCTION_BASE_URL`** repository variable (Settings → Secrets and variables → Actions → Variables), for example `https://community.example.com`, to the public HTTPS origin; without it the workflow skips itself. The check fails unless the endpoint returns `200` and a body containing `"status":"ok"`. Failures show as repository notification emails, so choose an owner who receives them.
 
-- the request fails, times out, or returns anything other than `200`, and
-- the JSON body no longer contains `"status":"ok"` and `"database":"available"` (the endpoint returns `503` with `"database":"unavailable"` when PostgreSQL cannot be reached).
-
-Send an alert to a channel someone actually watches, and test the alert path once. Forward the server's structured error logs to an operational logging service; the in-app monitoring page is a summary of loaded records, not an independent uptime check.
+Points to check on any external monitor (independent of `.github/workflows/uptime.yml`): alert on a request failure, timeout, or non-200; and on the JSON body no longer containing `"status":"ok"` and `"database":"available"` (the endpoint returns `503` with `"database":"unavailable"` when PostgreSQL cannot be reached). Keep an alerting channel someone actually watches and test it. Forward the server's structured error logs to an operational logging service; the in-app monitoring page is a summary of loaded records, not an independent uptime check.
 
 Schema setup is applied at startup. The database uses separate tables for accounts and password hashes, reports and status history, report photos, schedules and reminder deduplication, notifications, role permissions, activity, announcements, community locations, and recycling listings, with foreign keys, checks, and indexes. Sessions are stored as hashes in PostgreSQL. Configure the provider's automated backups and test restore procedures before using real information.
 

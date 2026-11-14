@@ -1,6 +1,6 @@
 import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
 import { MAX_STATE_BYTES } from "../platform/constants.mjs";
-import { hasPermission, publicUser, requireRole, getSessionUser } from "../platform/session.mjs";
+import { hasPermission, publicUser, requireRole, getSessionUser, readVisibility } from "../platform/session.mjs";
 import {
   assertKnownArea,
   jsonEqual,
@@ -98,7 +98,44 @@ export function makeDefaultState() {
   };
 }
 
-export async function readFullState(db, user = null) {
+// Enforce the read permissions at the source: what the client may see. A
+// disabled permission hides the whole collection rather than leaving it
+// readable — the UI hiding the page is cosmetic, not access control.
+function withholdState(state, user, visibility) {
+  const staff = user.role === "official" || user.role === "administrator";
+  // Reports carry descriptions and photo metadata.
+  const reportsVisible = user.role === "resident" ? visibility.submitReports : visibility.manageReports;
+  if (!reportsVisible) state.reports = [];
+  // Schedules need the schedule permission of the caller's role.
+  const schedulesVisible = user.role === "resident" ? visibility.viewSchedules : visibility.manageSchedules;
+  if (!schedulesVisible) state.schedules = [];
+  // Announcement information and pending events: staff workspace.
+  if (staff && !visibility.manageAnnouncements) {
+    state.announcements = [];
+    state.calendarEvents = [];
+  }
+  // Activities are the administrator's audit log.
+  if (user.role === "administrator" && !visibility.viewAudit) state.activities = [];
+  // Account management: administrators without it get the officials' card view.
+  if (user.role === "administrator" && !visibility.manageUsers) {
+    state.users = state.users
+      .filter((account) => account.role === "resident")
+      .map((account) => ({
+        id: account.id,
+        email: account.email,
+        name: account.name,
+        area: account.area,
+        role: account.role,
+        status: account.status,
+        photoUrl: account.photoUrl,
+      }));
+    state.recyclingLocations = state.recyclingLocations.filter((item) => item.active);
+  }
+  // Role management covers the per-account permission overrides.
+  if (user.role === "administrator" && !visibility.manageRoles) state.accountOverrides = {};
+}
+
+export async function readFullState(db, user = null, { withheld = true } = {}) {
   const state = makeDefaultState();
   if (!user || user.role === "administrator") {
     const users = user
@@ -294,10 +331,11 @@ export async function readFullState(db, user = null) {
   state.locations = locations.rows;
   const recyclingLocations = await db.query(`
     SELECT id, name, barangay, street, purok, landmark, materials, phone, hours, active
-    FROM recycling_locations ${user && user.role !== "administrator" ? "WHERE active=true" : ""}
+    FROM recycling_locations ${!user || (user.role === "administrator") ? "" : "WHERE active=true"}
     ORDER BY active DESC, name
   `);
   state.recyclingLocations = recyclingLocations.rows;
+  if (user && withheld) withholdState(state, user, await readVisibility(db, user));
   return state;
 }
 
@@ -349,6 +387,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
   validateState(body.data);
   const before = await readFullState(db, user);
   const visibleBefore = stateForRole(before, user);
+  const visibility = await readVisibility(db, user);
   let nextRevision = 0;
   await withTransaction(db, async (transaction) => {
     const db = transaction;
@@ -356,6 +395,51 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
     if (Number(revision.rows[0].revision) !== body.revision)
       throw new HttpError(409, "Data changed in another session. Reload before saving.");
     const after = body.data;
+    // Data the caller's permissions do not cover was withheld at read time.
+    // Give the server's copy of those collections precedence, so a stale or
+    // hand-edited echo is preserved as-is instead of read as deletions.
+    const reportsReadable = user.role === "resident" ? visibility.submitReports : visibility.manageReports;
+    if (!reportsReadable) {
+      // A concern id the server does not know in the client's copy is a new
+      // submission attempt, which the disabled permission forbids: refuse it
+      // rather than silently dropping it.
+      if (Array.isArray(after.reports) && after.reports.length) {
+        const ids = [...new Set(after.reports.map((report) => report?.id).filter(Boolean))];
+        if (ids.length) {
+          const existing = await db.query("SELECT id FROM reports WHERE id = ANY($1::text[])", [ids]);
+          const known = new Set(existing.rows.map((row) => row.id));
+          if (ids.some((id) => !known.has(id)))
+            throw new HttpError(
+              403,
+              user.role === "resident" ? "Submitting concerns is not enabled for this role." : "Report management is not enabled for this role.",
+            );
+        }
+      }
+      after.reports = visibleBefore.reports;
+    }
+    if (!(user.role === "resident" ? visibility.viewSchedules : visibility.manageSchedules))
+      after.schedules = visibleBefore.schedules;
+    if (user.role !== "resident" && !visibility.manageAnnouncements) {
+      after.announcements = visibleBefore.announcements;
+      after.calendarEvents = visibleBefore.calendarEvents;
+    }
+    if (user.role === "administrator" && !visibility.manageUsers) {
+      after.users = visibleBefore.users;
+      // Inactive recycling listings are withheld at read time; a stale echo may
+      // hold them, so preserve the server's copy rather than fail the save.
+      after.recyclingLocations = visibleBefore.recyclingLocations;
+    }
+    if (user.role === "administrator") {
+      if (!visibility.viewAudit) {
+        // The audit log is append-only server history; the client echo holds only what it can see.
+        // Filter out any row that already exists server-side instead of re-inserting it as new.
+        const recent = await db.query("SELECT id FROM activities ORDER BY at DESC LIMIT 1000");
+        const knownIds = new Set(recent.rows.map((row) => row.id));
+        after.activities = (Array.isArray(after.activities) ? after.activities : []).filter(
+          (item) => item && !knownIds.has(item.id),
+        );
+      }
+    }
     if (user.role === "resident") {
       requireRole(user, ["resident"]);
       if (after.users.length !== 1 || after.users[0].id !== user.id)
@@ -593,58 +677,60 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         !jsonEqual(before.permissions, after.permissions) || !jsonEqual(before.accountOverrides || {}, after.accountOverrides || {});
       if (permissionsChanged && !(await hasPermission(db, user, "manageRoles")))
         throw new HttpError(403, "Role management is not enabled for this role.");
-      if (after.users.length !== before.users.length) throw new HttpError(403, "Create accounts through the account management form.");
-      const oldUsers = new Map(before.users.map((account) => [account.id, account]));
-      for (const account of after.users) {
-        const old = oldUsers.get(account.id);
-        if (!old) throw new HttpError(403, "Account identifiers cannot be added or replaced through a state update.");
-        validateAccount(account);
-        const availableDays =
-          account.availableDays === undefined
-            ? Array.isArray(old.availableDays) && old.availableDays.length
-              ? validateAvailableDays(old.availableDays)
-              : validateAvailableDays()
-            : validateAvailableDays(account.availableDays);
-        if (
-          account.role === "official" &&
-          (account.role !== old.role || account.workingHours !== old.workingHours || !jsonEqual(availableDays, old.availableDays))
-        ) {
-          validateWorkingHours(account.workingHours);
-        }
-        if (account.role === "resident" && (account.role !== old.role || account.area !== old.area)) {
-          await assertKnownArea(db, account.area);
-        }
-        if (old.id === user.id && (account.email !== old.email || account.role !== "administrator" || account.status !== "Active")) {
-          throw new HttpError(403, "You cannot change your own administrator sign-in or access.");
-        }
-        if (account.status !== old.status) {
-          throw new HttpError(
-            403,
-            "Account status cannot be changed through the account editor. Deactivate or reactivate the account from the user list instead.",
+      if (visibility.manageUsers) {
+        if (after.users.length !== before.users.length) throw new HttpError(403, "Create accounts through the account management form.");
+        const oldUsers = new Map(before.users.map((account) => [account.id, account]));
+        for (const account of after.users) {
+          const old = oldUsers.get(account.id);
+          if (!old) throw new HttpError(403, "Account identifiers cannot be added or replaced through a state update.");
+          validateAccount(account);
+          const availableDays =
+            account.availableDays === undefined
+              ? Array.isArray(old.availableDays) && old.availableDays.length
+                ? validateAvailableDays(old.availableDays)
+                : validateAvailableDays()
+              : validateAvailableDays(account.availableDays);
+          if (
+            account.role === "official" &&
+            (account.role !== old.role || account.workingHours !== old.workingHours || !jsonEqual(availableDays, old.availableDays))
+          ) {
+            validateWorkingHours(account.workingHours);
+          }
+          if (account.role === "resident" && (account.role !== old.role || account.area !== old.area)) {
+            await assertKnownArea(db, account.area);
+          }
+          if (old.id === user.id && (account.email !== old.email || account.role !== "administrator" || account.status !== "Active")) {
+            throw new HttpError(403, "You cannot change your own administrator sign-in or access.");
+          }
+          if (account.status !== old.status) {
+            throw new HttpError(
+              403,
+              "Account status cannot be changed through the account editor. Deactivate or reactivate the account from the user list instead.",
+            );
+          }
+          await db.query(
+            "UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6,working_hours=$7,available_days=$8::jsonb WHERE id=$9",
+            [
+              account.email.trim().toLowerCase(),
+              account.name.trim(),
+              account.area.trim(),
+              account.phone.trim(),
+              account.role,
+              account.status,
+              String(account.workingHours || "Monday-Friday, 8:00 AM-5:00 PM").trim(),
+              JSON.stringify(availableDays),
+              account.id,
+            ],
           );
+          // A demoted account must not keep per-account overrides: hasPermission
+          // applies them regardless of role, so they would still elevate access.
+          if (old.role === "official" && account.role !== "official") {
+            await db.query("UPDATE users SET permission_overrides='{}'::jsonb WHERE id=$1", [account.id]);
+          }
         }
-        await db.query(
-          "UPDATE users SET email=$1,name=$2,area=$3,phone=$4,role=$5,status=$6,working_hours=$7,available_days=$8::jsonb WHERE id=$9",
-          [
-            account.email.trim().toLowerCase(),
-            account.name.trim(),
-            account.area.trim(),
-            account.phone.trim(),
-            account.role,
-            account.status,
-            String(account.workingHours || "Monday-Friday, 8:00 AM-5:00 PM").trim(),
-            JSON.stringify(availableDays),
-            account.id,
-          ],
-        );
-        // A demoted account must not keep per-account overrides: hasPermission
-        // applies them regardless of role, so they would still elevate access.
-        if (old.role === "official" && account.role !== "official") {
-          await db.query("UPDATE users SET permission_overrides='{}'::jsonb WHERE id=$1", [account.id]);
-        }
+        const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
+        if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
       }
-      const activeAdmins = await db.query("SELECT count(*)::integer AS count FROM users WHERE role='administrator' AND status='Active'");
-      if (Number(activeAdmins.rows[0].count) < 1) throw new HttpError(400, "At least one active administrator must remain.");
       for (const old of before.reports) {
         const incoming = after.reports.find((report) => report.id === old.id);
         if (!incoming) throw new HttpError(403, "Reports cannot be deleted from the administrator workspace.");

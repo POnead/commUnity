@@ -118,3 +118,94 @@ test("a combined save with an invalid field is refused atomically", async () => 
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("a failed profile save after the photo is written preserves the previous image", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-profile-photo-rollback-"));
+  const uploadsDir = path.join(dataDir, "uploads");
+  const app = await startServer(dataDir, {}, { uploadsDir });
+  try {
+    const resident = await registerResident(app, "rollback-photo@example.test", "Rollback Photo");
+    const putPhoto = (filename) =>
+      putForm(
+        app,
+        "/api/profile",
+        resident.cookie,
+        profileForm({ name: "Rollback Photo", area: "Purok 2", phone: "", recoveryEmail: "", filename }),
+      );
+
+    // First save establishes a committed photo that the next save must not lose.
+    const first = await putPhoto("first.jpg");
+    const firstText = await first.text();
+    assert.equal(first.status, 200, firstText);
+    const firstBody = JSON.parse(firstText);
+    const firstPhotoUrl = firstBody.user.photoUrl;
+    const originalFetch = await fetch(`${app.origin}${firstPhotoUrl}`, { headers: { Cookie: resident.cookie } });
+    assert.equal(originalFetch.status, 200);
+    const originalBytes = Buffer.from(await originalFetch.arrayBuffer());
+
+    // Break the transaction by hiding the activity table the save depends on,
+    // then attempt a second save with a different photo. This exercises the
+    // path where the new image has been written but the database write is
+    // rolled back, and it must leave the previous image intact.
+    await app.db.query("ALTER TABLE activities RENAME TO activities_hidden_for_rollback_test");
+    const second = await putPhoto("second.jpg");
+    assert.equal(second.status, 500, "the save must fail");
+    await app.db.query("ALTER TABLE activities_hidden_for_rollback_test RENAME TO activities");
+
+    const stored = await app.db.query("SELECT photo_url FROM users WHERE email=$1", ["rollback-photo@example.test"]);
+    assert.equal(stored.rows[0].photo_url, firstPhotoUrl, "the database must still reference the first image");
+    const files = await readdir(path.join(uploadsDir, "profiles"));
+    assert.equal(files.length, 1, "only the previous image belongs on disk");
+
+    const restored = await fetch(`${app.origin}${firstPhotoUrl}`, { headers: { Cookie: resident.cookie } });
+    assert.equal(restored.status, 200, "the previous image must still be served");
+    const restoredBytes = Buffer.from(await restored.arrayBuffer());
+    assert.deepEqual(restoredBytes, originalBytes, "the previous image bytes must be untouched");
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a second photo replaces the first and the old file is removed once the transaction commits", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-profile-photo-replace-"));
+  const uploadsDir = path.join(dataDir, "uploads");
+  const app = await startServer(dataDir, {}, { uploadsDir });
+  try {
+    const resident = await registerResident(app, "replace-photo@example.test", "Replace Photo");
+    const putPhoto = (filename) =>
+      putForm(
+        app,
+        "/api/profile",
+        resident.cookie,
+        profileForm({ name: "Replace Photo", area: "Purok 2", phone: "", recoveryEmail: "", filename }),
+      );
+
+    const first = await putPhoto("first.jpg");
+    const firstText = await first.text();
+    assert.equal(first.status, 200, firstText);
+    const firstBody = JSON.parse(firstText);
+    const firstUrl = firstBody.user.photoUrl;
+    const filesBefore = await readdir(path.join(uploadsDir, "profiles"));
+    assert.equal(filesBefore.length, 1, "one image for one photo");
+
+    const second = await putPhoto("second.jpg");
+    const secondText = await second.text();
+    assert.equal(second.status, 200, secondText);
+    const secondBody = JSON.parse(secondText);
+    const secondUrl = secondBody.user.photoUrl;
+    assert.notEqual(secondUrl, firstUrl, "each save referenced its own image");
+
+    const filesAfter = await readdir(path.join(uploadsDir, "profiles"));
+    assert.equal(filesAfter.length, 1, "the previous image is removed once the commit succeeds");
+    assert.equal(filesAfter[0].endsWith(".jpg"), true, "the surviving file is a JPEG");
+
+    const stale = await fetch(`${app.origin}${firstUrl}`, { headers: { Cookie: resident.cookie } });
+    assert.equal(stale.status, 404, "the replaced image is gone");
+    const current = await fetch(`${app.origin}${secondUrl}`, { headers: { Cookie: resident.cookie } });
+    assert.equal(current.status, 200);
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

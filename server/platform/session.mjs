@@ -58,6 +58,33 @@ export async function hasPermission(db, user, permission) {
   return Boolean(result.rows[0]?.enabled);
 }
 
+// The permissions that gate which workspace data a caller may retrieve.
+// Read visibility is as much a security boundary as the write checks: a role
+// matrix without it hides pages but leaks the data behind them. Every caller
+// of the state endpoints resolves it before reading or saving.
+export async function readVisibility(db, user) {
+  if (!user) {
+    return {
+      submitReports: true,
+      viewSchedules: true,
+      manageReports: true,
+      manageSchedules: true,
+      manageAnnouncements: true,
+      manageUsers: true,
+      manageRoles: true,
+      viewAudit: true,
+    };
+  }
+  const keys =
+    user.role === "resident"
+      ? ["submitReports", "viewSchedules"]
+      : user.role === "official"
+        ? ["manageReports", "manageSchedules", "manageAnnouncements"]
+        : ["manageReports", "manageSchedules", "manageAnnouncements", "manageUsers", "manageRoles", "viewAudit"];
+  const entries = await Promise.all(keys.map(async (key) => [key, await hasPermission(db, user, key)]));
+  return Object.fromEntries(entries);
+}
+
 export async function issueSession(response, db, user, remember, secure) {
   const token = randomBytes(32).toString("base64url");
   const duration = remember ? `${REMEMBER_DAYS} days` : `${SESSION_HOURS} hours`;

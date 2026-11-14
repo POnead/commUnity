@@ -22,6 +22,14 @@ import { insertActivity } from "./activity.mjs";
 import { readFullState, stateForRole } from "./state.mjs";
 import { sendRecoveryVerification } from "./auth.mjs";
 
+// Extract the filename from a stored profile photo URL. Anything that is not the expected
+// unique filename shape — including the legacy user.id\<ext\> layout — returns null, so a
+// stale or hand-crafted URL can never traverse out of the uploads directory.
+function profilePhotoFilenameFromUrl(photoUrl) {
+  const match = String(photoUrl || "").match(/^\/api\/profile-photo\/[^/]+\/([A-Za-z0-9._-]+\.(jpg|png))$/);
+  return match ? match[1] : null;
+}
+
 export async function createUser(db, user, body) {
   requireRole(user, ["administrator"]);
   if (!(await hasPermission(db, user, "manageUsers")))
@@ -117,10 +125,12 @@ export async function handleUsers(request, response, db, options, user) {
       if (photoFile.data.length > MAX_PHOTO_BYTES) throw new HttpError(413, `${photoFile.name}: photo files must be 5 MB or smaller.`);
     }
     const stored = await db.query(
-      'SELECT recovery_email AS "recoveryEmail", recovery_email_verified AS "recoveryEmailVerified" FROM users WHERE id=$1',
+      `SELECT recovery_email AS "recoveryEmail", recovery_email_verified AS "recoveryEmailVerified", photo_url AS "photoUrl"
+         FROM users WHERE id=$1`,
       [user.id],
     );
     const previousEmail = stored.rows[0]?.recoveryEmail || "";
+    const previousPhotoUrl = stored.rows[0]?.photoUrl || "";
     const wasVerified = Boolean(stored.rows[0]?.recoveryEmailVerified);
     const emailChanged = recoveryEmail !== previousEmail;
     // A new address, or one that was never confirmed, stays inactive until the owner proves they control it.
@@ -129,6 +139,10 @@ export async function handleUsers(request, response, db, options, user) {
     if (needsVerification) {
       await recordAttempt(db, hash(`recovery-verify-send:${user.id}`), 5);
     }
+    // Every committed photo is a unique, immutable file: the previous image is only deleted
+    // after the database commit that references the new one has succeeded, so a failed
+    // save can never leave the database pointing at a file that no longer exists.
+    const previousPhotoFilename = profilePhotoFilenameFromUrl(previousPhotoUrl);
     let renamedPhoto = null;
     try {
       await withTransaction(db, async (transaction) => {
@@ -144,11 +158,10 @@ export async function handleUsers(request, response, db, options, user) {
         if (photoFile) {
           const profileDir = path.join(uploadsDir, "profiles");
           await mkdir(profileDir, { recursive: true });
-          const filename = `${user.id}${photoExtension_}`;
+          const filename = `${user.id}.${randomUUID()}${photoExtension_}`;
           const filePath = path.join(profileDir, filename);
-          const temporaryPath = path.join(profileDir, `${user.id}.${randomUUID()}.tmp`);
-          const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}`;
-          // Replace the old image atomically.
+          const temporaryPath = path.join(profileDir, `${filename}.tmp`);
+          const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}/${filename}`;
           try {
             await writeFile(temporaryPath, photoFile.data);
             await rename(temporaryPath, filePath);
@@ -158,9 +171,6 @@ export async function handleUsers(request, response, db, options, user) {
           }
           renamedPhoto = filePath;
           await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
-          for (const other of PHOTO_EXTENSIONS) {
-            if (other !== photoExtension_) await unlink(path.join(profileDir, `${user.id}${other}`)).catch(() => {});
-          }
         }
         if (emailChanged) {
           await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [user.id]);
@@ -179,6 +189,11 @@ export async function handleUsers(request, response, db, options, user) {
       // failed save never leaves the new image behind.
       if (renamedPhoto) await unlink(renamedPhoto).catch(() => {});
       throw error;
+    }
+    // The transaction committed and the database now references only the new
+    // image; the previous image may safely leave the filesystem.
+    if (previousPhotoFilename && renamedPhoto && previousPhotoFilename !== path.basename(renamedPhoto)) {
+      await unlink(path.join(uploadsDir, "profiles", previousPhotoFilename)).catch(() => {});
     }
     const verificationSent = needsVerification ? await sendRecoveryVerification(db, options, request, user, recoveryEmail) : false;
     const updatedUser = await getSessionUser(request, db);
@@ -317,7 +332,7 @@ export async function handleUsers(request, response, db, options, user) {
     sendJson(response, 201, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
     return true;
   }
-  const profilePhotoMatch = url.pathname.match(/^\/api\/profile-photo\/([^/]+)$/);
+  const profilePhotoMatch = url.pathname.match(/^\/api\/profile-photo\/([^/]+)(?:\/([A-Za-z0-9._-]+))?$/);
   if (url.pathname === "/api/profile-photo" && request.method === "POST") {
     requireRole(user, ROLES);
     await recordAttempt(db, hash(`profile-photo:${user.id}`), 10);
@@ -327,14 +342,16 @@ export async function handleUsers(request, response, db, options, user) {
     const extension = photoExtension(file.data);
     if (!extension) throw new HttpError(400, `${file.name}: choose a JPG or PNG image.`);
     if (file.data.length > MAX_PHOTO_BYTES) throw new HttpError(413, `${file.name}: photo files must be 5 MB or smaller.`);
+    const stored = await db.query("SELECT photo_url FROM users WHERE id=$1", [user.id]);
+    const previousPhotoUrl = stored.rows[0]?.photo_url || "";
     const profileDir = path.join(uploadsDir, "profiles");
     await mkdir(profileDir, { recursive: true });
-    const filename = `${user.id}${extension}`;
+    // Every upload writes a unique, immutable file — the previous image is
+    // deleted only after the new reference has been committed to the database.
+    const filename = `${user.id}.${randomUUID()}${extension}`;
     const filePath = path.join(profileDir, filename);
-    const temporaryPath = path.join(profileDir, `${user.id}.${randomUUID()}.tmp`);
-    const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}`;
-    // Replace the old image atomically. The previous version used an exclusive
-    // create (wx), so a second upload failed and the cleanup deleted the good file.
+    const temporaryPath = path.join(profileDir, `${filename}.tmp`);
+    const photoUrl = `/api/profile-photo/${encodeURIComponent(user.id)}/${filename}`;
     try {
       await writeFile(temporaryPath, file.data);
       await rename(temporaryPath, filePath);
@@ -342,9 +359,15 @@ export async function handleUsers(request, response, db, options, user) {
       await unlink(temporaryPath).catch(() => {});
       throw error;
     }
-    await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
-    for (const other of PHOTO_EXTENSIONS) {
-      if (other !== extension) await unlink(path.join(profileDir, `${user.id}${other}`)).catch(() => {});
+    try {
+      await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
+    } catch (error) {
+      await unlink(filePath).catch(() => {});
+      throw error;
+    }
+    const previousPhotoFilename = profilePhotoFilenameFromUrl(previousPhotoUrl);
+    if (previousPhotoFilename && previousPhotoFilename !== filename) {
+      await unlink(path.join(profileDir, previousPhotoFilename)).catch(() => {});
     }
     sendJson(response, 201, { photoUrl });
     return true;
@@ -355,30 +378,54 @@ export async function handleUsers(request, response, db, options, user) {
     // The id is percent-decoded before it reaches a filesystem path; reject
     // anything that is not a plain identifier, including embedded separators.
     if (!validId(requestedId)) throw new HttpError(404, "The profile photo could not be found.");
+    const requestedUrlFilename = profilePhotoMatch[2] ? decodeURIComponent(profilePhotoMatch[2]) : null;
     // Residents can see their own photo, administrators can see every photo,
     // and officials can see resident photos (they handle the concern queue the
     // residents file into). Staff-to-staff photos stay administrator-only.
-    let allowed = requestedId === user.id || user.role === "administrator";
-    if (!allowed && user.role === "official") {
+    let allowed = requestedId === user.id;
+    if (!allowed && (user.role === "official" || user.role === "administrator")) {
       const target = await db.query("SELECT role FROM users WHERE id=$1", [requestedId]);
-      allowed = target.rows[0]?.role === "resident";
+      const targetRole = target.rows[0]?.role;
+      if (targetRole === "resident") {
+        // The concern queue is what gives either staff role access.
+        allowed = await hasPermission(db, user, "manageReports");
+        if (!allowed) throw new HttpError(403, "Report management is not enabled for this role.");
+      } else {
+        // Staff-to-staff photos stay administrator-only.
+        allowed = user.role === "administrator";
+      }
     }
     if (!allowed) {
       throw new HttpError(403, "You cannot view this profile photo.");
     }
-    let image = null;
     let filename = null;
-    for (const ext of PHOTO_EXTENSIONS) {
-      const candidate = path.join(uploadsDir, "profiles", `${requestedId}${ext}`);
-      try {
-        image = await readFile(candidate);
-        filename = `${requestedId}${ext}`;
-        break;
-      } catch {
-        continue;
+    if (requestedUrlFilename) {
+      // The URL names one file, so the database has to agree that the account's current
+      // photo is exactly this one. A stale filename or a hand-crafted one resolves to nothing.
+      const stored = await db.query("SELECT photo_url FROM users WHERE id=$1", [requestedId]);
+      const uploaded = profilePhotoFilenameFromUrl(stored.rows[0]?.photo_url || "");
+      if (uploaded !== requestedUrlFilename) throw new HttpError(404, "The profile photo could not be found.");
+      filename = uploaded;
+    } else {
+      // Legacy layout: the historic user.id-based file referenced by stores written before the
+      // immutable filenames were introduced.
+      for (const ext of PHOTO_EXTENSIONS) {
+        try {
+          await readFile(path.join(uploadsDir, "profiles", `${requestedId}${ext}`));
+          filename = `${requestedId}${ext}`;
+          break;
+        } catch {
+          continue;
+        }
       }
+      if (!filename) throw new HttpError(404, "The profile photo could not be found.");
     }
-    if (!image || !filename) throw new HttpError(404, "The profile photo could not be found.");
+    let image;
+    try {
+      image = await readFile(path.join(uploadsDir, "profiles", filename));
+    } catch {
+      throw new HttpError(404, "The profile photo could not be found.");
+    }
     response.writeHead(200, {
       "Cache-Control": "private, no-store",
       "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",

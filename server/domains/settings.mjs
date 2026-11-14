@@ -54,6 +54,16 @@ export async function handleSettings(request, response, db, options, user) {
     sendJson(response, 200, { settings: publicSmtpSettings(settings) });
     return true;
   }
+  if (url.pathname === "/api/settings/smtp" && request.method === "DELETE") {
+    requireRole(user, ["administrator"]);
+    // Only the owning administrator can clear saved SMTP settings, so a stranger
+    // cannot clear themselves into an undeliverable-mail state.
+    await db.query("DELETE FROM app_settings WHERE key='smtp'");
+    mailerState.settings = { host: "", port: "", user: "", pass: "", from: "" };
+    mailerState.mailer = null;
+    sendJson(response, 200, { settings: publicSmtpSettings(null) });
+    return true;
+  }
   if (url.pathname === "/api/settings/smtp/test" && request.method === "POST") {
     requireRole(user, ["administrator"]);
     if (!mailerState.mailer) throw new HttpError(400, "Save complete SMTP settings before sending a test email.");

@@ -3,9 +3,12 @@
 // new address, and confirm the resident keeps their existing concern, photo,
 // and notifications.
 //
-// The shared e2e server starts without SMTP, so this spec brings up an
-// in-process SMTP sink, saves it through the administrator settings endpoint,
-// and reads the verification message directly from the sink.
+// The shared e2e server starts without SMTP; this spec brings up an in-process
+// SMTP sink and saves it through the administrator settings endpoint. Once the
+// email-change tests finish, the settings are deleted again so any later suite
+// that triggers an email runs against a server with no mailer at all, matching
+// the default state other specs see at the start of the run. Each spec file
+// runs in its own worker process, so the sink cannot outlive this file.
 import { test, expect } from "@playwright/test";
 import { mailText, startSmtpSink } from "../helpers.mjs";
 
@@ -57,7 +60,24 @@ async function logout(page) {
 
 test.describe.configure({ mode: "serial" });
 
-test.afterAll(async () => {
+test.afterAll(async ({ request: api }) => {
+  // Only the email-change spec needs SMTP; leaving it configured would make
+  // every later suite log ECONNREFUSED once this spec's worker exits and
+  // takes the sink with it. If the admin session is intact, delete the saved
+  // configuration so the rest of the suite sees the same no-mailer state as at
+  // the start of the run.
+  try {
+    const signedIn = await api.post("/api/auth/login", {
+      headers: ORIGIN,
+      data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+    });
+    if (signedIn.ok()) {
+      await api.delete("/api/settings/smtp", { headers: ORIGIN });
+    }
+  } catch {
+    // The delete endpoint is the best-effort half of the cleanup; the sink
+    // still closes when this process exits.
+  }
   if (sink) await new Promise((resolve) => sink.close(resolve));
 });
 

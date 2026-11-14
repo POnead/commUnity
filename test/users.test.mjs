@@ -585,7 +585,6 @@ test("a second profile photo replaces the first instead of deleting it", async (
       },
     });
     assert.equal(registered.status, 201);
-    const user = (await registered.json()).user;
     const cookie = registered.headers.get("set-cookie")?.split(";")[0] || "";
 
     const first = await uploadPhoto(app, "/api/profile-photo", cookie, TEST_JPEG);
@@ -593,11 +592,13 @@ test("a second profile photo replaces the first instead of deleting it", async (
     const second = await uploadPhoto(app, "/api/profile-photo", cookie, TEST_JPEG);
     assert.equal(second.status, 201, "Changing a profile photo must work");
     const photoUrl = (await second.json()).photoUrl;
+    const filename = decodeURIComponent(new URL(photoUrl, app.origin).pathname.split("/").pop());
 
     const image = await fetch(`${app.origin}${photoUrl}`, { headers: { Cookie: cookie } });
     assert.equal(image.status, 200, "The replaced photo must still be served");
     const files = await readdir(path.join(path.dirname(dataDir), "uploads", "profiles"));
-    assert.ok(files.includes(`${user.id}.jpg`));
+    assert.ok(files.includes(filename), "the stored filename must be present under uploads/profiles");
+    assert.match(filename, /^[A-Za-z0-9._-]+\.jpg$/, "the stored filename must be an immutable id-dot-uuid name");
     assert.equal(
       files.some((file) => file.endsWith(".tmp")),
       false,

@@ -19,7 +19,13 @@ test("SMTP settings save from the website and send a test email with no environm
     const saved = await api(app, "/api/settings/smtp", {
       method: "PUT",
       cookie: admin.cookie,
-      body: { host: "127.0.0.1", port: sink.address().port, user: "mailer", from: "no-reply@example.test", pass: "a-fake-mailbox-password" },
+      body: {
+        host: "127.0.0.1",
+        port: sink.address().port,
+        user: "mailer",
+        from: "no-reply@example.test",
+        pass: "a-fake-mailbox-password",
+      },
     });
     assert.equal(saved.status, 200, `save failed: ${await saved.text()}`);
 
@@ -54,6 +60,45 @@ test("SMTP settings save from the website and send a test email with no environm
     sink.close();
     await rm(dataDir, { recursive: true, force: true });
     await rm(keyPath, { force: true });
+  }
+});
+
+test("clearing SMTP settings from the website round-trips to no mailer configured", async () => {
+  const sink = await startSmtpSink();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-smtp-clear-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+
+    const saved = await api(app, "/api/settings/smtp", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: {
+        host: "127.0.0.1",
+        port: sink.address().port,
+        user: "mailer",
+        from: "no-reply@example.test",
+        pass: "a-fake-mailbox-password",
+      },
+    });
+    assert.equal(saved.status, 200, `save failed: ${await saved.text()}`);
+
+    const before = await api(app, "/api/settings/smtp", { cookie: admin.cookie }).then((response) => response.json());
+    assert.equal(before.settings.configured, true);
+
+    const cleared = await api(app, "/api/settings/smtp", { method: "DELETE", cookie: admin.cookie });
+    assert.equal(cleared.status, 200, `clear failed: ${await cleared.text()}`);
+
+    const after = await api(app, "/api/settings/smtp", { cookie: admin.cookie }).then((response) => response.json());
+    assert.equal(after.settings.configured, false, "the mailer must be unconfigured after the clear");
+    assert.equal(after.settings.host, "", "the host is forgotten");
+    const testMail = await api(app, "/api/settings/smtp/test", { method: "POST", cookie: admin.cookie });
+    assert.equal(testMail.status, 400, "the test email needs a configured mailer");
+  } finally {
+    await app.close().catch(() => {});
+    sink.close();
+    await rm(dataDir, { recursive: true, force: true });
+    await rm(path.join(path.dirname(dataDir), "smtp-settings.key"), { force: true });
   }
 });
 

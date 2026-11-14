@@ -272,6 +272,15 @@ async function serveReportPhoto(request, response, db, options, user, url, photo
   const { uploadsDir } = options;
   const reportId = decodeURIComponent(photoMatch[1]);
   requireRole(user, ROLES);
+  // The concern queue is what gives staff photo access. Without the concern
+  // permission, photos of any report stay closed; residents keep access to
+  // their own concerns, gated by the permission that lets them file them.
+  if (user.role === "resident") {
+    if (!(await hasPermission(db, user, "submitReports")))
+      throw new HttpError(403, "Submitting concerns is not enabled for this role.");
+  } else if (!(await hasPermission(db, user, "manageReports"))) {
+    throw new HttpError(403, "Report management is not enabled for this role.");
+  }
   if (!validId(reportId)) throw new HttpError(404, "The report photo could not be found.");
   const uploadsRoot = path.resolve(uploadsDir);
   const reportDirectory = path.resolve(uploadsRoot, reportId);

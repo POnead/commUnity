@@ -13,7 +13,7 @@ const PUBLIC_DIRECTORIES = new Set(["app/"]);
 const PUBLIC_FILES = new Set([
   "index.html",
   "styles.css",
-  "logo/palsara-transparent.png",
+  "logo/palsara-transparent.webp",
   "favicon.png",
   "node_modules/leaflet/dist/leaflet.js",
   "node_modules/leaflet/dist/leaflet.css",

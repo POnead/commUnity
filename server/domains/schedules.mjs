@@ -170,11 +170,13 @@ function scheduleUpdateMessage(schedule) {
 
 export async function syncSchedules(db, oldSchedules, newSchedules, user) {
   validateScheduleCollection(newSchedules);
+  // Every schedule in the batch lives in one of these areas; check each area once, not once per row.
+  const uniqueAreas = [...new Set(newSchedules.map((item) => String(item?.area || "").trim()).filter(Boolean))];
+  for (const area of uniqueAreas) await assertKnownArea(db, area);
   const oldById = new Map(oldSchedules.map((item) => [item.id, item]));
   const newById = new Map(newSchedules.map((item) => [item.id, item]));
   const changed = new Set();
   for (const item of newSchedules) {
-    await assertKnownArea(db, item.area);
     const previous = oldById.get(item.id);
     let history = Array.isArray(item.history) ? item.history.map((entry) => ({ ...entry })) : [];
     if (!previous) {

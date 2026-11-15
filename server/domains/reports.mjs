@@ -248,21 +248,55 @@ export async function replaceReport(db, report) {
       report.serviceCycleStartedAt,
     ],
   );
-  await db.query("DELETE FROM report_history WHERE report_id = $1", [report.id]);
-  await db.query("DELETE FROM report_photos WHERE report_id = $1", [report.id]);
-  for (const [position, item] of report.history.entries()) {
-    await db.query(
-      "INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-      [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""],
-    );
+  // Rewriting history/photos on every save churns both tables for edits that
+  // never touch them; skip when the stored copies match exactly.
+  const existingHistory = await db.query(
+    `SELECT status, at, note, actor_name AS "actorName", actor_role AS "actorRole"
+     FROM report_history WHERE report_id=$1 ORDER BY position`,
+    [report.id],
+  );
+  const historyUnchanged =
+    existingHistory.rows.length === report.history.length &&
+    existingHistory.rows.every((row, index) => {
+      const item = report.history[index];
+      const rowAt = row.at instanceof Date ? row.at.toISOString() : new Date(row.at).toISOString();
+      return (
+        row.status === item.status &&
+        rowAt === item.at &&
+        row.note === item.note &&
+        (row.actorName || "") === (item.actorName || "") &&
+        (row.actorRole || "") === (item.actorRole || "")
+      );
+    });
+  const existingPhotos = await db.query(
+    `SELECT name, photo_url AS "photoUrl" FROM report_photos WHERE report_id=$1 ORDER BY position`,
+    [report.id],
+  );
+  const photosUnchanged =
+    existingPhotos.rows.length === report.photos.length &&
+    existingPhotos.rows.every((row, index) => {
+      const photo = report.photos[index];
+      return row.name === photo.name && row.photoUrl === photo.photoUrl;
+    });
+  if (!historyUnchanged) {
+    await db.query("DELETE FROM report_history WHERE report_id = $1", [report.id]);
+    for (const [position, item] of report.history.entries()) {
+      await db.query(
+        "INSERT INTO report_history (report_id, position, status, at, note, actor_name, actor_role) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        [report.id, position, item.status, item.at, item.note, item.actorName || "", item.actorRole || ""],
+      );
+    }
   }
-  for (const [position, photo] of report.photos.entries()) {
-    await db.query("INSERT INTO report_photos (report_id,position,name,photo_url) VALUES ($1,$2,$3,$4)", [
-      report.id,
-      position,
-      photo.name,
-      photo.photoUrl,
-    ]);
+  if (!photosUnchanged) {
+    await db.query("DELETE FROM report_photos WHERE report_id = $1", [report.id]);
+    for (const [position, photo] of report.photos.entries()) {
+      await db.query("INSERT INTO report_photos (report_id,position,name,photo_url) VALUES ($1,$2,$3,$4)", [
+        report.id,
+        position,
+        photo.name,
+        photo.photoUrl,
+      ]);
+    }
   }
 }
 

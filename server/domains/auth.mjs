@@ -6,6 +6,7 @@ import { recordAttempt } from "../platform/ratelimit.mjs";
 import { cookieValue, SESSION_COOKIE, clearSessionCookie } from "../platform/cookies.mjs";
 import { assertKnownArea, validateAccount, validatePassword, MAX_PASSWORD_LENGTH } from "../platform/validate.mjs";
 import { ROLES } from "../platform/roles.mjs";
+import { getAppTimeZone } from "../platform/time.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { insertActivity, logSecurityEvent } from "./activity.mjs";
 import { insertNotification } from "./notifications.mjs";
@@ -406,7 +407,7 @@ export async function handleAuth(request, response, db, options, user) {
     return true;
   }
   if (url.pathname === "/api/session" && request.method === "GET") {
-    sendJson(response, 200, { user: publicUser(user) });
+    sendJson(response, 200, { user: publicUser(user), timeZone: getAppTimeZone() });
     return true;
   }
   return false;

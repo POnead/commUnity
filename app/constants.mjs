@@ -1,6 +1,21 @@
 // Every calendar day shown or validated in the interface is the barangay's day,
-// not the day of whatever time zone the browser happens to be in.
-export const APP_TIME_ZONE = "Asia/Manila";
+// not the day of whatever time zone the browser happens to be in. The server
+// reports the deployment's zone at sign-in (GET /api/session); until then, Manila.
+let appTimeZone = "Asia/Manila";
+export function getAppTimeZone() {
+  return appTimeZone;
+}
+export function setAppTimeZone(zone) {
+  try {
+    if (typeof zone === "string" && zone) {
+      // Throws RangeError on an invalid zone; the server already validated its own.
+      new Intl.DateTimeFormat("en-US", { timeZone: zone });
+      appTimeZone = zone;
+    }
+  } catch {
+    /* keep the default */
+  }
+}
 
 export const ROLES = {
   resident: "Resident",

@@ -343,6 +343,13 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
   return state;
 }
 
+// Every mutation that returns the refreshed workspace sends the same trio. One
+// home for it so the shape is changed in one place.
+export async function sendStateResponse(response, db, user, statusCode = 200, extra = {}) {
+  const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
+  sendJson(response, statusCode, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user), ...extra });
+}
+
 export function stateForRole(state, user) {
   // Per-account permission overrides carry officials' email addresses, so they
   // are administrative data: an administrator manages every official's
@@ -874,18 +881,16 @@ export async function handleState(request, response, db, options, user) {
   }
   if (url.pathname === "/api/state" && request.method === "GET") {
     requireRole(user, ROLES);
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    await sendStateResponse(response, db, user);
     return true;
   }
   if (url.pathname === "/api/state" && request.method === "PUT") {
     requireRole(user, ROLES);
     requireJsonBody(request);
     const body = request.body;
-    const revision = await updateState(db, user, body, { mailer, smtpFrom, appOrigin });
+    await updateState(db, user, body, { mailer, smtpFrom, appOrigin });
     const currentUser = await getSessionUser(request, db);
-    const state = await readFullState(db, currentUser);
-    sendJson(response, 200, { revision, data: stateForRole(state, currentUser), user: publicUser(currentUser) });
+    await sendStateResponse(response, db, currentUser);
     return true;
   }
   return false;

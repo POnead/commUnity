@@ -6,6 +6,29 @@ import { PGlite } from "@electric-sql/pglite";
 // from the server default. PGlite takes its zone from its own session; managed
 // PostgreSQL gets the zone through the startup packet (`options`), so no extra
 // round trip is paid per borrowed connection.
+//
+// PGlite runs one session with no pool. Every query — a single statement or a
+// whole transaction — must reach the database inside one queued unit, or two
+// requests (or a request and a periodic maintenance job) land in the same open
+// transaction and destroy each other's writes. Queueing is in-process only.
+// shortcut: one shared queue, fine for the single-process PGlite deployment; managed PostgreSQL keeps real per-connection isolation. Upgrade path: drop the queue if PGlite ever supports sessions.
+let pgliteQueue = Promise.resolve();
+function enqueue(work) {
+  const run = pgliteQueue.then(work);
+  // A failed unit must not jam the queue for the next caller.
+  pgliteQueue = run.catch(() => {});
+  return run;
+}
+
+function queuedPglite(db) {
+  return {
+    query: (text, params) => enqueue(() => db.query(text, params)),
+    close: () => db.close(),
+    // The queue already serializes units; transactions just run inline inside theirs.
+    raw: db,
+  };
+}
+
 export async function createDatabase({ dataDir, databaseUrl, poolMax, connectionTimeoutMillis, timeZone }) {
   const setSessionTimeZone = (client) => client.query("SELECT set_config('TimeZone', $1, false)", [timeZone]);
   if (databaseUrl) {
@@ -30,26 +53,36 @@ export async function createDatabase({ dataDir, databaseUrl, poolMax, connection
   const db = new PGlite(dataDir);
   await db.waitReady;
   await setSessionTimeZone(db);
-  return db;
+  return queuedPglite(db);
+}
+
+async function runInTransaction(client, work) {
+  await client.query("BEGIN");
+  try {
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("CommUnity database transaction rollback failed.", rollbackError);
+    }
+    throw error;
+  }
 }
 
 export async function withTransaction(db, work) {
-  const client = typeof db.connect === "function" ? await db.connect() : db;
-  try {
-    await client.query("BEGIN");
+  if (typeof db.connect === "function") {
+    const client = await db.connect();
     try {
-      const result = await work(client);
-      await client.query("COMMIT");
-      return result;
-    } catch (error) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error("CommUnity database transaction rollback failed.", rollbackError);
-      }
-      throw error;
+      return await runInTransaction(client, work);
+    } finally {
+      client.release();
     }
-  } finally {
-    if (client !== db) client.release();
   }
+  // The facade queues its own statements; a transaction needs the raw session so
+  // its statements stay inside the unit this call enqueues.
+  const raw = db.raw ?? db;
+  return enqueue(() => runInTransaction(raw, work));
 }

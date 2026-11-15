@@ -10,6 +10,7 @@ data/uploads/
 
 # Local run artifacts
 .run/
+graphify-out/
 
 # Playwright
 test-results/

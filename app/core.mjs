@@ -1,7 +1,8 @@
 "use strict";
 
 import {
-  APP_TIME_ZONE,
+  getAppTimeZone,
+  setAppTimeZone,
   ROLES,
   COLLECTION_STATUSES,
   REPORT_PRIORITIES,
@@ -20,12 +21,6 @@ import { hasUnsavedPermissionChanges } from "./views.mjs";
 
 export function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
-}
-export function locationBarangays() {
-  return [...new Set((data?.locations || []).map((location) => location.barangay))];
-}
-export function areasInBarangay(barangay) {
-  return (data?.locations || []).filter((location) => location.barangay === barangay).map((location) => location.area);
 }
 export function locationAreaLabels() {
   return Object.fromEntries(
@@ -76,9 +71,8 @@ export let smtpSettings = { host: "", port: "", user: "", from: "", configured: 
 export let reportDraft = null;
 export let modalState = null;
 export let forcedPasswordDismissed = false;
-export const calendarToday = appDateParts();
-export let calendarMonth = Number(calendarToday.month) - 1;
-export let calendarYear = Number(calendarToday.year);
+export let calendarMonth = Number(appDateParts().month) - 1;
+export let calendarYear = Number(appDateParts().year);
 export let calendarSelectedDate = "";
 export let selectedPermissionRole = "resident";
 export let permissionDrafts = {};
@@ -130,7 +124,7 @@ export function icon(name, extra = "") {
   return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${extra}">${icons[name] || icons.home}</svg>`;
 }
 export function brandMark() {
-  return '<span class="brand-mark"><img src="/logo/palsara-transparent.png" alt="Palsara barangay logo"></span>';
+  return '<span class="brand-mark"><img src="/logo/palsara-transparent.webp" alt="Palsara barangay logo"></span>';
 }
 
 export function esc(value) {
@@ -157,7 +151,7 @@ export function appDateParts(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error("A saved CommUnity date is invalid.");
   const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: APP_TIME_ZONE,
+    timeZone: getAppTimeZone(),
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -168,13 +162,13 @@ export function appDateParts(value = new Date()) {
 
 export function dateLabel(value, options = { day: "numeric", month: "short", year: "numeric" }) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, ...options }).format(asDate(value));
+  return new Intl.DateTimeFormat("en-PH", { timeZone: getAppTimeZone(), ...options }).format(asDate(value));
 }
 
 export function dateTimeLabel(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-PH", {
-    timeZone: APP_TIME_ZONE,
+    timeZone: getAppTimeZone(),
     day: "numeric",
     month: "short",
     hour: "numeric",
@@ -389,6 +383,11 @@ export async function loadLocalData() {
     const sessionResponse = await fetch("/api/session");
     const session = await sessionResponse.json();
     if (!sessionResponse.ok) throw new Error(session.error || "CommUnity could not check your sign-in.");
+    // The server runs on the deployment's zone; the browser must agree or the two render different days.
+    setAppTimeZone(session.timeZone);
+    const parts = appDateParts();
+    calendarMonth = Number(parts.month) - 1;
+    calendarYear = Number(parts.year);
     currentUser = session.user;
     if (!currentUser) {
       data = emptyState();
@@ -784,10 +783,6 @@ export function sortedNotifications(items = data.notifications || []) {
   return [...items].sort((a, b) => asDate(b.createdAt) - asDate(a.createdAt));
 }
 
-export function selectedAreaFor(user = currentUser) {
-  return user?.area || "Palsara";
-}
-
 export function routeUrl(role, page) {
   return `#/${role}/${page}`;
 }
@@ -798,12 +793,6 @@ export function linkButton(label, href, variant = "secondary", extra = "") {
 
 export function actionButton(label, action, variant = "secondary", extra = "", attrs = "") {
   return `<button class="button ${variant} ${extra}" type="button" data-action="${esc(action)}" ${attrs}>${label}</button>`;
-}
-
-export function selectOptions(items, selected, labels = {}) {
-  return items
-    .map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labels[item] || item)}</option>`)
-    .join("");
 }
 
 export function inputField(label, name, value = "", options = {}) {
@@ -919,38 +908,6 @@ export function setState(changes = {}) {
   }
 }
 
-// Test hook: lets the vm-based frontend tests override module state.
-export function __setTestState(next = {}) {
-  const handlers = {
-    data: (v) => (data = v),
-    currentUser: (v) => (currentUser = v),
-    modalState: (v) => (modalState = v),
-    dataRevision: (v) => (dataRevision = v),
-    lastPersistedSnapshot: (v) => (lastPersistedSnapshot = v),
-    reportDraft: (v) => (reportDraft = v),
-    activityLogState: (v) => (activityLogState = v),
-    activityFilters: (v) => (activityFilters = v),
-    activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
-    permissionDrafts: (v) => (permissionDrafts = v),
-    permissionOpenGroups: (v) => (permissionOpenGroups = v),
-    permissionOpenAccounts: (v) => (permissionOpenAccounts = v),
-    calendarMonth: (v) => (calendarMonth = v),
-    calendarYear: (v) => (calendarYear = v),
-    calendarSelectedDate: (v) => (calendarSelectedDate = v),
-    selectedPermissionRole: (v) => (selectedPermissionRole = v),
-    communityOfficialHours: (v) => (communityOfficialHours = v),
-    selectedReportId: (v) => (selectedReportId = v),
-    reportFilter: (v) => (reportFilter = v),
-    notificationFilter: (v) => (notificationFilter = v),
-    uploadPhotos: (v) => (uploadPhotos = v),
-    smtpSettings: (v) => (smtpSettings = v),
-    forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v),
-    currentRoute: (v) => (currentRoute = v),
-    pendingReportRoute: (v) => (pendingReportRoute = v),
-    toastTimer: (v) => (toastTimer = v),
-  };
-  for (const [key, value] of Object.entries(next)) {
-    if (!handlers[key]) throw new Error(`__setTestState: unknown key "${key}"`);
-    handlers[key](value);
-  }
-}
+// Test hook: lets the vm-based frontend tests override module state. Same
+// handlers as setState, so the two never drift apart.
+export const __setTestState = setState;

@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { CONTENT_TYPES } from "../platform/constants.mjs";
 import { passwordHash, hash } from "../platform/crypto.mjs";
 import { HttpError, readMultipart, requireJsonBody, sendJson } from "../platform/http.mjs";
-import { getSessionUser, requireRole, publicUser, hasPermission } from "../platform/session.mjs";
+import { getSessionUser, requireRole, hasPermission } from "../platform/session.mjs";
 import { recordAttempt } from "../platform/ratelimit.mjs";
 import {
   assertKnownArea,
@@ -20,7 +20,7 @@ import { logError } from "../platform/log.mjs";
 import { ROLES } from "../platform/roles.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { insertActivity } from "./activity.mjs";
-import { readFullState, stateForRole } from "./state.mjs";
+import { sendStateResponse } from "./state.mjs";
 import { sendRecoveryVerification } from "./auth.mjs";
 
 // Extract the filename from a stored profile photo URL. Anything that is not the expected
@@ -217,13 +217,7 @@ export async function handleUsers(request, response, db, options, user) {
       }
     }
     const updatedUser = await getSessionUser(request, db);
-    const [state, revision] = await Promise.all([readFullState(db, updatedUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, {
-      data: stateForRole(state, updatedUser),
-      revision: Number(revision.rows[0].revision),
-      user: publicUser(updatedUser),
-      recoveryEmail: { verified, verificationSent },
-    });
+    await sendStateResponse(response, db, updatedUser, 200, { recoveryEmail: { verified, verificationSent } });
     return true;
   }
   if (url.pathname === "/api/users/password-reset" && request.method === "POST") {
@@ -260,12 +254,7 @@ export async function handleUsers(request, response, db, options, user) {
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     const currentUser = await getSessionUser(request, db);
-    const [state, revision] = await Promise.all([readFullState(db, currentUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, {
-      data: stateForRole(state, currentUser),
-      revision: Number(revision.rows[0].revision),
-      user: publicUser(currentUser),
-    });
+    await sendStateResponse(response, db, currentUser);
     return true;
   }
   if (url.pathname === "/api/users/deactivate" && request.method === "POST") {
@@ -336,20 +325,14 @@ export async function handleUsers(request, response, db, options, user) {
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     const currentUser = await getSessionUser(request, db);
-    const [state, revision] = await Promise.all([readFullState(db, currentUser), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, {
-      data: stateForRole(state, currentUser),
-      revision: Number(revision.rows[0].revision),
-      user: publicUser(currentUser),
-    });
+    await sendStateResponse(response, db, currentUser);
     return true;
   }
   if (url.pathname === "/api/users" && request.method === "POST") {
     requireRole(user, ["administrator"]);
     requireJsonBody(request);
     await createUser(db, user, request.body);
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 201, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    await sendStateResponse(response, db, user, 201);
     return true;
   }
   const profilePhotoMatch = url.pathname.match(/^\/api\/profile-photo\/([^/]+)(?:\/([A-Za-z0-9._-]+))?$/);

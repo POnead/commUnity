@@ -154,6 +154,35 @@ test("the server records an administrator's location change in the audit log", a
   }
 });
 
+test("an unchanged location directory writes no location audit rows on a save", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-activity-noop-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const before = await app.db.query(
+      "SELECT count(*)::integer AS count FROM activities WHERE action='Updated a community location'",
+    );
+    const state = await api(app, "/api/state", { cookie: admin.cookie }).then((response) => response.json());
+    const saved = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: admin.cookie,
+      body: { revision: state.revision, data: state.data },
+    });
+    assert.equal(saved.status, 200, await saved.text());
+    const after = await app.db.query(
+      "SELECT count(*)::integer AS count FROM activities WHERE action='Updated a community location'",
+    );
+    assert.equal(
+      Number(after.rows[0].count),
+      Number(before.rows[0].count),
+      "saving without changing a location writes no location audit row",
+    );
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("the server records community and account management operations in the audit log", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-admin-activity-suite-"));
   const app = await startServer(dataDir);

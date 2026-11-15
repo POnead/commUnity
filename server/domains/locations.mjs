@@ -46,6 +46,7 @@ export async function syncLocations(db, oldLocations, newLocations, user) {
       if (references.rows[0].used)
         throw new HttpError(409, "This location is already used by an account, report, or schedule. Keep its area label unchanged.");
     }
+    if (old && jsonEqual(old, item)) continue; // unchanged rows write no audit noise
     await db.query(
       `
       INSERT INTO community_locations (id,area,barangay,street,purok,landmark)

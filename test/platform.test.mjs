@@ -88,7 +88,7 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.equal((await fetch(`${app.origin}/app/..%2Fserver%2Findex.mjs`)).status, 404);
     const session = await api(app, "/api/session");
     assert.equal(session.status, 200);
-    assert.deepEqual(await session.json(), { user: null });
+    assert.deepEqual(await session.json(), { user: null, timeZone: "Asia/Manila" });
     assert.equal((await api(app, "/api/state")).status, 401);
 
     const wrongOrigin = await api(app, "/api/auth/login", {

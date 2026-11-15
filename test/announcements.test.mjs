@@ -97,6 +97,24 @@ test("stores calendar event coordinates and returns them in saved state", async 
   }
 });
 
+test("a one-sided map pin is refused instead of pinned to latitude 0", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-calendar-pin-"));
+  const app = await startServer(dataDir);
+  try {
+    const admin = await signIn(app);
+    const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const response = await api(app, "/api/calendar/events", {
+      method: "POST",
+      cookie: admin.cookie,
+      body: { title: "Half pin", detail: "Only the longitude is set.", date, latitude: "", longitude: 121.09465 },
+    });
+    assert.equal(response.status, 400, await response.text());
+  } finally {
+    await app.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("pending announcement decline stores reason, notifies creator and hides from residents", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-decline-cell-"));
   const app = await startServer(dataDir);

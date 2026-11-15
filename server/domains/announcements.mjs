@@ -1,13 +1,11 @@
-import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
+import { HttpError, requireJsonBody } from "../platform/http.mjs";
 import { requireRole, hasPermission } from "../platform/session.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { appDateISO } from "../platform/time.mjs";
 import { insertNotification } from "./notifications.mjs";
 import { insertActivity } from "./activity.mjs";
 import { queueEmail } from "../platform/email.mjs";
-import { readFullState, stateForRole } from "./state.mjs";
-import { publicUser } from "../platform/session.mjs";
-
+import { sendStateResponse } from "./state.mjs";
 // Announcements and calendar events are one feature area: officials propose,
 // administrators approve, residents see what is approved. They share the same
 // approval workflow and the same notification fan-out.
@@ -64,10 +62,10 @@ function validateCalendarEvent(body) {
   if (body.date < appDateISO()) throw new HttpError(400, "Events cannot be scheduled before today.");
   const latitude = Number(body.latitude);
   const longitude = Number(body.longitude);
-  if (
-    (body.latitude !== undefined && body.latitude !== null && body.latitude !== "") ||
-    (body.longitude !== undefined && body.longitude !== null && body.longitude !== "")
-  ) {
+  const latProvided = body.latitude !== undefined && body.latitude !== null && body.latitude !== "";
+  const lngProvided = body.longitude !== undefined && body.longitude !== null && body.longitude !== "";
+  if (latProvided !== lngProvided) throw new HttpError(400, "Enter both the map location coordinates, or neither.");
+  if (latProvided) {
     if (
       !Number.isFinite(latitude) ||
       latitude < -90 ||
@@ -132,8 +130,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    await sendStateResponse(response, db, user);
     return true;
   }
   if (url.pathname === "/api/announcements" && ["POST", "PUT", "DELETE"].includes(request.method)) {
@@ -202,8 +199,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    await sendStateResponse(response, db, user);
     return true;
   }
   if (url.pathname === "/api/calendar/events" && request.method === "POST") {
@@ -248,8 +244,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    await sendStateResponse(response, db, user);
     return true;
   }
   if (url.pathname === "/api/calendar/events/approval" && request.method === "POST") {
@@ -301,8 +296,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
-    const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-    sendJson(response, 200, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user) });
+    await sendStateResponse(response, db, user);
     return true;
   }
   return false;

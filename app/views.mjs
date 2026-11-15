@@ -53,7 +53,7 @@ import {
   activityFilters,
 } from "./core.mjs";
 import {
-  APP_TIME_ZONE,
+  getAppTimeZone,
   ROLES,
   STATUSES,
   REPORT_TRANSITIONS,
@@ -267,7 +267,7 @@ export function pageTitle(role, page) {
 
 export function shell(role, page, title, description, body, actions = "") {
   const roleLabel = ROLES[role];
-  const date = new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "short", month: "short", day: "numeric" }).format(
+  const date = new Intl.DateTimeFormat("en-PH", { timeZone: getAppTimeZone(), weekday: "short", month: "short", day: "numeric" }).format(
     new Date(),
   );
   const account = `<div class="user-chip">${userAvatar(currentUser)}<div class="user-chip-copy"><strong>${esc(currentUser.name)}</strong><span>${esc(roleLabel)}</span></div></div>`;
@@ -578,7 +578,7 @@ export function scheduleRows(schedules, canEdit = false) {
               : "";
         return `<div class="record-row schedule-record filter-item" role="row" data-search="${esc(`${schedule.id} ${schedule.area} ${schedule.zone} ${schedule.wasteType} ${schedule.status}`.toLowerCase())}">
       <div role="cell"><strong class="record-primary">${esc(schedule.wasteType)}</strong><span class="record-secondary">${esc(schedule.area)} · ${esc(schedule.zone)}</span></div>
-      <div class="record-date" role="cell" data-label="Collection date">${esc(dateLabel(schedule.date))}<span class="record-secondary">${esc(new Intl.DateTimeFormat("en-PH", { timeZone: APP_TIME_ZONE, weekday: "long" }).format(asDate(schedule.date)))}</span></div>
+      <div class="record-date" role="cell" data-label="Collection date">${esc(dateLabel(schedule.date))}<span class="record-secondary">${esc(new Intl.DateTimeFormat("en-PH", { timeZone: getAppTimeZone(), weekday: "long" }).format(asDate(schedule.date)))}</span></div>
       <div class="record-meta" role="cell" data-label="Collection window">${esc(schedule.start)} – ${esc(schedule.end)}<span class="record-secondary">${esc(schedule.team)}</span></div>
       <div role="cell" data-label="Status">${statusPill(schedule.status)}${statusDetail}</div>
       <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="view-schedule" data-id="${esc(schedule.id)}">Details</button>${canEdit ? `<button class="button secondary small" type="button" data-action="edit-schedule" data-id="${esc(schedule.id)}">Edit</button>` : `<span class="record-meta">${esc(schedule.frequency)}</span>`}</div>

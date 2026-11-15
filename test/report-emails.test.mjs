@@ -152,3 +152,96 @@ test("an official status update emails the resident and keeps the in-app notific
     await rm(path.join(path.dirname(dataDir), "smtp-settings.key"), { force: true });
   }
 });
+
+test("a save carrying several new concerns is refused before it can insert reports, notify staff, or send mail", async () => {
+  const sink = await startSmtpSink();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "community-multi-concern-refuse-"));
+  const app = await startServer(dataDir, {
+    smtpHost: "127.0.0.1",
+    smtpPort: String(sink.address().port),
+    smtpUser: "smtp-user",
+    smtpPass: "smtp-pass",
+    smtpFrom: "CommUnity <no-reply@example.test>",
+  });
+  try {
+    const admin = await signIn(app);
+    await createOfficial(app, admin.cookie);
+    const resident = await registerResident(app, "batch-resident@example.test", "Batch Resident");
+
+    const state = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    const now = new Date().toISOString();
+    const craftedIds = ["RPT-batch-1", "RPT-batch-2", "RPT-batch-3"];
+    const forgedConcern = (id, index) => ({
+      id,
+      userEmail: resident.email,
+      name: resident.name,
+      category: "Flooding",
+      title: `Crafted concern ${index}`,
+      area: "Purok 2",
+      barangay: "Palsara",
+      locationDetail: "Near the school",
+      latitude: 14.01799,
+      longitude: 121.09465,
+      description: "Water pools near the school entrance after rain.",
+      urgent: true,
+      priority: "High",
+      status: "Submitted",
+      submittedAt: now,
+      updatedAt: now,
+      photos: [],
+      history: [{ status: "Submitted", at: now, note: "Report received." }],
+    });
+    // Every crafted report is individually valid, so only the one-report-per-request
+    // guard can stop the batch from being processed.
+    const data = structuredClone(state.data);
+    data.reports.push(...craftedIds.map((id, index) => forgedConcern(id, index + 1)));
+
+    const attempt = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: state.revision, data },
+    });
+    const attemptBody = await attempt.json();
+    assert.equal(attempt.status, 400, JSON.stringify(attemptBody));
+    assert.match(attemptBody.error, /Only one new report can be submitted per request/);
+
+    // Nothing may reach the database: no concerns, no notifications for staff or
+    // the resident, no audit entries, and the revision must not advance.
+    const stored = await app.db.query("SELECT id FROM reports WHERE id = ANY($1::text[])", [craftedIds]);
+    assert.equal(stored.rows.length, 0, "no crafted concern may be on file");
+    const notified = await app.db.query(
+      "SELECT count(*)::integer AS count FROM notifications WHERE report_id = ANY($1::text[])",
+      [craftedIds],
+    );
+    assert.equal(notified.rows[0].count, 0, "no notification may be raised for the crafted concerns");
+    const logged = await app.db.query("SELECT count(*)::integer AS count FROM activities WHERE detail LIKE '%RPT-batch-%'");
+    assert.equal(logged.rows[0].count, 0, "no audit activity may be logged for the crafted concerns");
+    const meta = await app.db.query("SELECT revision FROM app_meta WHERE id=1");
+    assert.equal(Number(meta.rows[0].revision), state.revision, "a refused save must not advance the revision");
+
+    // Mail is queued after the response is sent, so give a working mailer a
+    // chance to deliver before concluding nothing was queued.
+    await delay(500);
+    assert.equal(sink.messages.length, 0, "no staff email may be queued for the refused concerns");
+
+    // The normal single-concern flow still works afterwards.
+    const fresh = await api(app, "/api/state", { cookie: resident.cookie }).then((response) => response.json());
+    const single = structuredClone(fresh.data);
+    single.reports.push(forgedConcern("RPT-batch-single", 1));
+    const submitted = await api(app, "/api/state", {
+      method: "PUT",
+      cookie: resident.cookie,
+      body: { revision: fresh.revision, data: single },
+    });
+    assert.equal(submitted.status, 200, await submitted.text());
+    const onFile = await app.db.query("SELECT id FROM reports WHERE id=$1", ["RPT-batch-single"]);
+    assert.equal(onFile.rows.length, 1, "one new concern per request is still accepted");
+    // Drain the queued staff mail so the sink is not closed mid-delivery.
+    await waitForMessage(sink, /To: .*admin@example\.test/i, "the administrator concern email");
+    await waitForMessage(sink, /To: .*official@example\.test/i, "the official concern email");
+  } finally {
+    await app.close();
+    sink.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

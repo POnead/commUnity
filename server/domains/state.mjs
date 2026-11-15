@@ -398,6 +398,10 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
   if (user?.role === "resident" && Array.isArray(body.data?.reports)) {
     const known = new Set(visibleBefore.reports.map((report) => report.id));
     const adding = body.data.reports.filter((report) => report && !known.has(report.id)).length;
+    // The normal concern flow files one report per request. A save that sneaks
+    // several new ones in at once is refused here, before the transaction can
+    // insert records, notify staff, or queue mail for each of them.
+    if (adding > 1) throw new HttpError(400, "Only one new report can be submitted per request.");
     if (adding) await recordAttempt(db, hash(`report-submit:${user.id}`), 10);
   }
   let nextRevision = 0;

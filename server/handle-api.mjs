@@ -79,7 +79,7 @@ function dutyGateAllowed(url) {
 //     their own limit buckets.
 //   - 400, 404 and 409 are client mistakes, not security events.
 export async function handleApi(request, response, db, options) {
-  const { server, appOrigin, trustedProxyAddresses, faceppClient } = options;
+  const { server, appOrigin, trustedProxyAddresses, faceppClient, googleMapsApiKey } = options;
   const url = new URL(request.url, `http://${request.headers.host}`);
   let user = null;
   try {
@@ -98,6 +98,11 @@ export async function handleApi(request, response, db, options) {
       return;
     }
     user = await getSessionUser(request, db);
+    if (url.pathname === "/api/map-config" && request.method === "GET") {
+      if (!user) throw new HttpError(401, "Sign in to continue.");
+      sendJson(response, 200, { googleMapsApiKey: googleMapsApiKey || "" });
+      return;
+    }
     // A temporary password exists only to reach the password-change dialog. The
     // check lives here in the central dispatcher so no handler has to remember
     // it: until the password is replaced, the session can change the password,

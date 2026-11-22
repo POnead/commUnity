@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 900" preserveAspectRatio="xMidYMid slice" fill="none">
+  <!-- Sparse leaves on the dark sidebar — layered behind nav text -->
+  <g fill="#4E9B75" stroke="#2F6E4F" stroke-width="1.2">
+    <g transform="translate(30 90) rotate(28) scale(1.0)" opacity="0.35">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(175 150) rotate(-40) scale(0.85)" opacity="0.3">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(60 250) rotate(15) scale(0.9)" opacity="0.28">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(190 340) rotate(62) scale(1.05)" opacity="0.32">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(25 430) rotate(-28) scale(0.8)" opacity="0.26">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(155 500) rotate(35) scale(1.0)" opacity="0.3">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(70 600) rotate(-55) scale(0.9)" opacity="0.28">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(185 690) rotate(20) scale(1.1)" opacity="0.34">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+    <g transform="translate(40 780) rotate(-18) scale(0.95)" opacity="0.3">
+      <path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z" stroke="none"/>
+      <path d="M4 21c3-5 6-8 12-11" fill="none"/>
+    </g>
+  </g>
+</svg>

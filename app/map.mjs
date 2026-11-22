@@ -5,6 +5,7 @@
 // and Leaflet that used to pervade main.mjs.
 import { PALSARA_CENTER, PALSARA_BOUNDS, AREA_COORDINATES } from "./constants.mjs";
 import { toast, app } from "./core.mjs";
+import { ensureGoogleMaps, createMap, createMarker } from "./google-map.mjs";
 
 let reportMapExpanded = false;
 let reportMapSelection = null;
@@ -92,7 +93,7 @@ function setReportMapPin(position) {
   if (clearButton) clearButton.hidden = false;
   if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
   if (!reportMapMarker) {
-    reportMapMarker = window.L.marker([latitude, longitude], {
+    reportMapMarker = createMarker([latitude, longitude], {
       draggable: true,
       title: "Reported concern location",
     }).addTo(reportMap);
@@ -183,22 +184,19 @@ function clearMapButton() {
   return app.querySelector('[data-action="clear-report-map-pin"]');
 }
 
-function createTileLayer(map) {
-  return window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-  }).addTo(map);
+function createTileLayer(_map) {
+  return { on() { return this; } };
 }
 
-function initializeReportMap() {
+async function initializeReportMap() {
   const mapElement = app.querySelector("#report-map");
-  if (!reportMapExpanded || !mapElement?.isConnected || !window.L) return;
+  if (!reportMapExpanded || !mapElement?.isConnected) return;
+  if (!(await ensureGoogleMaps())) return;
   if (reportMapElement !== mapElement) {
     reportMap?.remove();
     reportMapElement = mapElement;
     reportMapMarker = null;
-    reportMap = window.L.map(mapElement).setView(
+    reportMap = createMap(mapElement).setView(
       reportMapSelection ? [reportMapSelection.latitude, reportMapSelection.longitude] : PALSARA_CENTER,
       reportMapSelection ? 17 : 13,
     );
@@ -236,16 +234,17 @@ function initializeReportMap() {
   }
 }
 
-function initializeReportDetailMap() {
+async function initializeReportDetailMap() {
   const mapElement = app.querySelector("#report-detail-map");
-  if (!mapElement || !window.L) {
+  if (!mapElement) {
     reportDetailMap?.remove();
     reportDetailMap = null;
     reportDetailMapElement = null;
-    if (mapElement) {
-      const status = app.querySelector("#report-detail-map-status");
-      if (status) status.textContent = "The interactive map is unavailable. Use the directions link to open this location.";
-    }
+    return;
+  }
+  if (!(await ensureGoogleMaps())) {
+    const status = app.querySelector("#report-detail-map-status");
+    if (status) status.textContent = "The interactive map is unavailable. Use the directions link to open this location.";
     return;
   }
   if (reportDetailMapElement === mapElement) {
@@ -265,10 +264,10 @@ function initializeReportDetailMap() {
     return;
   }
 
-  reportDetailMap = window.L.map(mapElement).setView([latitude, longitude], 17);
+  reportDetailMap = createMap(mapElement, { dragging: false }).setView([latitude, longitude], 17);
   const tileLayer = createTileLayer(reportDetailMap);
   const statusElement = app.querySelector("#report-detail-map-status");
-  window.L.marker([latitude, longitude], {
+  createMarker([latitude, longitude], {
     title: "Exact concern location",
     alt: "Exact concern location",
   }).addTo(reportDetailMap);
@@ -292,7 +291,7 @@ function setAnnouncementMapPin(position) {
   if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
   if (!announcementMap) return;
   if (!announcementMapMarker) {
-    announcementMapMarker = window.L.marker([latitude, longitude], {
+    announcementMapMarker = createMarker([latitude, longitude], {
       draggable: true,
       title: "Event location",
     }).addTo(announcementMap);
@@ -303,14 +302,15 @@ function setAnnouncementMapPin(position) {
   announcementMap.panTo([latitude, longitude]);
 }
 
-function initializeAnnouncementMap() {
+async function initializeAnnouncementMap() {
   const mapElement = app.querySelector("#announcement-map");
-  if (!announcementMapExpanded || !mapElement?.isConnected || !window.L) return;
+  if (!announcementMapExpanded || !mapElement?.isConnected) return;
+  if (!(await ensureGoogleMaps())) return;
   if (announcementMapElement !== mapElement) {
     announcementMap?.remove();
     announcementMapElement = mapElement;
     announcementMapMarker = null;
-    announcementMap = window.L.map(mapElement).setView(
+    announcementMap = createMap(mapElement).setView(
       announcementMapSelection ? [announcementMapSelection.latitude, announcementMapSelection.longitude] : [14.01799, 121.09465],
       announcementMapSelection ? 17 : 13,
     );
@@ -345,7 +345,7 @@ function setCalendarEventMapPin(position) {
   if (status) status.textContent = `Pin selected at ${latitude.toFixed(6)}, ${longitude.toFixed(6)}. Drag the pin to adjust it.`;
   if (!calendarEventMap) return;
   if (!calendarEventMapMarker) {
-    calendarEventMapMarker = window.L.marker([latitude, longitude], {
+    calendarEventMapMarker = createMarker([latitude, longitude], {
       draggable: true,
       title: "Event location",
     }).addTo(calendarEventMap);
@@ -356,14 +356,15 @@ function setCalendarEventMapPin(position) {
   calendarEventMap.panTo([latitude, longitude]);
 }
 
-function initializeCalendarEventMap() {
+async function initializeCalendarEventMap() {
   const mapElement = app.querySelector("#calendar-event-map");
-  if (!calendarEventMapExpanded || !mapElement?.isConnected || !window.L) return;
+  if (!calendarEventMapExpanded || !mapElement?.isConnected) return;
+  if (!(await ensureGoogleMaps())) return;
   if (calendarEventMapElement !== mapElement) {
     calendarEventMap?.remove();
     calendarEventMapElement = mapElement;
     calendarEventMapMarker = null;
-    calendarEventMap = window.L.map(mapElement).setView(
+    calendarEventMap = createMap(mapElement).setView(
       calendarEventMapSelection ? [calendarEventMapSelection.latitude, calendarEventMapSelection.longitude] : [14.01799, 121.09465],
       calendarEventMapSelection ? 17 : 13,
     );
@@ -385,12 +386,16 @@ function initializeCalendarEventMap() {
   }
 }
 
-function initializeAnnouncementDetailMap() {
+async function initializeAnnouncementDetailMap() {
   const mapElements = app.querySelectorAll('.report-detail-map[id^="announcement-detail-map"]');
-  if (!mapElements.length || !window.L) {
+  if (!mapElements.length) {
     announcementDetailMaps.forEach((map) => map?.remove());
     announcementDetailMaps = [];
     announcementDetailMapElements = [];
+    return;
+  }
+
+  if (!(await ensureGoogleMaps())) {
     const statuses = app.querySelectorAll('[id^="announcement-detail-map-status"]');
     statuses.forEach((status) => {
       status.textContent = "The interactive map is unavailable. Use the Google Maps link to open this location.";
@@ -429,10 +434,10 @@ function initializeAnnouncementDetailMap() {
       if (status) status.textContent = "This event's saved map coordinates are invalid.";
       return;
     }
-    const map = window.L.map(el).setView([latitude, longitude], 17);
+    const map = createMap(el, { dragging: false }).setView([latitude, longitude], 17);
     const tileLayer = createTileLayer(map);
     const status = el.parentElement?.querySelector('[id^="announcement-detail-map-status"]');
-    window.L.marker([latitude, longitude], {
+    createMarker([latitude, longitude], {
       title: "Event location",
       alt: "Event location",
     }).addTo(map);

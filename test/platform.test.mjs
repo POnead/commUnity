@@ -49,7 +49,7 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.equal(home.status, 200);
     const contentSecurityPolicy = home.headers.get("content-security-policy");
     assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
-    assert.match(contentSecurityPolicy, /tile\.openstreetmap\.org/);
+    assert.match(contentSecurityPolicy, /maps\.googleapis\.com/);
     assert.match(contentSecurityPolicy, /script-src 'self'/);
     assert.match(home.headers.get("referrer-policy"), /strict-origin-when-cross-origin/);
     assert.equal(home.headers.get("x-content-type-options"), "nosniff");

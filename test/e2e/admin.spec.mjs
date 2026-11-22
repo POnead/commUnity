@@ -265,26 +265,21 @@ test("3. administrator sees analytics for reports, areas, and official workload"
 test("4. administrator filters, inspects, pages, and exports the activity log", async ({ page, request: api }) => {
   // Seed enough deterministic entries to exercise pagination and the export.
   await apiLogin(api);
-  const stateResponse = await api.get("/api/state");
-  expect(stateResponse.ok()).toBeTruthy();
-  const state = await stateResponse.json();
-  const at = new Date().toISOString();
+  // Audit rows are server-owned now, so seed real activity through the account
+  // API instead of injecting rows into a state save (which the server ignores).
   for (let index = 1; index <= 30; index += 1) {
-    state.data.activities.push({
-      id: `A-browser-audit-${String(index).padStart(2, "0")}`,
-      actor: "Portal administrator",
-      role: "administrator",
-      action: "Added user account",
-      detail: `Browser audit seed ${String(index).padStart(2, "0")}`,
-      at,
-      result: "Success",
+    const created = await api.post("/api/users", {
+      headers: ORIGIN,
+      data: {
+        name: `Browser Audit Seed ${String(index).padStart(2, "0")}`,
+        email: `browser-audit-seed-${index}@example.test`,
+        area: "Purok 1",
+        role: "resident",
+        password: "AuditSeedPassword-2026!",
+      },
     });
+    expect(created.ok()).toBeTruthy();
   }
-  const saved = await api.put("/api/state", {
-    headers: ORIGIN,
-    data: { revision: state.revision, data: state.data },
-  });
-  expect(saved.ok()).toBeTruthy();
 
   await login(page);
   await page.goto("/#/administrator/activity");
@@ -298,7 +293,7 @@ test("4. administrator filters, inspects, pages, and exports the activity log", 
   await page.locator("#activity-result").selectOption("Success");
   await page.getByRole("button", { name: "Apply filters" }).click();
   await expect(page.locator("#activity-results")).toContainText("Added user account");
-  await expect(page.locator("#activity-results")).toContainText("Browser audit seed");
+  await expect(page.locator("#activity-results")).toContainText("Browser Audit Seed");
   const matching = page.locator(".stat").filter({ hasText: "Matching records" }).locator(".stat-value");
   await expect(matching).not.toHaveText("0");
 
@@ -326,7 +321,7 @@ test("4. administrator filters, inspects, pages, and exports the activity log", 
   expect(download.suggestedFilename()).toBe("community-activity-log.csv");
   const csvPath = await download.path();
   const csv = await readFile(csvPath, "utf8");
-  expect(csv).toContain("Browser audit seed");
+  expect(csv).toContain("Browser Audit Seed");
   expect(csv).toContain("Added user account");
 
   // Clearing the filters restores the unfiltered log.

@@ -13,18 +13,35 @@ const PUBLIC_DIRECTORIES = new Set(["app/"]);
 const PUBLIC_FILES = new Set([
   "index.html",
   "styles.css",
+  "shared/community-map.mjs",
+  "shared/palsara-boundary.mjs",
+  "shared/hotlines.mjs",
+  "shared/domain-rules.mjs",
+  "assets/barangay-hall.png",
+  "assets/admin-header-landscape.svg",
+  "assets/auth-login-corner.svg",
+  "assets/auth-village-waves.svg",
+  "assets/resident-community-landscape.svg",
+  "assets/resident-leaves.svg",
+  "assets/resident-sidebar-leaves.svg",
+  "assets/resident-sidebar-village.svg",
+  "assets/resident-village.svg",
+  "assets/fonts/inter.woff2",
+  "assets/fonts/poppins-500.woff2",
+  "assets/fonts/poppins-600.woff2",
   "logo/palsara-transparent.webp",
   "favicon.png",
+  "node_modules/chart.js/dist/chart.umd.min.js",
 ]);
 
 function addSecurityHeaders(response, secure) {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'",
+    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://maps.googleapis.com https://maps.gstatic.com https://*.googleapis.com https://*.gstatic.com; connect-src 'self' https://maps.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-src 'none'",
   );
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  response.setHeader("Permissions-Policy", "camera=(), microphone=()");
+  response.setHeader("Permissions-Policy", "camera=(self), microphone=()");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");

@@ -56,6 +56,8 @@ import {
   activityLogState,
   activityFilters,
   activityLogLoadedKey,
+  verification,
+  verificationSettings,
   lastKnownHash,
   SESSION_SYNC_KEY,
   sessionSyncChannel,
@@ -109,6 +111,10 @@ import {
   verifyRecoveryMarkup,
   verifyEmailChangeMarkup,
   registerMarkup,
+  verificationPage,
+  faceCheckPage,
+  faceCaptureMarkup,
+  hotlinesPage,
 } from "./views.mjs";
 import {
   reportMapExpanded,
@@ -131,6 +137,8 @@ import {
   initializeCalendarEventMap,
   initializeAnnouncementDetailMap,
 } from "./map.mjs";
+import { runLiveness, cameraErrorCopy } from "./face-capture.mjs";
+import { HOTLINE_CATEGORIES } from "../shared/hotlines.mjs";
 
 let profilePhotoFile = null;
 let profilePhotoPreview = null;
@@ -152,8 +160,8 @@ function routeState() {
   const requestedPage = path[1] || "dashboard";
   const pageName = role === "official" && requestedPage === "urgent" ? "concerns" : requestedPage;
   const pages = {
-    resident: ["dashboard", "calendar", "collection", "report", "reports", "history", "notifications", "profile"],
-    official: ["dashboard", "calendar", "concerns", "collection", "history", "announcements", "notifications", "profile"],
+    resident: ["dashboard", "calendar", "collection", "report", "reports", "history", "verification", "hotlines", "notifications", "profile"],
+    official: ["dashboard", "calendar", "concerns", "collection", "history", "announcements", "verification", "face-check", "hotlines", "notifications", "profile"],
     administrator: [
       "dashboard",
       "calendar",
@@ -168,6 +176,8 @@ function routeState() {
       "activity",
       "settings",
       "email",
+      "verification",
+      "hotlines",
       "profile",
     ],
   };
@@ -231,6 +241,8 @@ export function render() {
       else if (route.page === "report") markup = reportPage();
       else if (route.page === "reports" || route.page === "history") markup = reportsPage("resident", route.page);
       else if (route.page === "notifications") markup = notificationsPage("resident");
+      else if (route.page === "verification") markup = verificationPage("resident");
+      else if (route.page === "hotlines") markup = hotlinesPage("resident");
       else markup = profilePage("resident");
     } else if (route.role === "official") {
       if (route.page === "dashboard") markup = dashboardOfficial();
@@ -239,6 +251,9 @@ export function render() {
       else if (route.page === "concerns" || route.page === "history") markup = reportsPage("official", route.page);
       else if (route.page === "notifications") markup = notificationsPage("official");
       else if (route.page === "announcements") markup = announcementsPage("official");
+      else if (route.page === "verification") markup = verificationPage("official");
+      else if (route.page === "face-check") markup = faceCheckPage();
+      else if (route.page === "hotlines") markup = hotlinesPage("official");
       else markup = profilePage("official");
     } else {
       if (route.page === "dashboard") markup = dashboardAdmin();
@@ -254,10 +269,13 @@ export function render() {
       else if (route.page === "roles") markup = rolesPage();
       else if (route.page === "settings") markup = settingsPage();
       else if (route.page === "email") markup = emailPage();
+      else if (route.page === "verification") markup = verificationPage("administrator");
+      else if (route.page === "hotlines") markup = hotlinesPage("administrator");
       else markup = profilePage("administrator");
     }
     app.innerHTML = markup;
     if (route.role === "administrator" && (route.page === "settings" || route.page === "email")) loadSmtpSettings();
+    if (route.page === "verification" || route.page === "face-check") loadVerificationData();
     if (route.role === "administrator" && route.page === "activity") {
       loadActivityLog(activityLogState.page).catch((error) => toast(error.message, "error"));
     }
@@ -558,6 +576,55 @@ export function modalMarkup() {
       <div class="modal-form-fields"><p class="field-help">Why is ${esc(user.name)} being deactivated? The reason is recorded with the account.</p><div class="form-field span-all"><label for="deactivate-reason">Reason *</label><textarea class="textarea" id="deactivate-reason" name="reason" required maxlength="500"></textarea></div></div>
       <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button danger" type="submit">Deactivate account</button></div></form>`;
     return makeModal("Deactivate account", body);
+  }
+  if (modalState.kind === "hotline") {
+    const item = modalState.id ? (data.hotlines || []).find((record) => String(record.id) === String(modalState.id)) : null;
+    const body = `<form id="hotline-form" class="modal-form"><input type="hidden" name="id" value="${esc(item?.id || "")}">
+      <div class="modal-form-fields"><div class="form-grid">
+        ${inputField("Name", "name", item?.name || "", { required: true })}
+        ${selectField("Category", "category", HOTLINE_CATEGORIES, item?.category || HOTLINE_CATEGORIES[0], { required: true })}
+        ${inputField("Contact number", "contactNumber", item?.contactNumber || "", { required: true, type: "tel" })}
+        ${inputField("Alternative contact", "alternativeContactNumber", item?.alternativeContactNumber || "", { type: "tel" })}
+        ${inputField("Office address", "officeAddress", item?.officeAddress || "")}
+        ${inputField("Operating hours", "operatingHours", item?.operatingHours || "")}
+        <div class="form-field span-all"><label for="hotline-description">Description</label><textarea class="textarea" id="hotline-description" name="description" maxlength="300">${esc(item?.description || "")}</textarea></div>
+        <label class="checkbox-line"><input type="checkbox" name="published" value="1" ${item ? (item.published ? "checked" : "") : "checked"}> Published</label>
+        <label class="checkbox-line"><input type="checkbox" name="status" value="Inactive" ${item?.status === "Inactive" ? "checked" : ""}> Temporarily unavailable</label>
+      </div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">${item ? "Save hotline" : "Add hotline"}</button></div></form>`;
+    return makeModal(item ? "Edit hotline" : "Add hotline", body);
+  }
+  if (modalState.kind === "hotline-correction") {
+    const hotline = (data.hotlines || []).find((record) => String(record.id) === String(modalState.id));
+    const suggestion = !hotline;
+    const body = `<form id="hotline-correction-form" class="modal-form"><input type="hidden" name="hotlineId" value="${esc(hotline?.id || "")}"><input type="hidden" name="kind" value="${suggestion ? "suggestion" : "correction"}">
+      <div class="modal-form-fields"><p class="field-help">${suggestion ? "Suggest a new emergency contact for the barangay." : `Suggest a change to ${esc(hotline?.name || "this contact")}. Leave a field blank to keep the current value.`}</p>
+      <div class="form-grid">
+        ${inputField("Name", "name", suggestion ? "" : hotline?.name || "", { required: suggestion })}
+        ${selectField("Category", "category", HOTLINE_CATEGORIES, hotline?.category || HOTLINE_CATEGORIES[0], { required: suggestion })}
+        ${inputField("Contact number", "contactNumber", hotline?.contactNumber || "", { required: suggestion, type: "tel" })}
+        ${inputField("Alternative contact", "alternativeContactNumber", "", { type: "tel" })}
+        ${inputField("Office address", "officeAddress", "")}
+        ${inputField("Operating hours", "operatingHours", "")}
+        <div class="form-field span-all"><label for="correction-description">Description</label><textarea class="textarea" id="correction-description" name="description" maxlength="300"></textarea></div>
+        <div class="form-field span-all"><label for="correction-reason">Reason for this change</label><textarea class="textarea" id="correction-reason" name="reason" maxlength="500"></textarea></div>
+      </div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button" type="submit">Send for review</button></div></form>`;
+    return makeModal(suggestion ? "Suggest a contact" : "Suggest a correction", body);
+  }
+  if (modalState.kind === "face-capture") {
+    const hints = {
+      enroll: "Enroll a face reference for future duty checks.",
+      verify: "Run the duty check to confirm your presence.",
+      "id-face": "Capture your face to match against your ID photo.",
+    };
+    return makeModal("Face check", faceCaptureMarkup("Face capture", hints[modalState.purpose] || "Follow the prompts to capture your face."));
+  }
+  if (modalState.kind === "id-reject") {
+    const body = `<form id="id-reject-form" class="modal-form"><input type="hidden" name="userId" value="${esc(modalState.id || "")}">
+      <div class="modal-form-fields"><div class="form-field span-all"><label for="id-reject-reason">Reason for rejection *</label><textarea class="textarea" id="id-reject-reason" name="note" required minlength="5" maxlength="500"></textarea></div></div>
+      <div class="form-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button danger" type="submit">Reject ID</button></div></form>`;
+    return makeModal("Reject ID verification", body);
   }
   const user = modalState.id ? getUser(modalState.id) : null;
   const accountRole = user?.role || "resident";
@@ -2113,9 +2180,327 @@ async function markNotification(id) {
   render();
 }
 
+// ---------- Verification and hotline helpers ----------
+
+async function apiJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: options.body instanceof FormData ? options.headers || {} : { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "The request could not be completed.");
+  return result;
+}
+
+let verificationLoadedKey = "";
+
+async function loadVerificationData() {
+  if (!currentUser) return;
+  try {
+    if (currentUser.role === "administrator") {
+      const result = await apiJson("/api/settings/verification");
+      const key = JSON.stringify(result.settings);
+      if (key !== verificationLoadedKey) {
+        verificationLoadedKey = key;
+        setState({ verificationSettings: result.settings });
+        render();
+      }
+      return;
+    }
+    const [statusResult, idResult] = await Promise.all([apiJson("/api/verification/status"), apiJson("/api/verification/id")]);
+    const settings = {
+      faceVerificationEnabled: Boolean(statusResult.faceVerificationEnabled),
+      requireFaceOnLogin: Boolean(statusResult.requireFaceOnLogin),
+      dutyHours: Number(statusResult.dutyHours) || 9,
+      matchThreshold: Number(statusResult.matchThreshold) || 0.033,
+      faceppEnabled: Boolean(statusResult.faceppEnabled),
+      faceppThreshold: 80,
+      ocrEnabled: Boolean(statusResult.ocrEnabled),
+    };
+    const next = { status: statusResult, scanned: verification.scanned, signals: verification.signals || [], checks: {} };
+    const key = JSON.stringify([settings, idResult.verification]);
+    if (key !== verificationLoadedKey) {
+      verificationLoadedKey = key;
+      setState({ verificationSettings: settings, verification: next });
+      render();
+    }
+  } catch (error) {
+    console.error("CommUnity could not load verification data.", error);
+  }
+}
+
+function refreshWorkspace(result, message) {
+  if (result.data) setState({ data: result.data });
+  if (typeof result.revision === "number") setState({ dataRevision: result.revision });
+  if (result.user) setState({ currentUser: result.user });
+  setState({ lastPersistedSnapshot: JSON.stringify(data) });
+  render();
+  if (message) toast(message, "success");
+}
+
+function idFieldsFrom(form) {
+  const value = (name) => String(new FormData(form).get(name) || "").trim();
+  return {
+    idType: value("idType"),
+    idNumber: value("idNumber"),
+    idFullName: value("idFullName"),
+    idBirthDate: value("idBirthDate"),
+    idAddress: value("idAddress"),
+    idExpirationDate: value("idExpirationDate"),
+  };
+}
+
+async function scanIdVerification(form) {
+  const photo = form.querySelector('input[name="photos"]')?.files?.[0];
+  if (!photo) throw new Error("Attach a photo of the front of your ID.");
+  const body = new FormData();
+  body.append("photos", photo);
+  const fields = idFieldsFrom(form);
+  for (const [key, value] of Object.entries(fields)) if (value) body.append(key, value);
+  const result = await apiJson("/api/verification/id/ocr", { method: "POST", body });
+  setState({
+    verification: {
+      ...verification,
+      scanned: { ...result.suggestions },
+      signals: result.signals || [],
+      checks: result.checks || {},
+    },
+  });
+  render();
+  toast(result.signals?.length ? "Scan complete. Confirm the details below." : "The scan found no readable details. Enter them manually.", "success");
+}
+
+async function enterIdManually(fields) {
+  const result = await apiJson("/api/verification/id/manual", { method: "POST", body: JSON.stringify(fields) });
+  setState({ verification: { ...verification, scanned: { ...result.suggestions }, signals: result.signals || [], checks: result.checks || {} } });
+  render();
+}
+
+async function submitIdVerification(form) {
+  const fields = new FormData(form);
+  const body = new FormData();
+  const details = idFieldsFrom(form);
+  for (const [key, value] of Object.entries(details)) body.append(key, value);
+  const photos = form.querySelectorAll('input[name="photos"]');
+  let attached = 0;
+  for (const input of photos) {
+    const photo = input.files?.[0];
+    if (photo) {
+      body.append("photos", photo);
+      attached += 1;
+    }
+  }
+  if (!attached) throw new Error("Attach a photo of the front of your ID.");
+  if (String(fields.get("consent") || "") !== "1") throw new Error("Consent is required before submitting your ID.");
+  const result = await apiJson("/api/verification/id", { method: "POST", body });
+  verificationLoadedKey = "";
+  await loadVerificationData();
+  toast(result.message || "ID submitted for review.", "success");
+}
+
+async function captureFaceVideo(videoFrame, onStep) {
+  const video = videoFrame.querySelector("video");
+  if (!video) throw new Error("The camera view is not available.");
+  try {
+    return await runLiveness(video, onStep, { onState: (state) => videoFrame.setAttribute("data-camera-state", state) });
+  } catch (error) {
+    if (error?.name && !String(error.message).startsWith("The face check was cancelled")) throw new Error(cameraErrorCopy(error), { cause: error });
+    throw error;
+  }
+}
+
+async function submitFace(purpose, payload) {
+  const path = purpose === "enroll" ? "/api/verification/face/enroll" : "/api/verification/face/verify";
+  const result = await apiJson(path, { method: "POST", body: JSON.stringify(payload) });
+  if (purpose === "verify") {
+    verificationLoadedKey = "";
+    await loadVerificationData();
+  }
+  toast(purpose === "enroll" ? "Face reference enrolled." : "Face check complete.", "success");
+  return result;
+}
+
+async function runFaceCapture(purpose) {
+  const frame = app.querySelector(".face-capture-modal .face-video-frame") || app.querySelector(".face-video-frame");
+  if (!frame) throw new Error("Open the face check dialog first.");
+  const prompt = frame.querySelector(".face-prompt");
+  const capture = await captureFaceVideo(frame, (step) => {
+    if (prompt && step?.label) prompt.textContent = step.label;
+  });
+  if (purpose === "id-face") {
+    const field = app.querySelector("#id-face-image");
+    const status = app.querySelector("#id-face-capture-status");
+    if (field) field.value = capture.image;
+    if (status) status.textContent = "Face captured. Match it to your ID photo.";
+    closeModal();
+    return;
+  }
+  const settings = verificationSettings;
+  const payload = settings.faceppEnabled ? { image: capture.image } : { embedding: capture.descriptor };
+  await submitFace(purpose, payload);
+  closeModal();
+}
+
+async function verifyIdFace(form) {
+  const idPhoto = form.querySelector("#id-match-photo")?.files?.[0];
+  const image = form.querySelector("#id-face-image")?.value;
+  if (!idPhoto) throw new Error("Attach a photo of your ID.");
+  if (!image) throw new Error("Capture your face first.");
+  const faceBlob = await (await fetch(image)).blob();
+  const multi = new FormData();
+  multi.append("photos", idPhoto);
+  multi.append("photos", faceBlob, "face.jpg");
+  const result = await apiJson("/api/verification/id/face-check", { method: "POST", body: multi });
+  if (result.status !== "matched") throw new Error(result.reason || "The face did not match the ID photo.");
+  toast("ID and face matched. You can now submit your ID.", "success");
+}
+
+async function saveVerificationSettings(form) {
+  const fields = new FormData(form);
+  const checked = (name) => fields.get(name) === "1";
+  const body = {
+    faceVerificationEnabled: checked("faceVerificationEnabled"),
+    requireFaceOnLogin: checked("requireFaceOnLogin"),
+    faceppEnabled: checked("faceppEnabled"),
+    ocrEnabled: checked("ocrEnabled"),
+    dutyHours: Number(fields.get("dutyHours")),
+    matchThreshold: Number(fields.get("matchThreshold")),
+    faceppThreshold: Number(fields.get("faceppThreshold")),
+  };
+  const result = await apiJson("/api/settings/verification", { method: "PUT", body: JSON.stringify(body) });
+  verificationLoadedKey = "";
+  setState({ verificationSettings: result.settings });
+  toast("Verification settings saved.", "success");
+}
+
+async function reviewIdentity(userId, decision, note = "") {
+  const body = { userId, decision };
+  if (note) body.note = note;
+  await apiJson("/api/verification/id/review", { method: "POST", body: JSON.stringify(body) });
+  verificationLoadedKey = "";
+  await loadVerificationData();
+  toast(decision === "verified" ? "ID approved." : "ID rejected.", "success");
+}
+
+async function saveHotline(form) {
+  const fields = new FormData(form);
+  const body = {
+    id: String(fields.get("id") || "") || undefined,
+    name: String(fields.get("name") || "").trim(),
+    category: String(fields.get("category") || ""),
+    contactNumber: String(fields.get("contactNumber") || "").trim(),
+    alternativeContactNumber: String(fields.get("alternativeContactNumber") || "").trim(),
+    officeAddress: String(fields.get("officeAddress") || "").trim(),
+    operatingHours: String(fields.get("operatingHours") || "").trim(),
+    description: String(fields.get("description") || "").trim(),
+    status: fields.get("status") === "Inactive" ? "Inactive" : "Active",
+    published: fields.get("published") === "1",
+  };
+  const result = await apiJson("/api/hotlines", { method: body.id ? "PUT" : "POST", body: JSON.stringify(body) });
+  closeModal();
+  refreshWorkspace(result, body.id ? "Hotline updated." : "Hotline saved.");
+}
+
+async function submitHotlineCorrection(form) {
+  const fields = new FormData(form);
+  const proposed = {};
+  for (const key of ["name", "category", "contactNumber", "alternativeContactNumber", "officeAddress", "operatingHours", "description"]) {
+    const value = String(fields.get(key) || "").trim();
+    if (value) proposed[key] = value;
+  }
+  const body = {
+    kind: String(fields.get("kind") || "correction"),
+    hotlineId: String(fields.get("hotlineId") || ""),
+    proposed,
+    reason: String(fields.get("reason") || "").trim(),
+  };
+  const result = await apiJson("/api/hotlines/corrections", { method: "POST", body: JSON.stringify(body) });
+  closeModal();
+  refreshWorkspace(result, "Your suggestion was sent for review.");
+}
+
+async function reviewHotline(id, decision) {
+  const result = await apiJson("/api/hotlines/corrections/review", { method: "POST", body: JSON.stringify({ id: Number(id), decision, note: "" }) });
+  refreshWorkspace(result, decision === "approved" ? "Correction approved." : "Correction rejected.");
+}
+
+async function verifyHotline(id) {
+  const result = await apiJson("/api/hotlines/verify", { method: "POST", body: JSON.stringify({ id: Number(id) }) });
+  refreshWorkspace(result, "Hotline marked as verified.");
+}
+
 async function handleAction(button, clickEvent) {
   const action = button.dataset.action;
-  if (action === "forgot-password") {
+  if (action === "filter-hotlines") {
+    setState({ hotlineFilter: button.dataset.value || "all" });
+    render();
+  } else if (action === "add-hotline") {
+    showModal("hotline");
+  } else if (action === "edit-hotline") {
+    showModal("hotline", button.dataset.id);
+  } else if (action === "suggest-hotline" || action === "suggest-hotline-correction") {
+    showModal("hotline-correction", action === "suggest-hotline" ? "" : button.dataset.id);
+  } else if (action === "verify-hotline") {
+    await verifyHotline(button.dataset.id);
+  } else if (action === "delete-hotline") {
+    const item = (data.hotlines || []).find((record) => String(record.id) === String(button.dataset.id));
+    if (!item) throw new Error("This hotline could not be found.");
+    const confirmed = await confirmAction({ title: "Remove hotline?", message: `Remove ${item.name} from the emergency directory?`, confirmLabel: "Remove", tone: "danger" });
+    if (confirmed) {
+      const result = await apiJson("/api/hotlines", { method: "DELETE", body: JSON.stringify({ id: Number(item.id) }) });
+      refreshWorkspace(result, "Hotline removed.");
+    }
+  } else if (action === "review-hotline") {
+    const confirmed = await confirmAction({
+      title: button.dataset.decision === "approved" ? "Approve correction?" : "Reject correction?",
+      message: "This decision is recorded and the submitter is notified.",
+      confirmLabel: button.dataset.decision === "approved" ? "Approve" : "Reject",
+    });
+    if (confirmed) await reviewHotline(button.dataset.id, button.dataset.decision);
+  } else if (action === "review-id") {
+    if (button.dataset.decision === "rejected") {
+      setState({ modalState: { kind: "id-reject", id: button.dataset.user } });
+      render();
+    } else {
+      const confirmed = await confirmAction({ title: "Approve ID?", message: "Grant this account a verified resident badge?", confirmLabel: "Approve" });
+      if (confirmed) await reviewIdentity(button.dataset.user, "verified");
+    }
+  } else if (action === "confirm-id-manual") {
+    const form = button.closest("form");
+    if (!form) throw new Error("Enter the ID details first.");
+    await enterIdManually(idFieldsFrom(form));
+  } else if (action === "delete-own-id") {
+    const confirmed = await confirmAction({ title: "Remove your ID?", message: "Your stored ID images and details will be deleted.", confirmLabel: "Remove", tone: "danger" });
+    if (confirmed) {
+      await apiJson("/api/verification/id", { method: "DELETE", body: JSON.stringify({ reason: "I no longer want this ID stored." }) });
+      verificationLoadedKey = "";
+      await loadVerificationData();
+      toast("Your ID verification was removed.", "success");
+    }
+  } else if (action === "enroll-face" || action === "verify-face") {
+    setState({ modalState: { kind: "face-capture", purpose: action === "enroll-face" ? "enroll" : "verify" } });
+    render();
+  } else if (action === "capture-id-face") {
+    setState({ modalState: { kind: "face-capture", purpose: "id-face" } });
+    render();
+  } else if (action === "start-face-check") {
+    const frame = app.querySelector(".face-video-frame");
+    if (!frame) throw new Error("The camera view is not available.");
+    frame.setAttribute("data-capturing", "true");
+    const prompt = frame.querySelector(".face-prompt");
+    const capture = await captureFaceVideo(frame, (step) => {
+      if (prompt && step?.label) prompt.textContent = step.label;
+    });
+    const payload = verificationSettings.faceppEnabled ? { image: capture.image } : { embedding: capture.descriptor };
+    await submitFace("verify", payload);
+    verificationLoadedKey = "";
+    await loadVerificationData();
+    toast("Face check complete. You can continue working.", "success");
+    window.location.hash = "#/official/dashboard";
+    render();
+  } else if (action === "capture-face") {
+    await runFaceCapture(modalState?.purpose || "verify");
+  } else if (action === "forgot-password") {
     window.location.hash = "#/forgot-password";
   } else if (action === "request-admin-reset") {
     const email = window.prompt("Enter your CommUnity account email:");
@@ -2633,7 +3018,23 @@ async function handleSubmit(formEvent) {
   const formId = form.getAttribute("id");
   const fields = new FormData(form);
   try {
-    if (formId === "login-form") {
+    if (formId === "id-scan-form") {
+      await scanIdVerification(form);
+    } else if (formId === "id-submit-form") {
+      await submitIdVerification(form);
+    } else if (formId === "id-face-form") {
+      await verifyIdFace(form);
+    } else if (formId === "verification-settings-form") {
+      await saveVerificationSettings(form);
+    } else if (formId === "id-reject-form") {
+      await reviewIdentity(String(fields.get("userId") || ""), "rejected", String(fields.get("note") || "").trim());
+      setState({ modalState: null });
+      render();
+    } else if (formId === "hotline-form") {
+      await saveHotline(form);
+    } else if (formId === "hotline-correction-form") {
+      await submitHotlineCorrection(form);
+    } else if (formId === "login-form") {
       await login(String(fields.get("email") || ""), String(fields.get("password") || ""), Boolean(fields.get("remember")));
     } else if (formId === "register-form") {
       await createResident(fields);

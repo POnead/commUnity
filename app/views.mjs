@@ -51,6 +51,9 @@ import {
   permissionOpenAccounts,
   activityLogState,
   activityFilters,
+  verification,
+  verificationSettings,
+  hotlineFilter,
 } from "./core.mjs";
 import {
   getAppTimeZone,
@@ -65,6 +68,8 @@ import {
 } from "./constants.mjs";
 import { modalMarkup } from "./main.mjs";
 import { reportMapExpanded, reportMapSelection, reportMapGeoLocating } from "./map.mjs";
+import { HOTLINE_CATEGORIES, HOTLINE_STATUS_LABELS } from "../shared/hotlines.mjs";
+import { ID_TYPE_LABELS } from "../shared/domain-rules.mjs";
 
 export function navGroups(role) {
   const openConcernCount = data.reports.filter((report) => report.status !== "Resolved").length;
@@ -81,6 +86,8 @@ export function navGroups(role) {
               ["calendar", "Calendar", "calendar"],
               ["collection", "Garbage collection", "calendar"],
               ["report", "Report a concern", "flag"],
+              ["verification", "Identity verification", "check"],
+              ["hotlines", "Emergency hotlines", "alert"],
             ],
           },
           {
@@ -109,6 +116,9 @@ export function navGroups(role) {
                 ["collection", "Garbage collection", "calendar"],
                 ["history", "Report history", "clock"],
                 ["announcements", "Announcements", "activity"],
+                ["verification", "Identity verification", "check"],
+                ["face-check", "Face check", "user"],
+                ["hotlines", "Emergency hotlines", "alert"],
                 ["notifications", "Notifications", "bell", unreadCount()],
               ],
             },
@@ -122,6 +132,8 @@ export function navGroups(role) {
                 ["calendar", "Calendar", "calendar"],
                 ["reports", "Community reports", "clipboard"],
                 ["approvals", "Approval queue", "check", pendingApprovalCount, "pending requests"],
+                ["verification", "ID review queue", "user", (data.verificationQueue || []).filter((item) => item.idStatus === "pending").length, "pending IDs"],
+                ["hotlines", "Emergency hotlines", "alert"],
               ],
             },
             {
@@ -147,6 +159,8 @@ export function requiredPermission(role, pageName) {
       announcements: "manageAnnouncements",
       roles: "manageRoles",
       activity: "viewAudit",
+      verification: "manageUsers",
+      hotlines: "manageUsers",
     },
   };
   return map[role]?.[pageName] || "";
@@ -233,6 +247,8 @@ export function pageTitle(role, page) {
       history: ["Report history", "Review previous concerns and the actions recorded."],
       notifications: ["Notifications", "Updates for your reports and barangay services."],
       calendar: ["Calendar", "Announcements and collection schedules in one place."],
+      verification: ["Identity verification", "Submit a government ID to verify your account."],
+      hotlines: ["Emergency hotlines", "Quick access to barangay emergency contacts."],
       profile: ["Your profile", "Keep your contact and area details up to date."],
     },
     official: {
@@ -243,6 +259,9 @@ export function pageTitle(role, page) {
       history: ["Report history", "Review concern updates recorded by the barangay."],
       notifications: ["Notifications", "New concerns and service updates for your team."],
       announcements: ["Announcements", "Publish service notices for residents and staff."],
+      verification: ["Identity verification", "Submit your ID and match your face to verify your account."],
+      "face-check": ["Face check", "Confirm your presence to continue making changes."],
+      hotlines: ["Emergency hotlines", "Look up contacts and suggest corrections."],
       profile: ["Your profile", "Keep your official account details up to date."],
     },
     administrator: {
@@ -260,6 +279,8 @@ export function pageTitle(role, page) {
       settings: ["Settings", "Manage administrator workspace areas from one place."],
       email: ["Email", "Configure SMTP email for report and collection notifications."],
       notifications: ["Notifications", "Report and service updates for this account."],
+      verification: ["ID review queue", "Review submitted government IDs and verification settings."],
+      hotlines: ["Emergency hotlines", "Publish emergency contacts and review suggested corrections."],
     },
   };
   return titles[role]?.[page] || ["CommUnity", "Barangay services and community updates."];
@@ -1761,4 +1782,227 @@ export function registerMarkup() {
         </form>
       </div></section>
     </main>`;
+}
+
+// ---------- Identity verification ----------
+
+function idDetailFields(values = {}) {
+  const v = (key) => String(values?.[key] ?? "");
+  return `<div class="form-grid">
+    ${selectField("ID type", "idType", Object.keys(ID_TYPE_LABELS), v("idType"), { labels: ID_TYPE_LABELS, required: true, placeholder: "Choose an ID type" })}
+    ${inputField("ID number", "idNumber", v("idNumber"), { required: true, help: "Exactly as printed — 4–40 letters, digits, spaces or dashes." })}
+    ${inputField("Full name on ID", "idFullName", v("idFullName"), { required: true })}
+    ${inputField("Birth date", "idBirthDate", v("idBirthDate"), { type: "date", required: true })}
+    ${inputField("Address on ID", "idAddress", v("idAddress"), { maxLength: 160 })}
+    ${inputField("Expiration date", "idExpirationDate", v("idExpirationDate"), { type: "date" })}
+  </div>`;
+}
+
+function verificationSignalsMarkup() {
+  const signals = verification.signals || [];
+  if (!signals.length) return "";
+  return `<ul class="verification-signals">${signals
+    .map(
+      (signal) =>
+        `<li class="verification-signal" data-tone="${esc(signal.tone || "unknown")}"><strong>${esc(signal.label || "Check")}</strong><span>${esc(signal.detail || "")}</span></li>`,
+    )
+    .join("")}</ul>`;
+}
+
+function verificationStatusMarkup() {
+  const status = String(currentUser?.idStatus || "unverified");
+  const note = String(currentUser?.idReviewNote || "");
+  const badge = status === "verified" ? "Verified resident" : status === "pending" ? "Pending review" : status === "rejected" ? "Needs attention" : "Not verified";
+  const images =
+    currentUser?.hasIdImage || currentUser?.hasIdBackImage
+      ? `<div class="button-row">
+          ${currentUser.hasIdImage ? `<a class="button secondary small" href="/api/verification/id/me/image" target="_blank" rel="noopener">View front of ID</a>` : ""}
+          ${currentUser.hasIdBackImage ? `<a class="button secondary small" href="/api/verification/id/me/image-back" target="_blank" rel="noopener">View back of ID</a>` : ""}
+        </div>`
+      : "";
+  return `<div class="notice-bar" data-status="${esc(status)}"><span class="status" data-status="${esc(status)}">${esc(badge)}</span><strong>${esc(note || "Barangay staff review submitted IDs before the verified badge is granted.")}</strong></div>
+    ${images}
+    ${status !== "unverified" ? actionButton("Remove my ID verification", "delete-own-id", "danger small") : ""}`;
+}
+
+function verificationSubmitMarkup() {
+  const scanned = verification.scanned || {};
+  const scanForm = verificationSettings.ocrEnabled
+    ? `<form class="form-stack" id="id-scan-form">
+        <p class="field-help">Scan the front of your ID to fill in the details automatically.</p>
+        <div class="form-field"><label for="id-scan-photo">ID photo</label><input class="input" id="id-scan-photo" name="photos" type="file" accept="image/jpeg,image/png" required></div>
+        <div class="form-actions"><button class="button secondary" type="submit">Scan ID</button></div>
+      </form>`
+    : "";
+  return `${scanForm}
+    ${verificationSignalsMarkup()}
+    <form class="form-stack" id="id-submit-form">
+      ${idDetailFields(scanned)}
+      <div class="form-grid">
+        <div class="form-field"><label for="id-front-photo">Front of ID *</label><input class="input" id="id-front-photo" name="photos" type="file" accept="image/jpeg,image/png" required></div>
+        <div class="form-field"><label for="id-back-photo">Back of ID</label><input class="input" id="id-back-photo" name="photos" type="file" accept="image/jpeg,image/png"></div>
+      </div>
+      <label class="checkbox-line"><input type="checkbox" name="consent" value="1" required> I consent to the barangay storing this ID information for verification.</label>
+      <div class="form-actions">
+        ${verificationSettings.ocrEnabled ? actionButton("Confirm details manually", "confirm-id-manual", "secondary") : ""}
+        <button class="button" type="submit">Submit ID for review</button>
+      </div>
+    </form>`;
+}
+
+function verificationOfficialMarkup() {
+  const status = verification.status || {};
+  const faceEnrolled = Boolean(status.faceEnrolled || currentUser?.faceEnrolled);
+  const dutyVerified = status.dutyVerified !== false;
+  const faceCards = `<div class="form-grid">
+    ${panel("Face reference", `<p>${faceEnrolled ? "A face reference is enrolled for shift checks." : "Enroll a face reference so your account can pass the duty check."}</p><div class="button-row">${actionButton(faceEnrolled ? "Re-enroll face" : "Enroll face", "enroll-face", "secondary")}${actionButton("Run face check", "verify-face", "secondary")}</div>`)}
+    ${panel("Duty status", `<p>${dutyVerified ? "Your duty check is current." : "Your duty check has expired. Complete a face check to make changes."}</p>${status.lastFaceVerifiedAt ? `<p class="record-secondary">Last verified ${esc(dateTimeLabel(status.lastFaceVerifiedAt))}</p>` : ""}`)}
+  </div>`;
+  const idFace = `<form class="form-stack" id="id-face-form">
+    <p class="field-help">For officials, match a photo of your ID to a live capture before submitting your ID.</p>
+    <div class="form-grid">
+      <div class="form-field"><label for="id-match-photo">ID photo *</label><input class="input" id="id-match-photo" name="photos" type="file" accept="image/jpeg,image/png" required></div>
+      <div class="form-field"><label>Your face</label><div class="button-row">${actionButton("Capture face", "capture-id-face", "secondary")}</div><span id="id-face-capture-status" class="field-help">No face captured yet.</span><input type="hidden" id="id-face-image" value=""></div>
+    </div>
+    <div class="form-actions"><button class="button" type="submit">Match ID to face</button></div>
+  </form>`;
+  return `${verificationStatusMarkup()}${faceCards}${panel("ID and face match", idFace)}${panel("Submit your ID", verificationSubmitMarkup())}`;
+}
+
+function verificationAdminMarkup() {
+  const queue = data.verificationQueue || [];
+  const rows = queue.length
+    ? queue
+        .map(
+          (item) => `<div role="row" class="record-row">
+            <div role="cell"><strong>${esc(item.name || item.email || item.userId)}</strong><span class="record-secondary">${esc(item.email || "")}</span></div>
+            <div role="cell" data-label="ID type">${esc(ID_TYPE_LABELS[item.idType] || item.idType || "—")}</div>
+            <div role="cell" data-label="ID number">${esc(item.idNumber || "—")}</div>
+            <div role="cell" data-label="Submitted">${item.idSubmittedAt ? esc(dateLabel(item.idSubmittedAt)) : "—"}</div>
+            <div role="cell" data-label="Status">${statusPill(item.idStatus || "pending")}</div>
+            <div role="cell" data-label="Action"><div class="button-row">
+              <button class="button small" type="button" data-action="review-id" data-decision="verified" data-user="${esc(item.userId)}">Approve</button>
+              <button class="button secondary small" type="button" data-action="review-id" data-decision="rejected" data-user="${esc(item.userId)}">Reject</button>
+              <a class="button tertiary small" href="/api/verification/id/${encodeURIComponent(item.userId)}/image" target="_blank" rel="noopener">ID photo</a>
+            </div></div>
+          </div>`,
+        )
+        .join("")
+    : `<div class="empty-state"><strong>No IDs to review</strong>Submitted government IDs appear here until you approve or reject them.</div>`;
+  const s = verificationSettings;
+  const settings = `<form class="form-stack" id="verification-settings-form">
+    <div class="form-grid">
+      <label class="checkbox-line"><input type="checkbox" name="faceVerificationEnabled" value="1" ${s.faceVerificationEnabled ? "checked" : ""}> Require a face duty check for officials</label>
+      <label class="checkbox-line"><input type="checkbox" name="requireFaceOnLogin" value="1" ${s.requireFaceOnLogin ? "checked" : ""}> Require a face check at sign-in</label>
+      <label class="checkbox-line"><input type="checkbox" name="faceppEnabled" value="1" ${s.faceppEnabled ? "checked" : ""}> Use Face++ when configured</label>
+      <label class="checkbox-line"><input type="checkbox" name="ocrEnabled" value="1" ${s.ocrEnabled ? "checked" : ""}> Enable ID scanning when configured</label>
+      ${inputField("Duty window (hours)", "dutyHours", String(s.dutyHours), { type: "number", required: true })}
+      ${inputField("Match threshold", "matchThreshold", String(s.matchThreshold), { type: "number", required: true })}
+      ${inputField("Face++ threshold", "faceppThreshold", String(s.faceppThreshold), { type: "number", required: true })}
+    </div>
+    <div class="form-actions"><button class="button" type="submit">Save verification settings</button></div>
+  </form>`;
+  return `${panel("Submitted IDs", `<div class="records" role="table">${rows}</div>`)}${panel("Verification settings", settings)}`;
+}
+
+export function verificationPage(role = "resident") {
+  if (role === "administrator") return page(role, "verification", verificationAdminMarkup());
+  if (role === "official") return page(role, "verification", verificationOfficialMarkup());
+  return page(role, "verification", `${verificationStatusMarkup()}${panel("Submit a government ID", verificationSubmitMarkup())}`);
+}
+
+// The duty gate in handle-api.mjs points officials to this page when their face
+// check expires; it must exist or gated accounts have no way back in.
+export function faceCheckPage() {
+  const body = `<div class="notice-bar"><span class="status" data-status="pending">Action needed</span><strong>Complete a face check to continue making changes.</strong></div>
+    ${panel("Confirm your presence", `<form class="form-stack" id="face-check-form">
+      <div class="face-video-frame" data-capturing="false"><video playsinline muted autoplay></video><div class="face-overlay" aria-live="polite"><p class="face-prompt">Start the camera, then follow the prompts.</p></div></div>
+      <div class="button-row"><button class="button" type="button" data-action="start-face-check">Start face check</button><a class="button secondary" href="#/official/dashboard">Back to overview</a></div>
+    </form>`)}`;
+  return page("official", "face-check", body);
+}
+
+export function faceCaptureMarkup(title = "Face capture", hint = "Follow the prompts to capture your face.") {
+  return `<div class="face-capture-modal">
+    <p class="field-help">${esc(hint)}</p>
+    <div class="face-video-frame" data-capturing="false"><video playsinline muted autoplay></video><div class="face-overlay" aria-live="polite"><p class="face-prompt">Starting the camera…</p></div></div>
+    <div class="form-actions"><button class="button" type="button" data-action="capture-face">Capture face</button><button class="button secondary" type="button" data-action="close-modal">Cancel</button></div>
+    <span class="sr-only" aria-hidden="true">${esc(title)}</span>
+  </div>`;
+}
+
+// ---------- Emergency hotlines ----------
+
+function hotlineCards(role) {
+  const categories = [["all", "All contacts"], ...HOTLINE_CATEGORIES.map((category) => [category, category])];
+  const filter = hotlineFilter || "all";
+  const filterRow = `<div class="filter-row" role="group" aria-label="Filter hotlines">${categories
+    .map(
+      ([value, label]) =>
+        `<button class="filter-button ${filter === value ? "selected" : ""}" type="button" data-action="filter-hotlines" data-value="${esc(value)}" aria-pressed="${filter === value}">${esc(label)}</button>`,
+    )
+    .join("")}</div>`;
+  const items = (data.hotlines || []).filter((item) => filter === "all" || item.category === filter);
+  const cards = items.length
+    ? items
+        .map((item) => {
+          const actions =
+            role === "administrator"
+              ? `<div class="button-row">
+                  <button class="button small" type="button" data-action="edit-hotline" data-id="${esc(item.id)}">Edit</button>
+                  <button class="button secondary small" type="button" data-action="verify-hotline" data-id="${esc(item.id)}">Mark verified</button>
+                  <button class="button danger small" type="button" data-action="delete-hotline" data-id="${esc(item.id)}">Remove</button>
+                </div>`
+              : role === "official"
+                ? `<button class="button secondary small" type="button" data-action="suggest-hotline-correction" data-id="${esc(item.id)}">Suggest a correction</button>`
+                : "";
+          return `<article class="hotline-card">
+            <header><strong>${esc(item.name)}</strong>${statusPill(HOTLINE_STATUS_LABELS[item.status] || item.status || "Active")}${item.verifiedAt ? `<span class="status" data-status="active">Verified</span>` : ""}</header>
+            <p class="record-secondary">${esc(item.category || "")}</p>
+            <p><a href="tel:${esc(String(item.contactNumber || "").replace(/[^\d+]/g, ""))}">${esc(item.contactNumber || "")}</a></p>
+            ${item.alternativeContactNumber ? `<p class="record-secondary">Also: ${esc(item.alternativeContactNumber)}</p>` : ""}
+            ${item.officeAddress ? `<p class="record-secondary">${esc(item.officeAddress)}</p>` : ""}
+            ${item.operatingHours ? `<p class="record-secondary">${esc(item.operatingHours)}</p>` : ""}
+            ${item.description ? `<p>${esc(item.description)}</p>` : ""}
+            ${actions}
+          </article>`;
+        })
+        .join("")
+    : `<div class="empty-state"><strong>No hotlines in this category</strong>Suggested contacts appear here after an administrator publishes them.</div>`;
+  return `${filterRow}<div class="hotline-grid">${cards}</div>`;
+}
+
+function hotlineCorrectionsMarkup() {
+  const corrections = (data.hotlineCorrections || []).filter((item) => item.status === "pending");
+  if (!corrections.length)
+    return `<div class="empty-state"><strong>No corrections to review</strong>Official suggestions appear here until you approve or reject them.</div>`;
+  return `<div class="records" role="table">${corrections
+    .map(
+      (item) => `<div role="row" class="record-row">
+        <div role="cell"><strong>${esc(item.kind === "suggestion" ? "New contact" : item.proposed?.name || `Hotline ${item.hotlineId || ""}`)}</strong><span class="record-secondary">${esc(item.reason || "")}</span></div>
+        <div role="cell" data-label="Proposed">${esc(JSON.stringify(item.proposed || {}))}</div>
+        <div role="cell" data-label="Action"><div class="button-row">
+          <button class="button small" type="button" data-action="review-hotline" data-decision="approved" data-id="${esc(item.id)}">Approve</button>
+          <button class="button secondary small" type="button" data-action="review-hotline" data-decision="rejected" data-id="${esc(item.id)}">Reject</button>
+          ${item.proposed?.supportingFile?.url ? `<a class="button tertiary small" href="${esc(item.proposed.supportingFile.url)}" target="_blank" rel="noopener">Supporting file</a>` : ""}
+        </div></div>
+      </div>`,
+    )
+    .join("")}</div>`;
+}
+
+export function hotlinesPage(role = "resident") {
+  const actions =
+    role === "administrator"
+      ? actionButton("Add hotline", "add-hotline", "primary small")
+      : role === "official"
+        ? actionButton("Suggest a contact", "suggest-hotline", "primary small")
+        : "";
+  const extras =
+    role === "administrator"
+      ? panel("Correction requests", hotlineCorrectionsMarkup())
+      : role === "official"
+        ? panel("About corrections", `<p>Suggest a change to an existing contact or propose a new one. An administrator reviews every request before it appears in the directory.</p>`)
+        : "";
+  return page(role, "hotlines", `${panel("Emergency contacts", hotlineCards(role))}${extras}`, actions);
 }

@@ -87,6 +87,20 @@ export let activityLogState = { activities: [], total: 0, page: 1, pageSize: 25,
 export let activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
 export let activityLogLoadedKey = "";
 
+// Identity verification and emergency hotline UI state. Kept here so views.mjs
+// and main.mjs share one source of truth, like the rest of the workspace.
+export let verification = { status: {}, scanned: {}, signals: [], checks: {} };
+export let verificationSettings = {
+  faceVerificationEnabled: false,
+  requireFaceOnLogin: false,
+  dutyHours: 9,
+  matchThreshold: 0.033,
+  faceppEnabled: false,
+  faceppThreshold: 80,
+  ocrEnabled: false,
+};
+export let hotlineFilter = "all";
+
 export const icons = {
   home: '<path d="m3.5 10 8.5-7 8.5 7"></path><path d="M5.5 9v11h13V9"></path><path d="M9 20v-6h6v6"></path>',
   calendar:
@@ -887,6 +901,9 @@ export function setState(changes = {}) {
     activityLogState: (v) => (activityLogState = v),
     activityFilters: (v) => (activityFilters = v),
     activityLogLoadedKey: (v) => (activityLogLoadedKey = v),
+    verification: (v) => (verification = v),
+    verificationSettings: (v) => (verificationSettings = v),
+    hotlineFilter: (v) => (hotlineFilter = v),
     permissionDrafts: (v) => (permissionDrafts = v),
     permissionOpenGroups: (v) => (permissionOpenGroups = v),
     permissionOpenAccounts: (v) => (permissionOpenAccounts = v),

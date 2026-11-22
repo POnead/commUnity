@@ -157,8 +157,14 @@ export async function handleAuth(request, response, db, options, user) {
     const token = cookieValue(request, SESSION_COOKIE);
     await withTransaction(db, async (transaction) => {
       const db = transaction;
-      if (user?.role === "official" && user.faceEnrollmentState === "pending")
-        await db.query("UPDATE users SET face_enrollment_state='locked' WHERE id=$1 AND face_enrollment_state='pending'", [user.id]);
+      // Only lock a brand-new official when a face gate is actually in force.
+      // Without it there is no enrollment the account is waiting on, so a
+      // normal sign-out must not strand the account behind admin enrollment.
+      if (user?.role === "official" && user.faceEnrollmentState === "pending") {
+        const settings = await readVerificationSettings(db, faceppClient?.configured);
+        if (settings.requireFaceOnLogin || settings.faceVerificationEnabled || settings.faceppEnabled)
+          await db.query("UPDATE users SET face_enrollment_state='locked' WHERE id=$1 AND face_enrollment_state='pending'", [user.id]);
+      }
       if (token) await db.query("DELETE FROM web_sessions WHERE token_hash=$1", [hash(token)]);
     });
     response.setHeader("Set-Cookie", clearSessionCookie(secureCookies));

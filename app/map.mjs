@@ -42,6 +42,23 @@ function haversineDistanceM(lat1, lon1, lat2, lon2) {
   return 2 * earthRadiusM * Math.asin(Math.sqrt(a));
 }
 
+
+// When the Google Maps API cannot load (no key, blocked script), keep the pin
+// picker usable: map a click inside the element into the Palsara bounds.
+function attachFallbackPicker(mapElement, onPick) {
+  if (mapElement.dataset.fallbackPicker) return;
+  mapElement.dataset.fallbackPicker = "true";
+  mapElement.classList.add("map-fallback");
+  mapElement.addEventListener("click", (event) => {
+    const rect = mapElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const [[south, west], [north, east]] = PALSARA_BOUNDS;
+    const lng = west + ((event.clientX - rect.left) / rect.width) * (east - west);
+    const lat = north - ((event.clientY - rect.top) / rect.height) * (north - south);
+    onPick({ lat, lng });
+  });
+}
+
 // Live bindings for templates and map actions.
 export { reportMapExpanded, reportMapSelection, reportMapGeoLocating };
 export { announcementMapExpanded, announcementMapSelection };
@@ -191,7 +208,12 @@ function createTileLayer(_map) {
 async function initializeReportMap() {
   const mapElement = app.querySelector("#report-map");
   if (!reportMapExpanded || !mapElement?.isConnected) return;
-  if (!(await ensureGoogleMaps())) return;
+  if (!(await ensureGoogleMaps())) {
+    attachFallbackPicker(mapElement, (position) => setReportMapPin(position));
+    const status = app.querySelector("#report-map-status");
+    if (status) status.textContent = "Map service is unavailable. Click the map area to place a pin within Palsara.";
+    return;
+  }
   if (reportMapElement !== mapElement) {
     reportMap?.remove();
     reportMapElement = mapElement;
@@ -305,7 +327,12 @@ function setAnnouncementMapPin(position) {
 async function initializeAnnouncementMap() {
   const mapElement = app.querySelector("#announcement-map");
   if (!announcementMapExpanded || !mapElement?.isConnected) return;
-  if (!(await ensureGoogleMaps())) return;
+  if (!(await ensureGoogleMaps())) {
+    attachFallbackPicker(mapElement, (position) => setAnnouncementMapPin(position));
+    const status = app.querySelector("#announcement-map-status");
+    if (status) status.textContent = "Map service is unavailable. Click the map area to place an event pin.";
+    return;
+  }
   if (announcementMapElement !== mapElement) {
     announcementMap?.remove();
     announcementMapElement = mapElement;
@@ -359,7 +386,12 @@ function setCalendarEventMapPin(position) {
 async function initializeCalendarEventMap() {
   const mapElement = app.querySelector("#calendar-event-map");
   if (!calendarEventMapExpanded || !mapElement?.isConnected) return;
-  if (!(await ensureGoogleMaps())) return;
+  if (!(await ensureGoogleMaps())) {
+    attachFallbackPicker(mapElement, (position) => setCalendarEventMapPin(position));
+    const status = app.querySelector("#calendar-event-map-status");
+    if (status) status.textContent = "Map service is unavailable. Click the map area to place an event pin.";
+    return;
+  }
   if (calendarEventMapElement !== mapElement) {
     calendarEventMap?.remove();
     calendarEventMapElement = mapElement;

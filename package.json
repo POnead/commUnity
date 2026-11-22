@@ -5,7 +5,7 @@
   "private": true,
   "main": "server/index.mjs",
   "scripts": {
-    "start": "node server/index.mjs",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
     "test": "node --test --test-concurrency=1 \"test/*.test.mjs\" ./postgres-migration.test.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",

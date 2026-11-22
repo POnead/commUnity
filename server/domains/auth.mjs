@@ -10,6 +10,7 @@ import { getAppTimeZone } from "../platform/time.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { insertActivity, logSecurityEvent } from "./activity.mjs";
 import { insertNotification } from "./notifications.mjs";
+import { readVerificationSettings } from "./verification.mjs";
 
 const RESET_TOKEN_MINUTES = 15;
 const RESET_EMAIL_COOLDOWN_MINUTES = 2;
@@ -55,7 +56,7 @@ export async function sendRecoveryVerification(db, options, request, user, recov
 }
 
 export async function handleAuth(request, response, db, options, user) {
-  const { secureCookies, trustedProxyAddresses, mailerState, appOrigin } = options;
+  const { secureCookies, trustedProxyAddresses, mailerState, appOrigin, faceppClient } = options;
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/auth/login" && request.method === "POST") {
     requireJsonBody(request);
@@ -70,7 +71,7 @@ export async function handleAuth(request, response, db, options, user) {
     const result = await db.query(
       `
       SELECT u.id,u.email,u.name,u.area,u.phone,u.role,u.status,u.working_hours AS "workingHours",
-        u.available_days AS "availableDays",
+        u.available_days AS "availableDays", u.face_enrollment_state AS "faceEnrollmentState",
         u.requires_password_change AS "requiresPasswordChange",to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",c.password_hash
       FROM users u JOIN user_credentials c ON c.user_id=u.id WHERE u.email=$1
     `,
@@ -89,11 +90,28 @@ export async function handleAuth(request, response, db, options, user) {
       });
       throw new HttpError(401, "Those sign-in details do not match an active account.");
     }
+    if (account.role === "official" && account.faceEnrollmentState === "locked")
+      throw new HttpError(403, "Face enrollment is pending. Ask the barangay administrator to complete it.");
     await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [accountAttemptKey]);
-    await issueSession(response, db, account, Boolean(body.remember), secureCookies);
+    // Officials with an expired duty window (or no enrolled face yet) get a
+    // restricted session until the face gate at sign-in completes.
+    let faceCheckPending = false;
+    if (account.role === "official") {
+      const verification = await readVerificationSettings(db, faceppClient?.configured);
+      if (verification.requireFaceOnLogin || verification.faceVerificationEnabled) {
+        const face = await db.query("SELECT last_face_verified_at, face_references, facepp_tokens FROM users WHERE id=$1", [account.id]);
+        const row = face.rows[0] || {};
+        const enrolled =
+          (Array.isArray(row.face_references) && row.face_references.length > 0) ||
+          (Array.isArray(row.facepp_tokens) && row.facepp_tokens.length > 0);
+        const last = row.last_face_verified_at ? new Date(row.last_face_verified_at).getTime() : 0;
+        faceCheckPending = !enrolled || Date.now() >= last + verification.dutyHours * 3600 * 1000;
+      }
+    }
+    await issueSession(response, db, account, Boolean(body.remember), secureCookies, faceCheckPending);
     await insertActivity(db, account, "Signed in", account.role);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    sendJson(response, 200, { user: publicUser(account) });
+    sendJson(response, 200, { user: { ...publicUser(account), faceCheckPending }, faceCheckRequired: faceCheckPending });
     return true;
   }
   if (url.pathname === "/api/auth/register" && request.method === "POST") {
@@ -137,7 +155,12 @@ export async function handleAuth(request, response, db, options, user) {
   }
   if (url.pathname === "/api/auth/logout" && request.method === "POST") {
     const token = cookieValue(request, SESSION_COOKIE);
-    if (token) await db.query("DELETE FROM web_sessions WHERE token_hash=$1", [hash(token)]);
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      if (user?.role === "official" && user.faceEnrollmentState === "pending")
+        await db.query("UPDATE users SET face_enrollment_state='locked' WHERE id=$1 AND face_enrollment_state='pending'", [user.id]);
+      if (token) await db.query("DELETE FROM web_sessions WHERE token_hash=$1", [hash(token)]);
+    });
     response.setHeader("Set-Cookie", clearSessionCookie(secureCookies));
     sendJson(response, 200, { ok: true });
     return true;
@@ -236,12 +259,17 @@ export async function handleAuth(request, response, db, options, user) {
       throw new HttpError(400, "The current password does not match this account.");
     }
     const token = cookieValue(request, SESSION_COOKIE);
-    await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(body.newPassword), user.id]);
-    await db.query("UPDATE users SET requires_password_change=false WHERE id=$1", [user.id]);
-    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
-    await db.query("DELETE FROM web_sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hash(token)]);
-    await insertActivity(db, user, "Changed account password", user.email);
-    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    const newHash = await passwordHash(body.newPassword);
+    await withTransaction(db, async (transaction) => {
+      const db = transaction;
+      await db.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [newHash, user.id]);
+      await db.query("UPDATE users SET requires_password_change=false WHERE id=$1", [user.id]);
+      await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
+      if (token) await db.query("DELETE FROM web_sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hash(token)]);
+      else await db.query("DELETE FROM web_sessions WHERE user_id=$1", [user.id]);
+      await insertActivity(db, user, "Changed account password", user.email);
+      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    });
     sendJson(response, 200, { ok: true });
     return true;
   }
@@ -375,6 +403,7 @@ export async function handleAuth(request, response, db, options, user) {
   }
   if (url.pathname === "/api/auth/reset-password" && request.method === "POST") {
     requireJsonBody(request);
+    await recordAttempt(db, hash(`reset-password:${requestClientAddress(request, trustedProxyAddresses)}`), RECOVERY_VERIFY_LIMIT * 4);
     const token = typeof request.body.token === "string" ? request.body.token : "";
     const newPassword = typeof request.body.newPassword === "string" ? request.body.newPassword : "";
     validatePassword(newPassword);

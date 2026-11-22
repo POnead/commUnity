@@ -97,6 +97,9 @@ export function makeDefaultState() {
     calendarEvents: [],
     locations: [],
     recyclingLocations: [],
+    hotlines: [],
+    hotlineCorrections: [],
+    verificationQueue: [],
   };
 }
 
@@ -339,6 +342,51 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
     ORDER BY active DESC, name
   `);
   state.recyclingLocations = recyclingLocations.rows;
+  const hotlines = await db.query(`
+    SELECT id, name, category, contact_number AS "contactNumber", alternative_contact_number AS "alternativeContactNumber",
+      office_address AS "officeAddress", description, operating_hours AS "operatingHours",
+      status, published, verified_at AS "verifiedAt"
+    FROM emergency_hotlines
+    ${user && user.role !== "administrator" ? "WHERE published=true" : ""}
+    ORDER BY category, name
+  `);
+  state.hotlines = hotlines.rows.map((item) => ({ ...item, id: String(item.id), verifiedAt: item.verifiedAt ? timestamp(item.verifiedAt) : null }));
+  const corrections = await db.query(`
+    SELECT id, hotline_id AS "hotlineId", kind, proposed, reason, status,
+      submitted_by AS "submittedById", reviewed_by AS "reviewedById", review_note AS "reviewNote",
+      reviewed_at AS "reviewedAt", created_at AS "createdAt"
+    FROM hotline_corrections
+    ${user && user.role !== "administrator" && user.role !== "official" ? "WHERE submitted_by=$1" : ""}
+    ORDER BY created_at DESC, id
+  `, user && user.role === "resident" ? [user.id] : []);
+  state.hotlineCorrections = corrections.rows.map((item) => ({
+    ...item,
+    id: String(item.id),
+    hotlineId: item.hotlineId == null ? null : String(item.hotlineId),
+    createdAt: timestamp(item.createdAt),
+    reviewedAt: item.reviewedAt ? timestamp(item.reviewedAt) : null,
+  }));
+  if (user && user.role === "administrator") {
+    const queue = await db.query(`
+      SELECT id AS "userId", id_number AS "idNumber", id_type AS "idType", id_full_name AS "idFullName",
+        id_address AS "idAddress", to_char(id_expiration_date,'YYYY-MM-DD') AS "idExpirationDate",
+        id_status AS "idStatus", id_face_status AS "idFaceStatus", id_review_note AS "idReviewNote",
+        name, email, id_scan_checks AS "idScanChecks", id_submitted_at AS "idSubmittedAt"
+      FROM users WHERE id_status IN ('pending','verified') AND id_number <> ''
+      ORDER BY id_submitted_at DESC
+    `);
+    state.verificationQueue = queue.rows.map((item) => {
+      const scan = item.idScanChecks && typeof item.idScanChecks === "object" ? item.idScanChecks : {};
+      const { fields, ...safeScan } = scan;
+      return {
+        ...item,
+        idScanChecks: { signals: Array.isArray(safeScan.signals) ? safeScan.signals : [], fieldsFound: Array.isArray(safeScan.fieldsFound) ? safeScan.fieldsFound : [] },
+        idSubmittedAt: item.idSubmittedAt ? timestamp(item.idSubmittedAt) : null,
+      };
+    });
+  } else {
+    state.verificationQueue = [];
+  }
   if (user && withheld) withholdState(state, user, await readVisibility(db, user));
   return state;
 }
@@ -735,6 +783,8 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           if (account.role === "resident" && (account.role !== old.role || account.area !== old.area)) {
             await assertKnownArea(db, account.area);
           }
+          if (!ROLES.includes(account.role)) throw new HttpError(400, "Choose a valid role.");
+          if (!["Active", "Inactive"].includes(account.status)) throw new HttpError(400, "Choose a valid account status.");
           if (old.id === user.id && (account.email !== old.email || account.role !== "administrator" || account.status !== "Active")) {
             throw new HttpError(403, "You cannot change your own administrator sign-in or access.");
           }

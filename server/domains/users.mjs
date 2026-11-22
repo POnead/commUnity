@@ -81,7 +81,7 @@ export async function createUser(db, user, body) {
   await withTransaction(db, async (transaction) => {
     const db = transaction;
     await db.query(
-      "INSERT INTO users (id,email,name,area,phone,working_hours,available_days,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)",
+      "INSERT INTO users (id,email,name,area,phone,working_hours,available_days,role,status,face_enrollment_state) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)",
       [
         id,
         email.trim().toLowerCase(),
@@ -92,6 +92,7 @@ export async function createUser(db, user, body) {
         JSON.stringify(validatedAvailableDays),
         role,
         status,
+        role === "official" ? "pending" : "none",
       ],
     );
     await db.query("INSERT INTO user_credentials (user_id,password_hash) VALUES ($1,$2)", [id, await passwordHash(password)]);

@@ -12,6 +12,8 @@ import { configureAppTimeZone, getAppTimeZone, DEFAULT_TIME_ZONE } from "./platf
 import { parseTrustedProxyAddresses } from "./platform/session.mjs";
 import { loadSmtpSettings, createMailer } from "./platform/email.mjs";
 import { resolveSmtpKey } from "./platform/smtp-key.mjs";
+import { createOcrClient } from "./platform/ocr.mjs";
+import { createFacePpClient } from "./platform/facepp.mjs";
 import { pruneExpiredAuthState } from "./platform/ratelimit.mjs";
 import { sweepOrphanUploads } from "./platform/uploads.mjs";
 import { migrate, ensureAdministrator } from "./db/migrate.mjs";
@@ -27,6 +29,7 @@ export { sweepOrphanUploads } from "./platform/uploads.mjs";
 export { runScheduleReminders } from "./domains/schedules.mjs";
 export { archiveOldActivities } from "./domains/activity.mjs";
 export { pruneOldNotifications } from "./domains/notifications.mjs";
+export { sweepExpiredIdImages } from "./domains/verification.mjs";
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_UPLOADS_DIR = path.join(PROJECT_DIR, "data", "uploads");
@@ -50,6 +53,13 @@ export async function createCommunityServer({
   smtpSettingsKey = process.env.SMTP_SETTINGS_KEY || "",
   timeZone = process.env.APP_TIME_ZONE || DEFAULT_TIME_ZONE,
   production = process.env.NODE_ENV === "production",
+  ocrApiKey = process.env.OCR_API_KEY || "",
+  faceppApiKey = process.env.FACEPP_API_KEY || "",
+  faceppApiSecret = process.env.FACEPP_API_SECRET || "",
+  faceppApiBase = process.env.FACEPP_API_BASE || "https://api.faceplusplus.com",
+  googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || "",
+  ocrClient = null,
+  faceppClient = null,
 } = {}) {
   if (!databaseUrl && host !== "127.0.0.1" && host !== "::1") {
     throw new Error("The local demo server must bind to loopback.");
@@ -125,6 +135,14 @@ export async function createCommunityServer({
     uploadsDir,
     mailerState,
     smtpSettingsKey: effectiveSmtpKey,
+    googleMapsApiKey,
+    ocrClient: ocrClient || createOcrClient({ apiKey: ocrApiKey }),
+    faceppClient: (() => {
+      const client = faceppClient || createFacePpClient({ apiKey: faceppApiKey, apiSecret: faceppApiSecret, apiBase: faceppApiBase });
+      if (!client.configured)
+        console.warn("[verification] Face++ keys are not configured; identity checks use the on-device matcher. Set FACEPP_API_KEY and FACEPP_API_SECRET in .env.");
+      return client;
+    })(),
     handleApi,
     HttpError,
     logError,

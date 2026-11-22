@@ -11,6 +11,13 @@ data/uploads/
 # Local run artifacts
 .run/
 graphify-out/
+# Test scratch: session cookies, captured state, logs, one-off scripts
+*-cookies.txt
+*-state.json
+test-*.json
+*.log
+test-flow.mjs
+test-submit-report.ps1
 
 # Playwright
 test-results/

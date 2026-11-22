@@ -32,10 +32,11 @@ const OFFICIAL_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "
 const DEFAULT_OFFICIAL_DAYS = OFFICIAL_DAYS.slice(0, 5);
 
 export function validateWorkingHours(value) {
+  if (typeof value !== "string" || value.length > 120) throw new HttpError(400, "Choose valid working-hours start and end times.");
   const dayList = `(?:${OFFICIAL_DAYS.join("|")})(?:,\\s*(?:${OFFICIAL_DAYS.join("|")}))*`;
-  const match =
-    typeof value === "string" &&
-    value.match(new RegExp(`^(?:(?:Monday-Friday|${dayList}),\\s*)?(\\d{1,2}:\\d{2}\\s[AP]M)-(\\d{1,2}:\\d{2}\\s[AP]M)$`, "i"));
+  const match = value.match(
+    new RegExp(`^(?:(?:Monday-Friday|${dayList}),\\s*)?(\\d{1,2}:\\d{2}\\s[AP]M)-(\\d{1,2}:\\d{2}\\s[AP]M)$`, "i"),
+  );
   if (!match) throw new HttpError(400, "Choose valid working-hours start and end times.");
   const minutesAfterMidnight = (time) => {
     const [clock, period] = time.split(" ");
@@ -45,7 +46,7 @@ export function validateWorkingHours(value) {
   };
   const start = minutesAfterMidnight(match[1]);
   const end = minutesAfterMidnight(match[2]);
-  if (value.length > 120 || start < 0 || end < 0 || end <= start) {
+  if (start < 0 || end < 0 || end <= start) {
     throw new HttpError(400, "Working-hours end time must be after its start time.");
   }
 }

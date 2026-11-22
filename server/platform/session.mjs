@@ -41,7 +41,15 @@ export async function getSessionUser(request, db) {
     SELECT u.id, u.email, u.name, u.area, u.phone, u.role, u.status, u.working_hours AS "workingHours",
       u.available_days AS "availableDays", u.permission_overrides AS "permissionOverrides",
       u.requires_password_change AS "requiresPasswordChange", u.photo_url AS "photoUrl", to_char(u.joined_at, 'YYYY-MM-DD') AS "joinedAt",
-      u.recovery_email AS "recoveryEmail", u.recovery_email_verified AS "recoveryEmailVerified"
+      u.recovery_email AS "recoveryEmail", u.recovery_email_verified AS "recoveryEmailVerified",
+      u.id_status AS "idStatus", u.id_review_note AS "idReviewNote",
+      u.id_address AS "idAddress", to_char(u.id_expiration_date, 'YYYY-MM-DD') AS "idExpirationDate",
+      u.id_face_status AS "idFaceStatus",
+      COALESCE(u.id_image_filename, '') <> '' AS "hasIdImage",
+      COALESCE(u.id_back_image_filename, '') <> '' AS "hasIdBackImage",
+      ((CASE WHEN jsonb_typeof(u.face_references) = 'array' THEN jsonb_array_length(u.face_references) ELSE 0 END > 0)
+        OR (CASE WHEN jsonb_typeof(u.facepp_tokens) = 'array' THEN jsonb_array_length(u.facepp_tokens) ELSE 0 END > 0)) AS "faceEnrolled",
+      s.face_check_pending AS "faceCheckPending", u.face_enrollment_state AS "faceEnrollmentState"
     FROM web_sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = $1 AND s.expires_at > now() AND u.status = 'Active'
   `,
@@ -51,6 +59,7 @@ export async function getSessionUser(request, db) {
 }
 
 export async function hasPermission(db, user, permission) {
+  if (!user) return false;
   if (user?.permissionOverrides && Object.hasOwn(user.permissionOverrides, permission)) {
     return Boolean(user.permissionOverrides[permission]);
   }
@@ -65,14 +74,14 @@ export async function hasPermission(db, user, permission) {
 export async function readVisibility(db, user) {
   if (!user) {
     return {
-      submitReports: true,
-      viewSchedules: true,
-      manageReports: true,
-      manageSchedules: true,
-      manageAnnouncements: true,
-      manageUsers: true,
-      manageRoles: true,
-      viewAudit: true,
+      submitReports: false,
+      viewSchedules: false,
+      manageReports: false,
+      manageSchedules: false,
+      manageAnnouncements: false,
+      manageUsers: false,
+      manageRoles: false,
+      viewAudit: false,
     };
   }
   const keys =
@@ -80,7 +89,9 @@ export async function readVisibility(db, user) {
       ? ["submitReports", "viewSchedules"]
       : user.role === "official"
         ? ["manageReports", "manageSchedules", "manageAnnouncements"]
-        : ["manageReports", "manageSchedules", "manageAnnouncements", "manageUsers", "manageRoles", "viewAudit"];
+        : user.role === "administrator"
+          ? ["manageReports", "manageSchedules", "manageAnnouncements", "manageUsers", "manageRoles", "viewAudit"]
+          : [];
   const result = await db.query("SELECT permission, enabled FROM role_permissions WHERE role=$1", [user.role]);
   const enabledByPermission = new Map(result.rows.map((row) => [row.permission, Boolean(row.enabled)]));
   const overrides = user.permissionOverrides || {};
@@ -92,13 +103,14 @@ export async function readVisibility(db, user) {
   );
 }
 
-export async function issueSession(response, db, user, remember, secure) {
+export async function issueSession(response, db, user, remember, secure, faceCheckPending = false) {
   const token = randomBytes(32).toString("base64url");
   const duration = remember ? `${REMEMBER_DAYS} days` : `${SESSION_HOURS} hours`;
-  await db.query("INSERT INTO web_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + $3::interval)", [
+  await db.query("INSERT INTO web_sessions (token_hash, user_id, expires_at, face_check_pending) VALUES ($1, $2, now() + $3::interval, $4)", [
     hash(token),
     user.id,
     duration,
+    Boolean(faceCheckPending),
   ]);
   response.setHeader("Set-Cookie", cookieHeader(token, { secure, remember }));
 }
@@ -158,6 +170,16 @@ export function publicUser(user) {
     recoveryEmailVerified,
     resetRequested,
     photoUrl,
+    idStatus,
+    idReviewNote,
+    idAddress,
+    idExpirationDate,
+    idFaceStatus,
+    hasIdImage,
+    hasIdBackImage,
+    faceEnrolled,
+    faceCheckPending,
+    faceEnrollmentState,
   } = user;
   return {
     id,
@@ -175,5 +197,15 @@ export function publicUser(user) {
     recoveryEmailVerified: Boolean(recoveryEmailVerified),
     resetRequested: Boolean(resetRequested),
     photoUrl: photoUrl || "",
+    idStatus: idStatus || "unverified",
+    idReviewNote: idReviewNote || "",
+    idAddress: idAddress || "",
+    idExpirationDate: idExpirationDate || "",
+    idFaceStatus: idFaceStatus || "",
+    hasIdImage: Boolean(hasIdImage),
+    hasIdBackImage: Boolean(hasIdBackImage),
+    faceEnrolled: Boolean(faceEnrolled),
+    faceCheckPending: Boolean(faceCheckPending),
+    faceEnrollmentState: faceEnrollmentState || "none",
   };
 }

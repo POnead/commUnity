@@ -15,13 +15,6 @@ const PUBLIC_FILES = new Set([
   "styles.css",
   "logo/palsara-transparent.webp",
   "favicon.png",
-  "node_modules/leaflet/dist/leaflet.js",
-  "node_modules/leaflet/dist/leaflet.css",
-  "node_modules/leaflet/dist/images/layers.png",
-  "node_modules/leaflet/dist/images/layers-2x.png",
-  "node_modules/leaflet/dist/images/marker-icon.png",
-  "node_modules/leaflet/dist/images/marker-icon-2x.png",
-  "node_modules/leaflet/dist/images/marker-shadow.png",
 ]);
 
 function addSecurityHeaders(response, secure) {
@@ -47,6 +40,9 @@ export function createExpressApp({
   uploadsDir,
   mailerState,
   smtpSettingsKey,
+  googleMapsApiKey,
+  ocrClient,
+  faceppClient,
   handleApi,
   HttpError,
   logError,
@@ -65,6 +61,9 @@ export function createExpressApp({
       uploadsDir,
       mailerState,
       smtpSettingsKey,
+      googleMapsApiKey,
+      ocrClient,
+      faceppClient,
     },
   });
   app.use(async (request, response, next) => {
@@ -82,10 +81,11 @@ export function createExpressApp({
       }
       const pathname = new URL(request.url || "/", `http://${request.headers.host || "127.0.0.1"}`).pathname;
       const filename = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
-      const allowedByDirectory = [...PUBLIC_DIRECTORIES].some(
-        (dir) => filename.startsWith(dir) && !filename.includes("..") && !path.isAbsolute(filename),
-      );
-      if (!PUBLIC_FILES.has(filename) && !allowedByDirectory) {
+      // Reject traversal and Windows separators before path.join resolves them.
+      const safeFilename =
+        !filename.includes("..") && !filename.includes("\\") && !path.isAbsolute(filename) && !filename.startsWith("/");
+      const allowedByDirectory = safeFilename && [...PUBLIC_DIRECTORIES].some((dir) => filename.startsWith(dir));
+      if (!safeFilename || (!PUBLIC_FILES.has(filename) && !allowedByDirectory)) {
         response.writeHead(404).end("Not found");
         return;
       }
@@ -165,7 +165,9 @@ export function createExpressApp({
       return;
     }
     if (error instanceof HttpError) {
-      sendJson(response, error.status, { error: error.message });
+      const payload = { error: error.message };
+      if (error.code) payload.code = error.code;
+      sendJson(response, error.status, payload);
       return;
     }
     if (error.type === "entity.too.large") {

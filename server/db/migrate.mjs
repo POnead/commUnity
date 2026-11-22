@@ -7,10 +7,39 @@ import migration001 from "./migrations/001-initial.mjs";
 import migration002 from "./migrations/002-additive.mjs";
 import migration003 from "./migrations/003-email-change-tokens.mjs";
 import migration004 from "./migrations/004-web-sessions-user-index.mjs";
+import migration008 from "./migrations/008-emergency-hotlines.mjs";
+import migration009 from "./migrations/009-publish-approved-hotline-suggestions.mjs";
+import migration010 from "./migrations/010-face-id-verification.mjs";
+import migration011 from "./migrations/011-report-reference.mjs";
+import migration012 from "./migrations/012-facepp-verification.mjs";
+import migration013 from "./migrations/013-face-check-pending.mjs";
+import migration014 from "./migrations/014-face-enrollment-state.mjs";
+import migration015 from "./migrations/015-id-number-canonical.mjs";
+import migration016 from "./migrations/016-id-scan-checks.mjs";
+import migration017 from "./migrations/017-integrated-identity-verification.mjs";
+import migration018 from "./migrations/018-state-scale-indexes.mjs";
+import migration019 from "./migrations/019-photo-drafts.mjs";
 
 // The migrations are numbered files so a fresh deployment and an old database
 // both walk the same path. Never edit an applied migration — add a new one.
-export const MIGRATIONS = [migration001, migration002, migration003, migration004];
+export const MIGRATIONS = [
+  migration001,
+  migration002,
+  migration003,
+  migration004,
+  migration008,
+  migration009,
+  migration010,
+  migration011,
+  migration012,
+  migration013,
+  migration014,
+  migration015,
+  migration016,
+  migration017,
+  migration018,
+  migration019,
+];
 
 async function readAppliedMigrationVersions(db) {
   const result = await db.query("SELECT version FROM schema_migrations ORDER BY version");

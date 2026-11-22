@@ -21,6 +21,7 @@ export async function startServer(dataDir, smtp = {}, options = {}) {
     initialAdminEmail: ADMIN_EMAIL,
     initialAdminPassword: ADMIN_PASSWORD,
     ...smtp,
+    ...options,
   });
   await new Promise((resolve, reject) => {
     instance.server.once("error", reject);

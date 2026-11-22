@@ -8,11 +8,13 @@ import { handleAuth } from "./domains/auth.mjs";
 import { handleActivity } from "./domains/activity.mjs";
 import { handleAnnouncements } from "./domains/announcements.mjs";
 import { handleLocations } from "./domains/locations.mjs";
+import { handleHotlines } from "./domains/hotlines.mjs";
 import { handleNotifications } from "./domains/notifications.mjs";
 import { handleReports } from "./domains/reports.mjs";
 import { handleSettings } from "./domains/settings.mjs";
 import { handleState } from "./domains/state.mjs";
 import { handleUsers } from "./domains/users.mjs";
+import { handleVerification, readVerificationSettings } from "./domains/verification.mjs";
 
 // Each domain handler owns a set of endpoints outright. A handler whose paths do
 // not match the request returns false and the dispatcher moves to the next one;
@@ -28,6 +30,8 @@ const domainHandlers = [
   handleAnnouncements,
   handleSettings,
   handleLocations,
+  handleHotlines,
+  handleVerification,
 ];
 
 // While a temporary password is in force, only these calls may leave the
@@ -37,6 +41,32 @@ function passwordChangeRequestAllowed(request, url) {
   if (url.pathname === "/api/auth/password") return request.method === "POST";
   if (url.pathname === "/api/auth/logout") return request.method === "POST";
   if (url.pathname === "/api/session") return request.method === "GET";
+  if (url.pathname.startsWith("/api/verification/id")) return true;
+  if (url.pathname === "/api/verification/status") return request.method === "GET";
+  if (url.pathname === "/api/verification/face/enroll" || url.pathname === "/api/verification/face/verify")
+    return request.method === "POST";
+  return false;
+}
+
+// While the face duty check is enabled, officials prove presence once per shift:
+// every non-GET call outside the sign-in/face-check surface requires a fresh
+// last_face_verified_at. Residents and administrators never see this.
+function faceCheckRequestAllowed(request, url) {
+  if (url.pathname === "/api/auth/password") return request.method === "POST";
+  if (url.pathname === "/api/auth/logout") return request.method === "POST";
+  if (url.pathname === "/api/session") return request.method === "GET";
+  if (url.pathname === "/api/verification/status") return request.method === "GET";
+  if (url.pathname.startsWith("/api/verification/id")) return true;
+  if (url.pathname === "/api/verification/face/enroll" || url.pathname === "/api/verification/face/verify")
+    return request.method === "POST";
+  return false;
+}
+
+function dutyGateAllowed(url) {
+  if (url.pathname === "/api/auth/logout") return true;
+  if (url.pathname === "/api/auth/password") return true;
+  if (url.pathname === "/api/session") return true;
+  if (url.pathname.startsWith("/api/verification/")) return true;
   return false;
 }
 
@@ -49,7 +79,7 @@ function passwordChangeRequestAllowed(request, url) {
 //     their own limit buckets.
 //   - 400, 404 and 409 are client mistakes, not security events.
 export async function handleApi(request, response, db, options) {
-  const { server, appOrigin, trustedProxyAddresses } = options;
+  const { server, appOrigin, trustedProxyAddresses, faceppClient } = options;
   const url = new URL(request.url, `http://${request.headers.host}`);
   let user = null;
   try {
@@ -74,6 +104,23 @@ export async function handleApi(request, response, db, options) {
     // sign out, or read its own session — nothing else.
     if (user?.requiresPasswordChange && !passwordChangeRequestAllowed(request, url)) {
       throw new HttpError(403, "Change your password before using CommUnity.");
+    }
+    if (user?.faceCheckPending && !faceCheckRequestAllowed(request, url)) {
+      throw new HttpError(403, "Complete the face check to open your workspace.", "FACE_VERIFICATION_REQUIRED");
+    }
+    if (user?.role === "official" && request.method !== "GET" && request.method !== "HEAD" && !dutyGateAllowed(url)) {
+      const verification = await readVerificationSettings(db, faceppClient?.configured);
+      if (verification.faceVerificationEnabled) {
+        const row = await db.query("SELECT last_face_verified_at FROM users WHERE id=$1", [user.id]);
+        const last = row.rows[0]?.last_face_verified_at ? new Date(row.rows[0].last_face_verified_at).getTime() : 0;
+        if (Date.now() >= last + verification.dutyHours * 3600 * 1000) {
+          throw new HttpError(
+            403,
+            "Face verification is required before you can make changes. Open the face check page, complete the check, and try again.",
+            "FACE_VERIFICATION_REQUIRED",
+          );
+        }
+      }
     }
     for (const handler of domainHandlers) {
       if (await handler(request, response, db, options, user)) return;

@@ -23,11 +23,13 @@ const nodeGlobals = {
   FormData: "readonly",
   Blob: "readonly",
   AbortController: "readonly",
+  AbortSignal: "readonly",
+  crypto: "readonly",
 };
 
 export default [
   {
-    ignores: ["node_modules/**", "data/**", "ui-screenshot/**", "pdf files/**", "logo/**", ".github/**", ".run/**"],
+    ignores: ["node_modules/**", "data/**", "ui-screenshot/**", "pdf files/**", "logo/**", ".github/**", ".run/**", "app/vendor/**"],
   },
   js.configs.recommended,
   {
@@ -88,6 +90,8 @@ export default [
         createImageBitmap: "readonly",
         Image: "readonly",
         crypto: "readonly",
+        performance: "readonly",
+        DOMException: "readonly",
       },
     },
     rules: {

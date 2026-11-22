@@ -121,7 +121,7 @@ export const icons = {
 };
 
 export function icon(name, extra = "") {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${extra}">${icons[name] || icons.home}</svg>`;
+  return `<svg viewBox="0 0 24 24" aria-hidden="true" class="${esc(extra)}">${icons[name] || icons.home}</svg>`;
 }
 export function brandMark() {
   return '<span class="brand-mark"><img src="/logo/palsara-transparent.webp" alt="Palsara barangay logo"></span>';
@@ -142,6 +142,9 @@ export function esc(value) {
 }
 
 export function asDate(value) {
+  // A date-only value is a calendar day, not a midnight instant. Anchor it at
+  // noon UTC so it keeps its day in every zone east (and west) of UTC.
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T12:00:00Z`);
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) throw new Error("A saved CommUnity date is invalid.");
   return parsed;
@@ -162,7 +165,8 @@ export function appDateParts(value = new Date()) {
 
 export function dateLabel(value, options = { day: "numeric", month: "short", year: "numeric" }) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en-PH", { timeZone: getAppTimeZone(), ...options }).format(asDate(value));
+  const isDateOnly = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  return new Intl.DateTimeFormat("en-PH", { timeZone: isDateOnly ? "UTC" : getAppTimeZone(), ...options }).format(asDate(value));
 }
 
 export function dateTimeLabel(value) {
@@ -788,11 +792,11 @@ export function routeUrl(role, page) {
 }
 
 export function linkButton(label, href, variant = "secondary", extra = "") {
-  return `<a class="button ${variant} ${extra}" href="${esc(href)}">${label}</a>`;
+  return `<a class="button ${variant} ${esc(extra)}" href="${esc(href)}">${esc(label)}</a>`;
 }
 
 export function actionButton(label, action, variant = "secondary", extra = "", attrs = "") {
-  return `<button class="button ${variant} ${extra}" type="button" data-action="${esc(action)}" ${attrs}>${label}</button>`;
+  return `<button class="button ${variant} ${esc(extra)}" type="button" data-action="${esc(action)}" ${attrs}>${esc(label)}</button>`;
 }
 
 export function inputField(label, name, value = "", options = {}) {

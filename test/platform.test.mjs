@@ -61,8 +61,6 @@ test("serves hardened static files and protects database routes behind sessions"
     assert.ok(health.headers.get("x-request-id"));
     const homeHtml = await home.text();
     assert.match(homeHtml, /CommUnity/);
-    assert.match(homeHtml, /node_modules\/leaflet\/dist\/leaflet\.css/);
-    assert.match(homeHtml, /node_modules\/leaflet\/dist\/leaflet\.js/);
     assert.equal((await fetch(`${app.origin}/package.json`)).status, 404);
     for (const [asset, contentType] of [
       ["/app/main.mjs", "text/javascript"],
@@ -70,13 +68,6 @@ test("serves hardened static files and protects database routes behind sessions"
       ["/app/core.mjs", "text/javascript"],
       ["/app/map.mjs", "text/javascript"],
       ["/app/constants.mjs", "text/javascript"],
-      ["/node_modules/leaflet/dist/leaflet.js", "text/javascript"],
-      ["/node_modules/leaflet/dist/leaflet.css", "text/css"],
-      ["/node_modules/leaflet/dist/images/layers.png", "image/png"],
-      ["/node_modules/leaflet/dist/images/layers-2x.png", "image/png"],
-      ["/node_modules/leaflet/dist/images/marker-icon.png", "image/png"],
-      ["/node_modules/leaflet/dist/images/marker-icon-2x.png", "image/png"],
-      ["/node_modules/leaflet/dist/images/marker-shadow.png", "image/png"],
     ]) {
       const response = await fetch(`${app.origin}${asset}`);
       assert.equal(response.status, 200, asset);

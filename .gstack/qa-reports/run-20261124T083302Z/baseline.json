@@ -1,0 +1,10 @@
+{
+  "date": "2026-11-24",
+  "url": "http://127.0.0.1:8768",
+  "healthScore": 100,
+  "issues": [
+    { "id": "QA-R01", "title": "Modal persists across route navigation", "severity": "high", "category": "Functional" },
+    { "id": "QA-R02", "title": "Empty-state copy contradicted resolved report below", "severity": "low", "category": "UX" }
+  ],
+  "categoryScores": { "Console": 100, "Links": 100, "Functional": 100, "Accessibility": 100 }
+}

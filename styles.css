@@ -10406,7 +10406,7 @@ html[data-theme="auth"] .processing-modal {
     border-top-color: currentColor;
     opacity: 0.6;
   }
-  .face-live-dot {
+  .face-video-frame[data-camera-state="live"] .face-live-dot {
     animation: none;
   }
   .face-guide span,

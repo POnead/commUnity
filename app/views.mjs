@@ -185,7 +185,7 @@ export function requiredPermission(role, pageName) {
 
 export function officialReportFilters(reports, activeFilter) {
   const options = [
-    ["all", "All reports"],
+    ["all", "Open reports"],
     ["Submitted", "Submitted"],
     ["Under Review", "Under review"],
     ["In Progress", "In progress"],
@@ -1698,11 +1698,11 @@ function hotlineCard(item, role) {
     : "";
   const officialAction =
     role === "official"
-      ? `<button class="button secondary small" type="button" data-action="request-hotline-correction" data-id="${esc(item.id)}">Suggest correction</button>`
+      ? `<button class="button secondary small" type="button" data-action="request-hotline-correction" data-id="${esc(item.id)}" aria-label="Suggest correction for ${esc(item.name)}">Suggest correction</button>`
       : "";
   const callAction =
     item.status === "Active"
-      ? `<a class="button small hotline-call-button" href="${esc(hotlineCallHref(item.contactNumber))}">${icon("phone")} Call Now</a>`
+      ? `<a class="button small hotline-call-button" href="${esc(hotlineCallHref(item.contactNumber))}" aria-label="Call Now: ${esc(item.name)} at ${esc(item.contactNumber)}">${icon("phone")} Call Now</a>`
       : "";
   const facts = `${hours}${plantedAt}${alternate}`;
   return `<article class="hotline-card filter-item" data-hotline-category="${esc(item.category)}" data-search="${esc(`${item.name} ${item.category} ${item.description} ${item.contactNumber} ${item.officeAddress} ${item.status}`.toLowerCase())}">
@@ -1710,7 +1710,7 @@ function hotlineCard(item, role) {
     <p class="hotline-description">${esc(description)}</p>
     <div class="hotline-number-block"><span class="hotline-number-label">Emergency number</span><p class="hotline-number">${esc(item.contactNumber)}</p></div>
     ${facts ? `<ul class="hotline-facts">${facts}</ul>` : ""}
-    <footer class="hotline-card-foot"><span class="record-secondary hotline-verified">${esc(hotlineVerifiedLabel(item))}</span><div class="hotline-actions button-row">${callAction}<button class="button secondary small" type="button" data-action="copy-hotline" data-number="${esc(item.contactNumber)}">${icon("copy")} Copy</button>${officialAction}</div></footer>
+    <footer class="hotline-card-foot"><span class="record-secondary hotline-verified">${esc(hotlineVerifiedLabel(item))}</span><div class="hotline-actions button-row">${callAction}<button class="button secondary small" type="button" data-action="copy-hotline" data-number="${esc(item.contactNumber)}" aria-label="Copy ${esc(item.name)} number">${icon("copy")} Copy</button>${officialAction}</div></footer>
   </article>`;
 }
 
@@ -2282,7 +2282,7 @@ export function profilePage(role) {
             <div class="profile-photo-field"><label class="profile-photo-control" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}<span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></label></div>
             <div class="form-grid">
               ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
-              ${inputField("Sign-in email", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
+              ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email" })}
               ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
               ${inputField("Purok", "area", currentUser.area || "Palsara", { readonly: true })}
             </div>
@@ -2297,8 +2297,8 @@ export function profilePage(role) {
         <summary class="panel-head"><div><h2>Change sign-in email</h2></div></summary>
         <div class="panel-body"><form id="change-email-form" class="form-stack">
           <div class="form-grid">
-            ${inputField("New email address", "email", "", { required: true, type: "email", autocomplete: "email" })}
-            ${inputField("Current password", "currentPassword", "", { required: true, type: "password", autocomplete: "current-password" })}
+            ${inputField("New email address", "email", "", { id: "change-email-address", required: true, type: "email", autocomplete: "email" })}
+            ${inputField("Current password", "currentPassword", "", { id: "profile-email-current-password", required: true, type: "password", autocomplete: "current-password" })}
           </div>
           <p class="field-help">Confirm the verification link sent to the new address.</p>
           <div class="form-actions"><button class="button secondary" type="submit">Send verification link</button></div>
@@ -2307,7 +2307,7 @@ export function profilePage(role) {
       <details class="panel profile-collapsible-panel">
         <summary class="panel-head"><div><h2>Account password</h2></div></summary>
         <div class="panel-body"><form id="password-form" class="form-stack">
-          ${inputField("Current password", "currentPassword", "", { type: "password", required: true, autocomplete: "current-password" })}
+          ${inputField("Current password", "currentPassword", "", { id: "profile-current-password", type: "password", required: true, autocomplete: "current-password" })}
           <div class="form-grid">
             ${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
             ${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
@@ -2337,7 +2337,7 @@ function residentProfilePage() {
           <div class="profile-intro resident-profile-intro"><label class="profile-avatar" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}</label><div><strong>${esc(currentUser.name)}</strong><span>Resident &middot; ${esc(currentUser.area || "Palsara")}</span><span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></div></div>
           <form id="profile-form" class="form-grid resident-profile-form">
             ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
-            ${inputField("Sign-in email", "email", currentUser.email, { readonly: true, autocomplete: "email" })}
+            ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email" })}
             ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
             ${selectField("Purok", "area", areaOptions, currentUser.area || areaOptions[0], { required: true })}
             ${inputField("Recovery email", "recoveryEmail", recoveryEmail, { type: "email", placeholder: "Optional", autocomplete: "email", help: recoveryHelp })}
@@ -2350,8 +2350,8 @@ function residentProfilePage() {
         <details class="panel resident-profile-security-panel">
           <summary class="panel-head"><div><h2>Email Change</h2></div></summary>
           <div class="panel-body"><form id="change-email-form" class="form-stack">
-            ${inputField("New email address", "email", "", { required: true, type: "email", autocomplete: "email" })}
-            ${inputField("Current password", "currentPassword", "", { required: true, type: "password", autocomplete: "current-password" })}
+            ${inputField("New email address", "email", "", { id: "change-email-address", required: true, type: "email", autocomplete: "email" })}
+            ${inputField("Current password", "currentPassword", "", { id: "profile-email-current-password", required: true, type: "password", autocomplete: "current-password" })}
             <p class="field-help">Confirm the verification link sent to the new address.</p>
             <div class="form-actions"><button class="button secondary" type="submit">Send Verification Link</button></div>
           </form></div>
@@ -2359,7 +2359,7 @@ function residentProfilePage() {
         <details class="panel resident-profile-security-panel">
           <summary class="panel-head"><div><h2>Password Management</h2></div></summary>
           <div class="panel-body"><form id="password-form" class="form-stack">
-            ${inputField("Current password", "currentPassword", "", { type: "password", required: true, autocomplete: "current-password" })}
+            ${inputField("Current password", "currentPassword", "", { id: "profile-current-password", required: true, type: "password", autocomplete: "current-password" })}
             <div class="form-grid">
               ${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
               ${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}

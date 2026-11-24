@@ -743,7 +743,8 @@ export function render() {
     if (modalState?.kind === "calendar-event" && calendarEventMapExpanded) initializeCalendarEventMap();
     if (modalState) {
       const input = app.querySelector(".modal input:not([type=hidden]), .modal select, .modal textarea");
-      if (input) requestAnimationFrame(() => input.focus());
+      const target = input || app.querySelector(".modal #modal-title");
+      if (target) requestAnimationFrame(() => target.focus());
     }
   } else {
     document.documentElement.dataset.theme = "auth";
@@ -769,7 +770,7 @@ export function render() {
 
 function makeModal(title, body, className = "", subtitle = "") {
   return `<div class="modal-backdrop" data-action="close-modal-backdrop"><section class="modal${className ? ` ${className}` : ""}" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-    <header class="modal-head"><div><h2 id="modal-title">${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ""}</div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></header>
+    <header class="modal-head"><div><h2 id="modal-title" tabindex="-1">${esc(title)}</h2>${subtitle ? `<p>${esc(subtitle)}</p>` : ""}</div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">${icon("close")}</button></header>
     <div class="modal-content">${body}</div>
   </section></div>`;
 }

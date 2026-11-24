@@ -3,6 +3,7 @@ import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
 import { requireRole } from "../platform/session.mjs";
 import { jsonEqual, validId } from "../platform/validate.mjs";
 import { ROLES } from "../platform/roles.mjs";
+import { withTransaction } from "../platform/db.mjs";
 
 export async function insertNotification(db, userEmail, title, body, reportId = "") {
   await db.query(
@@ -44,9 +45,11 @@ export async function syncNotifications(db, oldItems, newItems, user) {
 // Notifications older than 90 days leave the shared state, so the shared
 // revision advances with the prune and open browsers resync on their next save.
 export async function pruneOldNotifications(db) {
-  const removed = await db.query("DELETE FROM notifications WHERE created_at < now() - interval '90 days'");
-  if (removed.rowCount) await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-  return removed.rowCount;
+  return withTransaction(db, async (transaction) => {
+    const removed = await transaction.query("DELETE FROM notifications WHERE created_at < now() - interval '90 days'");
+    if (removed.rowCount) await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+    return removed.rowCount;
+  });
 }
 
 export async function handleNotifications(request, response, db, options, user) {
@@ -64,8 +67,10 @@ export async function handleNotifications(request, response, db, options, user) 
     requireJsonBody(request);
     const ids = Array.isArray(request.body.ids) ? request.body.ids.filter((id) => typeof id === "string" && id.length > 0) : [];
     if (ids.length) {
-      await db.query("UPDATE notifications SET read=true WHERE target_email=$1 AND id=ANY($2::text[])", [user.email, ids]);
-      await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      await withTransaction(db, async (transaction) => {
+        const updated = await transaction.query("UPDATE notifications SET read=true WHERE target_email=$1 AND id=ANY($2::text[])", [user.email, ids]);
+        if (updated.rowCount) await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      });
     }
     sendJson(response, 200, { ok: true });
     return true;

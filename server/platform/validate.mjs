@@ -1,7 +1,14 @@
 import { HttpError } from "./http.mjs";
 
 export function jsonEqual(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const normalize = (value) => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+      return Object.fromEntries(Object.keys(value).sort().map((key) => [key, normalize(value[key])]));
+    }
+    return value;
+  };
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
 export const MAX_PASSWORD_LENGTH = 200;
@@ -38,7 +45,7 @@ export function validateWorkingHours(value) {
     value.match(new RegExp(`^(?:(?:Monday-Friday|${dayList}),\\s*)?(\\d{1,2}:\\d{2}\\s[AP]M)-(\\d{1,2}:\\d{2}\\s[AP]M)$`, "i"));
   if (!match) throw new HttpError(400, "Choose valid working-hours start and end times.");
   const minutesAfterMidnight = (time) => {
-    const [clock, period] = time.split(" ");
+    const [clock, period] = time.split(/\s+/);
     const [hour, minute] = clock.split(":").map(Number);
     if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return -1;
     return ((hour % 12) + (period.toUpperCase() === "PM" ? 12 : 0)) * 60 + minute;

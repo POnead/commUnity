@@ -1,3 +1,15 @@
+import { PALSARA_CENTER, PALSARA_DEFAULT_ZOOM, PALSARA_BOUNDS } from "../shared/community-map.mjs";
+
+export { PALSARA_CENTER, PALSARA_DEFAULT_ZOOM, PALSARA_BOUNDS };
+export { HOTLINE_CATEGORIES, HOTLINE_STATUSES, HOTLINE_STATUS_LABELS } from "../shared/hotlines.mjs";
+export {
+  ID_TYPE_LABELS,
+  REPORT_TRANSITIONS,
+  RESPONSE_DEADLINE_DAYS,
+  FOLLOW_UP_LIMITS,
+  DEFAULT_PERMISSIONS,
+} from "../shared/domain-rules.mjs";
+
 // Every calendar day shown or validated in the interface is the barangay's day,
 // not the day of whatever time zone the browser happens to be in. The server
 // reports the deployment's zone at sign-in (GET /api/session); until then, Manila.
@@ -24,13 +36,6 @@ export const ROLES = {
 };
 export const ROLE_THEME = { resident: "resident", official: "official", administrator: "admin" };
 export const STATUSES = ["Submitted", "Under Review", "In Progress", "Resolved"];
-export const REPORT_TRANSITIONS = {
-  Submitted: ["Under Review"],
-  "Under Review": ["In Progress"],
-  "In Progress": ["Resolved"],
-  Resolved: [],
-};
-export const RESPONSE_DEADLINE_DAYS = { High: 1, Medium: 3, Low: 7 };
 export const COLLECTION_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
 export const CATEGORIES = [
   "Road damage",
@@ -42,13 +47,9 @@ export const CATEGORIES = [
   "Other community concern",
 ];
 export const REPORT_PRIORITIES = ["High", "Medium", "Low"];
-export const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
+export const MAX_REPORT_DESCRIPTION_LENGTH = 500;
+export const BARANGAY_WORKING_HOURS = "Monday-Friday, 8:00 AM-5:00 PM";
 export const AREAS = ["Purok 1", "Purok 2", "Purok 3", "Purok 4", "Purok 5", "Main Road"];
-export const PALSARA_CENTER = [14.01799, 121.09465];
-export const PALSARA_BOUNDS = [
-  [13.99, 121.06],
-  [14.045, 121.13],
-];
 export const AREA_COORDINATES = {
   "Purok 1": [14.01799, 121.09465],
   "Purok 2": [14.025, 121.087],
@@ -56,39 +57,6 @@ export const AREA_COORDINATES = {
   "Purok 4": [14.005, 121.09],
   "Purok 5": [14.03, 121.098],
   "Main Road": [14.02, 121.08],
-};
-
-export const DEFAULT_PERMISSIONS = {
-  resident: {
-    submitReports: true,
-    viewSchedules: true,
-    manageReports: false,
-    manageSchedules: false,
-    manageAnnouncements: false,
-    manageUsers: false,
-    manageRoles: false,
-    viewAudit: false,
-  },
-  official: {
-    submitReports: false,
-    viewSchedules: true,
-    manageReports: true,
-    manageSchedules: true,
-    manageAnnouncements: true,
-    manageUsers: false,
-    manageRoles: false,
-    viewAudit: false,
-  },
-  administrator: {
-    submitReports: false,
-    viewSchedules: true,
-    manageReports: true,
-    manageSchedules: true,
-    manageAnnouncements: true,
-    manageUsers: true,
-    manageRoles: true,
-    viewAudit: true,
-  },
 };
 
 export const PERMISSION_DEFS = [
@@ -141,6 +109,8 @@ export const PERMISSION_DEFS = [
     description: "Review recorded account and service activity.",
   },
 ];
+
+export const ADMIN_ROLE_PERMISSION_IDS = ["submitReports", "viewSchedules", "manageReports", "manageSchedules", "manageAnnouncements"];
 
 export const SCHEDULE_FREQUENCIES = ["Weekly", "Bi-weekly", "Monthly", "One-time"];
 export const RECURRENCE_DEFAULT_MONTHS = 12;

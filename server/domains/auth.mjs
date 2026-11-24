@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { hash, passwordHash, verifyPassword } from "../platform/crypto.mjs";
 import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
+import { logError } from "../platform/log.mjs";
 import { getSessionUser, issueSession, requireRole, publicUser, requestClientAddress } from "../platform/session.mjs";
 import { recordAttempt } from "../platform/ratelimit.mjs";
 import { cookieValue, SESSION_COOKIE, clearSessionCookie } from "../platform/cookies.mjs";
@@ -9,10 +10,16 @@ import { ROLES } from "../platform/roles.mjs";
 import { getAppTimeZone } from "../platform/time.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { insertActivity, logSecurityEvent } from "./activity.mjs";
+import { readVerificationSettings } from "./verification.mjs";
 import { insertNotification } from "./notifications.mjs";
+import { buildEmailChangeEmail, buildPasswordResetEmail, buildRecoveryVerificationEmail } from "../platform/email-template.mjs";
 
 const RESET_TOKEN_MINUTES = 15;
 const RESET_EMAIL_COOLDOWN_MINUTES = 2;
+// Forgot-password is limited per recovery email only, so residents sharing one
+// connection are not locked out by each other's requests. Admin reset uses the
+// shared IP bucket below, counting every address so 429 cannot reveal which
+// accounts exist.
 const FORGOT_PASSWORD_IP_LIMIT = 10;
 const FORGOT_PASSWORD_EMAIL_LIMIT = 3;
 const RECOVERY_VERIFY_LIMIT = 5;
@@ -20,14 +27,13 @@ const EMAIL_CHANGE_TOKEN_MINUTES = 30;
 
 function emailLinkOrigin(request, appOrigin) {
   if (appOrigin) return appOrigin;
+  // Never trust a client-supplied Host for security links: a forged Host would
+  // send a real reset token to an attacker's page. Use the address we listen on.
   const protocol = request.socket.encrypted ? "https:" : "http:";
-  try {
-    const origin = new URL(`${protocol}//${request.headers.host}`);
-    if (origin.username || origin.password || origin.pathname !== "/") throw new Error("invalid host");
-    return origin.origin;
-  } catch {
-    throw new HttpError(400, "The website address could not be determined for this email.");
-  }
+  const address = request.socket.localAddress || "127.0.0.1";
+  const host = address.includes(":") ? `[${address}]` : address;
+  const port = request.socket.localPort ? `:${request.socket.localPort}` : "";
+  return `${protocol}//${host}${port}`;
 }
 
 // A recovery link is only sent to an address the owner has confirmed, and only the
@@ -45,17 +51,19 @@ export async function sendRecoveryVerification(db, options, request, user, recov
     [user.id, recoveryEmail, tokenHash, String(RESET_TOKEN_MINUTES)],
   );
   const verifyLink = `${emailLinkOrigin(request, appOrigin)}/#/verify-recovery?token=${rawToken}`;
+  const recoveryMail = buildRecoveryVerificationEmail({ recoveryEmail, verifyLink, minutes: RESET_TOKEN_MINUTES });
   await mailer.sendMail({
     from: mailerState.settings.from,
     to: recoveryEmail,
-    subject: "Verify your CommUnity recovery email",
-    text: `Confirm this email address for CommUnity password recovery (valid for ${RESET_TOKEN_MINUTES} minutes): ${verifyLink}\n\nPassword reset links are only sent to a recovery email you have confirmed. If you did not request this, ignore this message.`,
+    subject: recoveryMail.subject,
+    text: recoveryMail.text,
+    html: recoveryMail.html,
   });
   return true;
 }
 
 export async function handleAuth(request, response, db, options, user) {
-  const { secureCookies, trustedProxyAddresses, mailerState, appOrigin } = options;
+  const { secureCookies, trustedProxyAddresses, mailerState, appOrigin, faceppClient } = options;
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/auth/login" && request.method === "POST") {
     requireJsonBody(request);
@@ -71,7 +79,9 @@ export async function handleAuth(request, response, db, options, user) {
       `
       SELECT u.id,u.email,u.name,u.area,u.phone,u.role,u.status,u.working_hours AS "workingHours",
         u.available_days AS "availableDays",
-        u.requires_password_change AS "requiresPasswordChange",to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",c.password_hash
+        u.requires_password_change AS "requiresPasswordChange", u.face_enrollment_state AS "faceEnrollmentState", to_char(u.joined_at,'YYYY-MM-DD') AS "joinedAt",
+        u.id_status AS "idStatus", u.id_address AS "idAddress", u.id_face_status AS "idFaceStatus",
+        to_char(u.id_expiration_date,'YYYY-MM-DD') AS "idExpirationDate",c.password_hash
       FROM users u JOIN user_credentials c ON c.user_id=u.id WHERE u.email=$1
     `,
       [email],
@@ -89,11 +99,29 @@ export async function handleAuth(request, response, db, options, user) {
       });
       throw new HttpError(401, "Those sign-in details do not match an active account.");
     }
+    if (account.role === "official" && account.faceEnrollmentState === "locked")
+      throw new HttpError(403, "Face enrollment is pending. Ask the barangay administrator to complete it.");
     await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [accountAttemptKey]);
-    await issueSession(response, db, account, Boolean(body.remember), secureCookies);
+    await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [ipAttemptKey]);
+    // Officials with an expired duty window (or no enrolled face yet) get a
+    // restricted session until the face gate at sign-in completes.
+    let faceCheckPending = false;
+    if (account.role === "official") {
+      const verification = await readVerificationSettings(db, faceppClient?.configured);
+      if (verification.requireFaceOnLogin || verification.faceVerificationEnabled) {
+        const face = await db.query("SELECT last_face_verified_at, face_references, facepp_tokens FROM users WHERE id=$1", [account.id]);
+        const row = face.rows[0] || {};
+        const enrolled =
+          (Array.isArray(row.face_references) && row.face_references.length > 0) ||
+          (Array.isArray(row.facepp_tokens) && row.facepp_tokens.length > 0);
+        const last = row.last_face_verified_at ? new Date(row.last_face_verified_at).getTime() : 0;
+        faceCheckPending = !enrolled || Date.now() >= last + verification.dutyHours * 3600 * 1000;
+      }
+    }
+    await issueSession(response, db, account, Boolean(body.remember), secureCookies, faceCheckPending);
     await insertActivity(db, account, "Signed in", account.role);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    sendJson(response, 200, { user: publicUser(account) });
+    sendJson(response, 200, { user: { ...publicUser(account), faceCheckPending }, faceCheckRequired: faceCheckPending });
     return true;
   }
   if (url.pathname === "/api/auth/register" && request.method === "POST") {
@@ -137,6 +165,10 @@ export async function handleAuth(request, response, db, options, user) {
   }
   if (url.pathname === "/api/auth/logout" && request.method === "POST") {
     const token = cookieValue(request, SESSION_COOKIE);
+    // Leaving before a new official enrolls locks the account: only an admin
+    // can complete the enrollment from then on.
+    if (user?.role === "official" && user.faceEnrollmentState === "pending")
+      await db.query("UPDATE users SET face_enrollment_state='locked' WHERE id=$1 AND face_enrollment_state='pending'", [user.id]);
     if (token) await db.query("DELETE FROM web_sessions WHERE token_hash=$1", [hash(token)]);
     response.setHeader("Set-Cookie", clearSessionCookie(secureCookies));
     sendJson(response, 200, { ok: true });
@@ -171,12 +203,22 @@ export async function handleAuth(request, response, db, options, user) {
       );
     });
     const verifyLink = `${emailLinkOrigin(request, appOrigin)}/#/verify-email?token=${rawToken}`;
-    await mailerState.mailer.sendMail({
-      from: mailerState.settings.from,
-      to: newEmail,
-      subject: "Confirm your CommUnity email address",
-      text: `Confirm this email address for your CommUnity account (valid for ${EMAIL_CHANGE_TOKEN_MINUTES} minutes): ${verifyLink}\n\nIf you did not request this change, ignore this message.`,
-    });
+    const changeMail = buildEmailChangeEmail({ newEmail, verifyLink, minutes: EMAIL_CHANGE_TOKEN_MINUTES });
+    try {
+      await mailerState.mailer.sendMail({
+        from: mailerState.settings.from,
+        to: newEmail,
+        subject: changeMail.subject,
+        text: changeMail.text,
+        html: changeMail.html,
+      });
+    } catch (error) {
+      // A failed delivery leaves a token nobody can use; clear it so the next
+      // attempt starts clean, and report the failure instead of a generic 500.
+      await db.query("DELETE FROM email_change_tokens WHERE user_id=$1", [user.id]).catch(() => {});
+      logError("CommUnity could not send the email change verification.", error, { path: url.pathname, userId: user.id });
+      throw new HttpError(502, "The verification email could not be sent. Check the portal's email settings or try again later.");
+    }
     sendJson(response, 200, {
       ok: true,
       message: `A verification link was sent to ${newEmail}. Your sign-in email will change after you confirm it.`,
@@ -212,6 +254,12 @@ export async function handleAuth(request, response, db, options, user) {
         await transaction.query("UPDATE reports SET user_email=$1 WHERE user_email=$2", [newEmail, currentEmail]);
         await transaction.query("UPDATE notifications SET target_email=$1 WHERE target_email=$2", [newEmail, currentEmail]);
         await transaction.query("DELETE FROM email_change_tokens WHERE user_id=$1", [userId]);
+        await insertNotification(
+          transaction,
+          newEmail,
+          "Sign-in email changed",
+          `Your sign-in email is now ${newEmail}. Use it the next time you sign in.`,
+        );
         await insertActivity(transaction, account.rows[0], "Changed account email", `${currentEmail} to ${newEmail}`);
         await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
       });
@@ -240,27 +288,12 @@ export async function handleAuth(request, response, db, options, user) {
     await db.query("UPDATE users SET requires_password_change=false WHERE id=$1", [user.id]);
     await db.query("DELETE FROM auth_attempts WHERE attempt_key=$1", [attemptKey]);
     await db.query("DELETE FROM web_sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, hash(token)]);
+    await db.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [user.id]);
+    await db.query("DELETE FROM email_change_tokens WHERE user_id=$1", [user.id]);
+    await db.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [user.id]);
     await insertActivity(db, user, "Changed account password", user.email);
     await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     sendJson(response, 200, { ok: true });
-    return true;
-  }
-  if (url.pathname === "/api/auth/password-reset-request" && request.method === "POST") {
-    requireJsonBody(request);
-    await recordAttempt(db, hash(`password-reset-request:${requestClientAddress(request, trustedProxyAddresses)}`));
-    const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
-    const account = await db.query("SELECT id, email FROM users WHERE email=$1 AND status='Active'", [email]);
-    if (account.rows[0]) {
-      await db.query("INSERT INTO password_reset_requests(user_id) VALUES($1)", [account.rows[0].id]);
-      const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
-      if (admins.rows.length) {
-        for (const admin of admins.rows)
-          await insertNotification(db, admin.email, "Password reset requested", `${email} requested a password reset.`);
-        // Administrator notifications are shared state, so the revision moves with them.
-        await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-      }
-    }
-    sendJson(response, 202, { ok: true });
     return true;
   }
   if (url.pathname === "/api/auth/forgot-password" && request.method === "POST") {
@@ -271,31 +304,31 @@ export async function handleAuth(request, response, db, options, user) {
       sendJson(response, 200, generic);
       return true;
     }
-    const clientAddress = requestClientAddress(request, trustedProxyAddresses);
-    await recordAttempt(db, hash(`forgot-password-ip:${clientAddress}`), FORGOT_PASSWORD_IP_LIMIT);
+    // Only the per-email bucket applies: a shared IP bucket would lock out
+    // everyone behind one connection and counting only unknown addresses would
+    // turn the 429 into an account-enumeration oracle.
     await recordAttempt(db, hash(`forgot-password-email:${recoveryEmail}`), FORGOT_PASSWORD_EMAIL_LIMIT);
     const { mailerState, appOrigin } = options;
     const mailer = mailerState.mailer;
     if (!mailer)
       throw new HttpError(503, "Email service is not configured. Ask an administrator to set up SMTP before requesting a password reset.");
-    const cooldown = await db.query(
-      "SELECT 1 FROM recovery_email_requests WHERE recovery_email=$1 AND last_requested_at > now() - ($2 || ' minutes')::interval",
-      [recoveryEmail, String(RESET_EMAIL_COOLDOWN_MINUTES)],
-    );
-    if (cooldown.rows.length) {
-      throw new HttpError(
-        429,
-        `A reset email was already sent to this address. Wait ${RESET_EMAIL_COOLDOWN_MINUTES} minutes before requesting another.`,
-      );
-    }
-    // Recorded for every address so an unknown address behaves exactly like a known one.
-    await db.query(
-      "INSERT INTO recovery_email_requests (recovery_email, last_requested_at) VALUES ($1, now()) ON CONFLICT (recovery_email) DO UPDATE SET last_requested_at = now()",
-      [recoveryEmail],
-    );
     const account = await db.query("SELECT id, email FROM users WHERE recovery_email=$1 AND recovery_email_verified AND status='Active'", [
       recoveryEmail,
     ]);
+    // A request for an unknown address never touches the cooldown table. The
+    // upsert is the cooldown authority: a zero-row result means the gap is still
+    // active, so we answer exactly like an unknown address and reveal nothing.
+    const cooldownKey = recoveryEmail;
+    if (account.rows[0]) {
+      const claimed = await db.query(
+        "INSERT INTO recovery_email_requests (recovery_email, last_requested_at) VALUES ($1, now()) ON CONFLICT (recovery_email) DO UPDATE SET last_requested_at = now() WHERE recovery_email_requests.last_requested_at < now() - ($2 || ' minutes')::interval RETURNING (last_requested_at)",
+        [cooldownKey, String(RESET_EMAIL_COOLDOWN_MINUTES)],
+      );
+      if (Number(claimed.rowCount) === 0) {
+        sendJson(response, 200, generic);
+        return true;
+      }
+    }
     if (account.rows[0]) {
       const rawToken = randomBytes(32).toString("base64url");
       const tokenHash = hash(rawToken);
@@ -307,17 +340,21 @@ export async function handleAuth(request, response, db, options, user) {
       );
       // shortcut: a failed delivery clears the resend cooldown so the user can retry; upgrade to a durable mail outbox if delivery failures prove common
       const resetLink = `${emailLinkOrigin(request, appOrigin)}/#/reset-password?token=${rawToken}`;
-      try {
-        await mailer.sendMail({
+      const resetMail = buildPasswordResetEmail({ resetLink, minutes: RESET_TOKEN_MINUTES });
+      // Do not wait for the mail server: a known email and an unknown email must take
+      // the same time, or the reply reveals which addresses are registered.
+      mailer
+        .sendMail({
           from: mailerState.settings.from,
           to: recoveryEmail,
-          subject: "CommUnity password reset",
-          text: `Reset your CommUnity password using this link (valid for ${RESET_TOKEN_MINUTES} minutes): ${resetLink}`,
+          subject: resetMail.subject,
+          text: resetMail.text,
+          html: resetMail.html,
+        })
+        .catch(async (error) => {
+          logError("CommUnity could not send a password reset email.", error);
+          await db.query("DELETE FROM recovery_email_requests WHERE recovery_email=$1", [cooldownKey]).catch(() => {});
         });
-      } catch (error) {
-        await db.query("DELETE FROM recovery_email_requests WHERE recovery_email=$1", [recoveryEmail]).catch(() => {});
-        throw error;
-      }
     }
     sendJson(response, 200, generic);
     return true;
@@ -329,7 +366,7 @@ export async function handleAuth(request, response, db, options, user) {
     if (!token) throw new HttpError(400, "A valid verification token is required.");
     const result = await db.query(
       `
-      SELECT t.user_id, t.email, u.recovery_email
+      SELECT t.user_id, t.email, u.recovery_email, u.email AS account_email
       FROM recovery_email_tokens t JOIN users u ON u.id = t.user_id
       WHERE t.token_hash=$1 AND t.expires_at > now()
     `,
@@ -340,6 +377,12 @@ export async function handleAuth(request, response, db, options, user) {
     await withTransaction(db, async (transaction) => {
       await transaction.query("UPDATE users SET recovery_email_verified=true WHERE id=$1", [result.rows[0].user_id]);
       await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [result.rows[0].user_id]);
+      await insertNotification(
+        transaction,
+        result.rows[0].account_email,
+        "Recovery email verified",
+        `${result.rows[0].email} can now be used to recover your password.`,
+      );
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });
@@ -349,24 +392,30 @@ export async function handleAuth(request, response, db, options, user) {
     requireJsonBody(request);
     const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
     const generic = { ok: true, message: "If an account exists, an admin has been notified." };
-    await recordAttempt(db, hash(`admin-reset-ip:${requestClientAddress(request, trustedProxyAddresses)}`), FORGOT_PASSWORD_IP_LIMIT);
     if (email) await recordAttempt(db, hash(`admin-reset-email:${email}`), FORGOT_PASSWORD_EMAIL_LIMIT);
     if (email) {
+      // Count every address, not just unknown ones. Otherwise a 429 would mean
+      // "this address is not registered", leaking which accounts exist.
+      await recordAttempt(db, hash(`admin-reset-ip:${requestClientAddress(request, trustedProxyAddresses)}`), FORGOT_PASSWORD_IP_LIMIT);
       const account = await db.query("SELECT id FROM users WHERE email=$1 AND status='Active'", [email]);
       if (account.rows[0]) {
         // The flag and the administrator notices are one change to shared state,
         // so they land in one transaction that also advances the revision.
         await withTransaction(db, async (transaction) => {
-          await transaction.query("UPDATE users SET reset_requested=true WHERE id=$1", [account.rows[0].id]);
-          const admins = await transaction.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
-          for (const admin of admins.rows)
-            await insertNotification(
-              transaction,
-              admin.email,
-              "Password reset requested",
-              `${email} requested admin help to reset their password.`,
-            );
-          await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+          const claimed = await transaction.query("UPDATE users SET reset_requested=true WHERE id=$1 AND reset_requested=false", [
+            account.rows[0].id,
+          ]);
+          if (claimed.rowCount) {
+            const admins = await transaction.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+            for (const admin of admins.rows)
+              await insertNotification(
+                transaction,
+                admin.email,
+                "Password reset requested",
+                `${email} requested admin help to reset their password.`,
+              );
+            await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+          }
         });
       }
     }
@@ -401,6 +450,8 @@ export async function handleAuth(request, response, db, options, user) {
       await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [await passwordHash(newPassword), userId]);
       await transaction.query("UPDATE users SET requires_password_change=false WHERE id=$1", [userId]);
       await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [userId]);
+      await transaction.query("DELETE FROM email_change_tokens WHERE user_id=$1", [userId]);
+      await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [userId]);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });

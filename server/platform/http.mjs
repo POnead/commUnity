@@ -1,18 +1,31 @@
 import Busboy from "busboy";
+import path from "node:path";
+import { CONTENT_TYPES } from "./constants.mjs";
 import { MAX_PHOTO_BYTES } from "./uploads.mjs";
 
 // Errors that carry an HTTP status straight to the client. Everything thrown
 // without a status is treated as a 500 by the outer error handler.
 export class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    if (code) this.code = code;
   }
 }
 
 export function sendJson(response, status, value) {
   response.writeHead(status, { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(value));
+}
+
+export function sendImage(response, filename, image) {
+  response.writeHead(200, {
+    "Cache-Control": "private, no-store",
+    "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
+    "Content-Length": image.length,
+    "X-Content-Type-Options": "nosniff",
+  });
+  response.end(image);
 }
 
 export function requireJsonBody(request) {
@@ -23,7 +36,7 @@ export function requireJsonBody(request) {
 
 // withFields keeps the parsed text fields as well; the default preserves the
 // historical behaviour of resolving with just the files array.
-export async function readMultipart(request, { maxFiles = 3, withFields = false } = {}) {
+export async function readMultipart(request, { maxFiles = 3, withFields = false, fileField = "photos" } = {}) {
   const contentType = request.headers["content-type"] || "";
   if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
     throw new HttpError(415, "Content-Type must be multipart/form-data.");
@@ -37,7 +50,7 @@ export async function readMultipart(request, { maxFiles = 3, withFields = false 
       fields[name] = String(value);
     });
     parser.on("file", (fieldName, stream, info) => {
-      if (fieldName !== "photos") {
+      if (fieldName !== fileField) {
         stream.resume();
         return;
       }

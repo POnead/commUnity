@@ -1,9 +1,8 @@
 import path from "node:path";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
-import { CONTENT_TYPES } from "../platform/constants.mjs";
 import { passwordHash, hash } from "../platform/crypto.mjs";
-import { HttpError, readMultipart, requireJsonBody, sendJson } from "../platform/http.mjs";
+import { HttpError, readMultipart, requireJsonBody, sendImage, sendJson } from "../platform/http.mjs";
 import { getSessionUser, requireRole, hasPermission } from "../platform/session.mjs";
 import { recordAttempt } from "../platform/ratelimit.mjs";
 import {
@@ -20,8 +19,10 @@ import { logError } from "../platform/log.mjs";
 import { ROLES } from "../platform/roles.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { insertActivity } from "./activity.mjs";
+import { insertNotification } from "./notifications.mjs";
 import { sendStateResponse } from "./state.mjs";
 import { sendRecoveryVerification } from "./auth.mjs";
+import { buildTemporaryPasswordEmail } from "../platform/email-template.mjs";
 
 // Extract the filename from a stored profile photo URL. Anything that is not the expected
 // unique filename shape — including the legacy user.id\<ext\> layout — returns null, so a
@@ -81,7 +82,7 @@ export async function createUser(db, user, body) {
   await withTransaction(db, async (transaction) => {
     const db = transaction;
     await db.query(
-      "INSERT INTO users (id,email,name,area,phone,working_hours,available_days,role,status) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)",
+      "INSERT INTO users (id,email,name,area,phone,working_hours,available_days,role,status,face_enrollment_state) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)",
       [
         id,
         email.trim().toLowerCase(),
@@ -92,6 +93,7 @@ export async function createUser(db, user, body) {
         JSON.stringify(validatedAvailableDays),
         role,
         status,
+        role === "official" ? "pending" : "none",
       ],
     );
     await db.query("INSERT INTO user_credentials (user_id,password_hash) VALUES ($1,$2)", [id, await passwordHash(password)]);
@@ -184,7 +186,14 @@ export async function handleUsers(request, response, db, options, user) {
           await mkdir(profileDir, { recursive: true });
           const written = await writeProfilePhoto(profileDir, user.id, photoExtension_, photoFile.data);
           renamedPhoto = written.filePath;
-          await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [written.photoUrl, user.id]);
+          // Only replace the photo if this is still the one the browser saw, so
+          // two simultaneous saves cannot both leave an unreferenced file.
+          const claimed = await db.query("UPDATE users SET photo_url=$1 WHERE id=$2 AND photo_url=$3", [
+            written.photoUrl,
+            user.id,
+            previousPhotoUrl,
+          ]);
+          if (!claimed.rowCount) throw new HttpError(409, "The profile photo changed while saving. Try again.");
         }
         if (emailChanged) {
           await transaction.query("DELETE FROM recovery_email_tokens WHERE user_id=$1", [user.id]);
@@ -217,7 +226,9 @@ export async function handleUsers(request, response, db, options, user) {
       }
     }
     const updatedUser = await getSessionUser(request, db);
-    await sendStateResponse(response, db, updatedUser, 200, { recoveryEmail: { verified, verificationSent } });
+    await sendStateResponse(response, db, updatedUser, 200, {
+      recoveryEmail: { verified, verificationSent, verificationFailed: needsVerification && !verificationSent },
+    });
     return true;
   }
   if (url.pathname === "/api/users/password-reset" && request.method === "POST") {
@@ -226,18 +237,29 @@ export async function handleUsers(request, response, db, options, user) {
       throw new HttpError(403, "Account management is not enabled for this role.");
     requireJsonBody(request);
     const email = typeof request.body.email === "string" ? request.body.email.trim().toLowerCase() : "";
-    const target = await db.query("SELECT id, name, email FROM users WHERE email=$1 AND email<>$2", [email, user.email]);
+    const target = await db.query("SELECT id, name, email, role, area, status FROM users WHERE email=$1 AND email<>$2", [email, user.email]);
     if (!target.rows.length) throw new HttpError(404, "The account could not be found.");
+    if (target.rows[0].status !== "Active")
+      throw new HttpError(409, "This account is inactive. Reactivate it before resetting the password.");
     const mailer = mailerState.mailer;
     if (!mailer) throw new HttpError(503, "Email service is not configured. Configure SMTP before resetting account passwords.");
     const temporaryPassword = `CommUnity-${randomBytes(5).toString("base64url")}`;
     // Send first: if SMTP fails, the password must not have changed yet, otherwise
     // the account is locked out with a temporary password nobody received.
+    const recipient = target.rows[0];
+    const emailContent = buildTemporaryPasswordEmail({
+      name: recipient.name,
+      role: recipient.role,
+      area: recipient.area,
+      temporaryPassword,
+      signInUrl: options.appOrigin ? `${options.appOrigin}/#/login` : "",
+    });
     await mailer.sendMail({
       from: smtpFrom,
-      to: target.rows[0].email,
-      subject: "CommUnity temporary password",
-      text: `Your temporary CommUnity password is: ${temporaryPassword}\n\nSign in and change it immediately. The password expires on first use.`,
+      to: recipient.email,
+      subject: emailContent.subject,
+      text: emailContent.text,
+      html: emailContent.html,
     });
     await withTransaction(db, async (transaction) => {
       await transaction.query("UPDATE user_credentials SET password_hash=$1 WHERE user_id=$2", [
@@ -246,11 +268,18 @@ export async function handleUsers(request, response, db, options, user) {
       ]);
       await transaction.query("UPDATE users SET requires_password_change=true, reset_requested=false WHERE id=$1", [target.rows[0].id]);
       await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
+      await transaction.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [target.rows[0].id]);
       await transaction.query(
         "UPDATE password_reset_requests SET status='completed',handled_by=$1,handled_at=now() WHERE user_id=$2 AND status='pending'",
         [user.id, target.rows[0].id],
       );
       await insertActivity(transaction, user, "Generated temporary password", target.rows[0].name);
+      await insertNotification(
+        transaction,
+        recipient.email,
+        "Password reset by administrator",
+        "An administrator reset your password. The temporary password was sent to your email, and you will be asked to change it at sign-in.",
+      );
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     const currentUser = await getSessionUser(request, db);
@@ -275,8 +304,12 @@ export async function handleUsers(request, response, db, options, user) {
       const result = await db.query("UPDATE users SET status='Inactive', deactivation_reason=$1 WHERE email=$2", [reason, email]);
       if (!result.rowCount) throw new HttpError(404, "The account could not be found.");
       const target = await db.query("SELECT id FROM users WHERE email=$1", [email]);
+      // An inactive official cannot work their queue, so release their concerns
+      // in the same transaction. Otherwise nobody can claim or reassign them.
+      await db.query("UPDATE reports SET assigned_to=NULL WHERE assigned_to=$1", [target.rows[0].id]);
       await db.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
       await insertActivity(db, user, "Deactivated user account", `${email} · ${reason}`);
+      await insertNotification(db, email, "Account deactivated", `Your account was deactivated. Reason: ${reason}`);
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });
@@ -298,6 +331,7 @@ export async function handleUsers(request, response, db, options, user) {
       ]);
       if (!result.rowCount) throw new HttpError(404, "The account could not be found or is not inactive.");
       await insertActivity(db, user, "Reactivated user account", `${email}`);
+      await insertNotification(db, email, "Account reactivated", "Your account is active again. You can sign in and continue using the workspace.");
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
     sendJson(response, 200, { ok: true });
@@ -321,6 +355,7 @@ export async function handleUsers(request, response, db, options, user) {
         target.rows[0].id,
       ]);
       await transaction.query("DELETE FROM web_sessions WHERE user_id=$1", [target.rows[0].id]);
+      await transaction.query("DELETE FROM password_reset_tokens WHERE user_id=$1", [target.rows[0].id]);
       await insertActivity(transaction, user, "Reset user password", target.rows[0].name);
       await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
@@ -351,7 +386,18 @@ export async function handleUsers(request, response, db, options, user) {
     await mkdir(profileDir, { recursive: true });
     const { filename, filePath, photoUrl } = await writeProfilePhoto(profileDir, user.id, extension, file.data);
     try {
-      await db.query("UPDATE users SET photo_url=$1 WHERE id=$2", [photoUrl, user.id]);
+      await withTransaction(db, async (transaction) => {
+        // Only the writer whose old photo is still current may replace it, so two
+        // concurrent uploads cannot both leave an unreferenced file behind.
+        const claimed = await transaction.query("UPDATE users SET photo_url=$1 WHERE id=$2 AND photo_url=$3", [
+          photoUrl,
+          user.id,
+          previousPhotoUrl,
+        ]);
+        if (!claimed.rowCount) throw new HttpError(409, "The profile photo changed while uploading. Try again.");
+        await insertActivity(transaction, user, "Updated profile photo", user.email);
+        await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
+      });
     } catch (error) {
       await unlink(filePath).catch(() => {});
       throw error;
@@ -362,11 +408,17 @@ export async function handleUsers(request, response, db, options, user) {
   }
   if (profilePhotoMatch && request.method === "GET") {
     requireRole(user, ROLES);
-    const requestedId = decodeURIComponent(profilePhotoMatch[1]);
+    let requestedId;
+    let requestedUrlFilename;
+    try {
+      requestedId = decodeURIComponent(profilePhotoMatch[1]);
+      requestedUrlFilename = profilePhotoMatch[2] ? decodeURIComponent(profilePhotoMatch[2]) : null;
+    } catch {
+      throw new HttpError(404, "The profile photo could not be found.");
+    }
     // The id is percent-decoded before it reaches a filesystem path; reject
     // anything that is not a plain identifier, including embedded separators.
     if (!validId(requestedId)) throw new HttpError(404, "The profile photo could not be found.");
-    const requestedUrlFilename = profilePhotoMatch[2] ? decodeURIComponent(profilePhotoMatch[2]) : null;
     // Residents can see their own photo, administrators can see every photo,
     // and officials can see resident photos (they handle the concern queue the
     // residents file into). Staff-to-staff photos stay administrator-only.
@@ -414,13 +466,7 @@ export async function handleUsers(request, response, db, options, user) {
     } catch {
       throw new HttpError(404, "The profile photo could not be found.");
     }
-    response.writeHead(200, {
-      "Cache-Control": "private, no-store",
-      "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
-      "Content-Length": image.length,
-      "X-Content-Type-Options": "nosniff",
-    });
-    response.end(image);
+    sendImage(response, filename, image);
     return true;
   }
   return false;

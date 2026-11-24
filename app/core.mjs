@@ -6,6 +6,7 @@ import {
   ROLES,
   COLLECTION_STATUSES,
   REPORT_PRIORITIES,
+  MAX_REPORT_DESCRIPTION_LENGTH,
   AREAS,
   DEFAULT_PERMISSIONS,
   SCHEDULE_FREQUENCIES,
@@ -13,10 +14,10 @@ import {
   MAX_RECURRENCE_OCCURRENCES,
   SCHEDULE_REASON_STATUSES,
 } from "./constants.mjs";
-// render lives in main.mjs and hasUnsavedPermissionChanges in views.mjs; both are
-// only invoked at runtime, so the import cycle main -> core -> main/views is safe
-// (function declarations are hoisted and call sites run post-evaluation).
-import { render } from "./main.mjs";
+// render/isProcessing live in main.mjs and hasUnsavedPermissionChanges in views.mjs;
+// all are only invoked at runtime, so the import cycle main -> core -> main/views is
+// safe (function declarations are hoisted and call sites run post-evaluation).
+import { render, isProcessing } from "./main.mjs";
 import { hasUnsavedPermissionChanges } from "./views.mjs";
 
 export function locationAreas() {
@@ -58,23 +59,34 @@ export const app = document.getElementById("app");
 export const toastEl = document.getElementById("toast");
 export let data;
 export let currentUser;
-export let communityOfficialHours = [];
 export let currentRoute;
 export let dataRevision = 0;
 export let lastKnownHash = window.location.hash;
 export let selectedReportId = null;
 export let pendingReportRoute = "";
 export let reportFilter = "all";
+export let residentReportSort = "newest";
+export let adminReportFilters = { status: "all", area: "all", sort: "newest", query: "" };
+export let assignmentFilter = "unassigned";
+export let officialAssignedFilter = "all";
+export let officialHistorySort = "newest";
+export let analyticsRange = "6";
+export let approvalFilter = "pending";
 export let notificationFilter = "all";
+export let searchQuery = "";
 export let uploadPhotos = [];
 export let smtpSettings = { host: "", port: "", user: "", from: "", configured: false, encryptionReady: undefined };
+export let verificationSettings = { faceVerificationEnabled: false, dutyHours: 9, matchThreshold: 0.033 };
+// Kept across renders so a completed face check stays visible after refreshWorkspace().
+export let faceCheckNotice = "";
 export let reportDraft = null;
 export let modalState = null;
 export let forcedPasswordDismissed = false;
 export let calendarMonth = Number(appDateParts().month) - 1;
 export let calendarYear = Number(appDateParts().year);
 export let calendarSelectedDate = "";
-export let selectedPermissionRole = "resident";
+export let selectedPermissionAccount = null;
+export let correctionFilters = { query: "", status: "all", type: "all", date: "all" };
 export let permissionDrafts = {};
 export let permissionOpenGroups = {};
 // Which per-official override panels the administrator has expanded. Kept so a
@@ -82,9 +94,22 @@ export let permissionOpenGroups = {};
 export let permissionOpenAccounts = {};
 export let toastTimer;
 export let lastPersistedSnapshot = "";
+export let processingState = { depth: 0, label: "Processing...", visible: false };
+
+// A camera capture holds local DOM references. A re-render under it would
+// detach the video and result nodes, so state adoption pauses until it ends.
+let faceCheckActive = false;
+export function setFaceCheckActive(value) {
+  faceCheckActive = value;
+}
+export let profileSummaryCollapsed = false;
+// Kept so a live-update rebuild does not close the face-check panel mid-check.
+export let facePanelOpen = false;
+// Kept so a live-update rebuild does not close the ID panel mid-review.
+export let idPanelOpen = false;
 // The activity log is browsed from the server, so its page and filters live outside the shared state.
 export let activityLogState = { activities: [], total: 0, page: 1, pageSize: 25, pageCount: 1, summary: {} };
-export let activityFilters = { from: "", to: "", actor: "", action: "", result: "", affectedId: "", source: "all" };
+export let activityFilters = { from: "", to: "", role: "" };
 export let activityLogLoadedKey = "";
 
 export const icons = {
@@ -95,6 +120,8 @@ export const icons = {
   clipboard: '<rect x="5" y="4.5" width="14" height="17" rx="2"></rect><path d="M9 4.5V3h6v1.5M8.5 10h7M8.5 14h7M8.5 18h4"></path>',
   clock: '<circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3.5 2"></path>',
   bell: '<path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"></path>',
+  phone: '<path d="M5 3h3l2 5-2.5 1.5a13 13 0 0 0 6 6L15 13l5 2v3a2 2 0 0 1-2 2A17 17 0 0 1 3 5a2 2 0 0 1 2-2Z"></path>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>',
   user: '<circle cx="12" cy="8" r="3.5"></circle><path d="M5 20a7 7 0 0 1 14 0"></path>',
   users:
     '<path d="M16 20v-1.5a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4V20"></path><circle cx="9.5" cy="7" r="3.5"></circle><path d="M17 11a3.5 3.5 0 1 0-1.2-6.8M17 14.5h1a4 4 0 0 1 4 4V20"></path>',
@@ -114,10 +141,19 @@ export const icons = {
   eye: '<path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.5"></circle>',
   image:
     '<rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m21 15-5-5L5 20"></path>',
+  camera:
+    '<rect x="3" y="7" width="18" height="13" rx="2"></rect><circle cx="12" cy="13.5" r="3.5"></circle><path d="M8.5 7 10 4.5h4L15.5 7"></path>',
+  cameraOff:
+    '<path d="M3 3l18 18"></path><path d="M8.5 7H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1"></path><path d="M8.5 7 10 4.5h4L15.5 7"></path><circle cx="12" cy="13.5" r="3"></circle>',
+  upload:
+    '<path d="M7 18h10.5a3.5 3.5 0 0 0 .2-7A6 6 0 0 0 6.2 9.8 4.2 4.2 0 0 0 7 18Z"></path><path d="M12 14V7M9.5 9.5 12 7l2.5 2.5"></path>',
   download: '<path d="M12 3v12M7 10l5 5 5-5M4 20h16"></path>',
   activity: '<path d="M3 12h4l3-8 4 16 3-8h4"></path>',
   leaf: '<path d="M20 4c-9 0-15 4-15 11a5 5 0 0 0 5 5c7 0 11-6 10-16Z"></path><path d="M4 21c3-5 6-8 12-11"></path>',
   alert: '<path d="m12 3 9 17H3z"></path><path d="M12 9v4m0 3h.01"></path>',
+  chart: '<path d="M4 21h16"></path><path d="M7 17V9M12 17V5M17 17v-4"></path>',
+  folder: '<path d="M3.5 7.5h6l2 2h9v9.5h-17z"></path><path d="M3.5 7.5V5h6l2 2h4"></path>',
+  more: '<circle cx="5" cy="12" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="19" cy="12" r="1"></circle>',
 };
 
 export function icon(name, extra = "") {
@@ -141,8 +177,14 @@ export function esc(value) {
   );
 }
 
+function isDateOnly(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 export function asDate(value) {
-  const parsed = new Date(value);
+  // Date-only strings name a calendar day, not midnight UTC. Anchor them at
+  // midday and format them in UTC so no zone rolls them to the next day.
+  const parsed = new Date(isDateOnly(value) ? `${value}T12:00:00Z` : value);
   if (Number.isNaN(parsed.getTime())) throw new Error("A saved CommUnity date is invalid.");
   return parsed;
 }
@@ -162,13 +204,14 @@ export function appDateParts(value = new Date()) {
 
 export function dateLabel(value, options = { day: "numeric", month: "short", year: "numeric" }) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en-PH", { timeZone: getAppTimeZone(), ...options }).format(asDate(value));
+  const zone = isDateOnly(value) ? "UTC" : getAppTimeZone();
+  return new Intl.DateTimeFormat("en-PH", { timeZone: zone, ...options }).format(asDate(value));
 }
 
 export function dateTimeLabel(value) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en-PH", {
-    timeZone: getAppTimeZone(),
+    timeZone: isDateOnly(value) ? "UTC" : getAppTimeZone(),
     day: "numeric",
     month: "short",
     hour: "numeric",
@@ -262,7 +305,27 @@ export function mergeStateForRetry(localData, serverData, snapshotData) {
   const snapshotReports = byId(snapshotData?.reports);
   const localReports = byId(localData?.reports);
   const serverReports = byId(merged.reports);
-  for (const [id, report] of localReports) if (!snapshotReports.has(id)) serverReports.set(id, report);
+  for (const [id, report] of localReports) {
+    if (!snapshotReports.has(id)) {
+      serverReports.set(id, report);
+      continue;
+    }
+    const before = snapshotReports.get(id);
+    const server = serverReports.get(id);
+    // Keep the user's new status/assignment entries but build on the server's
+    // history, so a change another writer already saved is not thrown away.
+    if (server && JSON.stringify(before) !== JSON.stringify(report)) {
+      const added = (report.history || []).slice((before.history || []).length);
+      const history = [...(server.history || []), ...added];
+      serverReports.set(id, {
+        ...server,
+        status: report.status,
+        history,
+        assignedTo: report.assignedTo,
+        updatedAt: history.at(-1)?.at || server.updatedAt,
+      });
+    }
+  }
   merged.reports = [...serverReports.values()];
 
   const snapshotActivities = byId(snapshotData?.activities);
@@ -333,12 +396,12 @@ export async function localSave() {
             continue;
           }
           // The merge preserves this browser's own pending changes when the
-          // revision moved. It is limited to the resident role: residents are
-          // the role whose shared save is most likely to collide in practice
-          // and whose writes are safely additive (new report, notification read
-          // flags, own profile). Officials and administrators still get a clean
-          // rollback and a clear error instead of a guessed write.
-          if (stateResponse.ok && data && currentUser?.role === "resident") {
+          // revision moved. Residents and officials are the roles whose shared
+          // save is most likely to collide in practice and whose writes are
+          // safely additive (new report, notification read flags, own profile,
+          // concern status changes, assignments). Administrators still get a
+          // clean rollback and a clear error instead of a guessed write.
+          if (stateResponse.ok && data && (currentUser?.role === "resident" || currentUser?.role === "official")) {
             const snapshot = JSON.parse(lastPersistedSnapshot || "null");
             data = mergeStateForRetry(data, state.data, snapshot);
             dataRevision = state.revision;
@@ -346,7 +409,10 @@ export async function localSave() {
             continue;
           }
         }
-        throw new Error(result.error || "CommUnity could not save this change.");
+        const gateError = new Error(result.error || "CommUnity could not save this change.");
+        gateError.code = result.code;
+        if (redirectToFaceCheckIfRequired(gateError)) return false;
+        throw gateError;
       }
       dataRevision = result.revision;
       data = result.data;
@@ -362,19 +428,6 @@ export async function localSave() {
       toast(error.message || "Your change could not be saved. Check that the CommUnity server is running, then try again.", "error");
       return false;
     }
-  }
-}
-
-export async function loadCommunityOfficialHours() {
-  communityOfficialHours = [];
-  if (currentUser?.role !== "resident") return;
-  try {
-    const response = await fetch("/api/community/working-hours");
-    const result = await response.json();
-    if (!response.ok || !Array.isArray(result.officials)) return;
-    communityOfficialHours = result.officials;
-  } catch (error) {
-    console.error("CommUnity could not load official working hours.", error);
   }
 }
 
@@ -401,17 +454,28 @@ export async function loadLocalData() {
     }
     if (currentUser.requiresPasswordChange) {
       // A temporary password may only reach the password-change dialog, so the
-      // server refuses /api/state until it is replaced. Start from the empty
-      // shell; updatePassword() loads the real state once the change succeeds.
+      // server refuses /api/state until it is replaced. This takes priority over
+      // the face gate — the password must be changed first.
       data = emptyState();
       dataRevision = 0;
       lastPersistedSnapshot = "";
-      communityOfficialHours = [];
+      return true;
+    }
+    if (currentUser.faceCheckPending) {
+      // A pending face check is a restricted session: /api/state answers 403
+      // until the gate completes. Load the shell and let routeState() show it.
+      data = emptyState();
+      dataRevision = 0;
+      lastPersistedSnapshot = "";
       return true;
     }
     const response = await fetch("/api/state");
     const stored = await response.json();
-    if (!response.ok) throw new Error(stored.error || "CommUnity could not load your information.");
+    if (!response.ok) {
+      const error = new Error(stored.error || "CommUnity could not load your information.");
+      error.code = stored.code;
+      throw error;
+    }
     dataRevision = stored.revision;
     data = stored.data;
     currentUser = stored.user;
@@ -422,11 +486,20 @@ export async function loadLocalData() {
     data.activities ||= [];
     data.permissions ||= structuredClone(DEFAULT_PERMISSIONS);
     data.announcements ||= [];
-    await loadCommunityOfficialHours();
     lastPersistedSnapshot = stored.data ? JSON.stringify(data) : "";
     return Boolean(stored.data);
   } catch (error) {
     console.error("CommUnity could not read saved data.", error);
+    if (error?.code === "FACE_VERIFICATION_REQUIRED") {
+      // Defensive fallback: the session may have been restricted between the
+      // /api/session and /api/state calls. Route to the gate, not the fatal screen.
+      if (currentUser) currentUser = { ...currentUser, faceCheckPending: true };
+      data = emptyState();
+      dataRevision = 0;
+      lastPersistedSnapshot = "";
+      window.location.hash = "#/face-verify";
+      return true;
+    }
     app.innerHTML = `<main class="fatal-screen">${brandMark()}<h1>Saved data could not be opened</h1><p>${esc(error.message)}</p></main>`;
     return null;
   }
@@ -438,6 +511,15 @@ export function toast(message, kind = "") {
   toastEl.classList.add("visible");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 3400);
+}
+
+// A gated official action answers 403 with a code, not just a message. Treat it
+// as "go do the face check first", not as "something broke".
+export function redirectToFaceCheckIfRequired(error) {
+  if (error?.code !== "FACE_VERIFICATION_REQUIRED" || currentUser?.role !== "official") return false;
+  if (window.location.hash !== "#/official/verify") window.location.hash = "#/official/verify";
+  toast(error.message || "Complete the face check to continue.", "error");
+  return true;
 }
 
 export let activeConfirmation = null;
@@ -536,7 +618,9 @@ export function announceSessionChange() {
 
 sessionSyncChannel?.addEventListener("message", async (event) => {
   if (event.data?.type !== "session") return;
-  if (modalState) return; // do not disrupt an open form or modal
+  // Same pause rules as the live-refresh poll: never rebuild under an open form,
+  // unsaved input or an in-flight action.
+  if (modalState || hasUnsavedPermissionChanges() || hasUnsavedFormInput() || isProcessing() || faceCheckActive) return;
   try {
     await loadLocalData();
     render();
@@ -587,7 +671,15 @@ export function hasUnsavedFormInput() {
 }
 
 export async function checkForStateUpdates() {
-  if (!currentUser || currentUser.requiresPasswordChange || !Number.isSafeInteger(dataRevision) || dataRevision < 1) return false;
+  if (
+    !currentUser ||
+    currentUser.requiresPasswordChange ||
+    currentUser.faceCheckPending ||
+    !Number.isSafeInteger(dataRevision) ||
+    dataRevision < 1
+  )
+    return false;
+  if (faceCheckActive) return false; // do not detach a live camera capture
   if (typeof modalState !== "undefined" && modalState) return false; // do not re-render an open form
   if (typeof hasUnsavedPermissionChanges === "function" && hasUnsavedPermissionChanges()) return false;
   if (hasUnsavedFormInput()) return false; // do not rebuild a form the user is editing
@@ -635,33 +727,38 @@ export function unreadCount(user = currentUser) {
   if (!user || !data.notifications) return 0;
   return data.notifications.filter((item) => item.targetEmail === user.email && !item.read).length;
 }
-export function displayReportId(id) {
-  const value = String(id || "");
+export function displayReportTitle(report) {
+  const title = String(report?.title || "");
+  const area = report?.area ? String(report.area) : "";
+  const suffix = area ? ` · ${area}` : "";
+  return area && title.endsWith(suffix) ? title.slice(0, -suffix.length) : title;
+}
+
+export function displayReportId(report) {
+  const reference = Number(report?.reference);
+  if (Number.isInteger(reference) && reference > 0) return `R-${String(reference).padStart(4, "0")}`;
+  // Rows imported before the reference column existed have no number yet; show
+  // their stored id rather than an empty cell.
+  const value = String(report?.id || (typeof report === "string" ? report : ""));
   const timestampId = value.match(/^R(\d{13})(?:-([a-z0-9]{6}))?$/i);
   if (timestampId) {
     const suffix = timestampId[2] ? `-${timestampId[2].toUpperCase()}` : "";
     return `R-${Number(timestampId[1]).toString(36).toUpperCase()}${suffix}`;
   }
   const match = value.match(/^R(?:PT-\d{4}-)?(\d+)$/i);
-  return match ? `R${String(Number(match[1])).padStart(2, "0")}` : String(id || "");
+  return match ? `R${String(Number(match[1])).padStart(2, "0")}` : value;
 }
 
-export function addNotification(targetEmail, title, body, reportId = "") {
-  data.notifications.unshift({
-    id: idFor("N"),
-    targetEmail,
-    title,
-    body,
-    reportId,
-    createdAt: new Date().toISOString(),
-    read: false,
-  });
-}
-
-export function addRoleNotification(role, title, body, reportId = "") {
-  data.users
-    .filter((user) => user.role === role && user.status === "Active")
-    .forEach((user) => addNotification(user.email, title, body, reportId));
+// Stored notification/activity text can contain an older opaque concern id.
+// Show the current reference on screen instead of rewriting that history.
+export function displayReferenceText(text, replacements) {
+  let value = String(text || "");
+  const map =
+    replacements || new Map((data.reports || []).filter((report) => report?.id).map((report) => [report.id, displayReportId(report)]));
+  for (const [id, reference] of map) {
+    if (id && reference && reference !== id && value.includes(id)) value = value.split(id).join(reference);
+  }
+  return value;
 }
 
 export function getUser(email) {
@@ -802,7 +899,9 @@ export function inputField(label, name, value = "", options = {}) {
   const readonly = options.readonly ? "readonly" : "";
   const placeholder = options.placeholder ? `placeholder="${esc(options.placeholder)}"` : "";
   const help = options.help ? `<p class="field-help">${esc(options.help)}</p>` : "";
-  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${placeholder} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}>${help}</div>`;
+  const min = options.min === undefined ? "" : `min="${esc(options.min)}"`;
+  const max = options.max === undefined ? "" : `max="${esc(options.max)}"`;
+  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${placeholder} ${min} ${max} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}>${help}</div>`;
 }
 
 export function selectField(label, name, items, selected, options = {}) {
@@ -811,13 +910,18 @@ export function selectField(label, name, items, selected, options = {}) {
   return `<div class="form-field"><label for="${esc(name)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(name)}" name="${esc(name)}" ${required}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select></div>`;
 }
 
+export function readOptionalCoordinate(value) {
+  const text = String(value || "").trim();
+  return text ? Number(text) : null;
+}
+
 export function reportDraftFromForm(fields) {
-  const readOptionalCoordinate = (value) => {
-    const text = String(value || "").trim();
-    return text ? Number(text) : null;
-  };
   const priority = String(fields.get("priority") || "").trim();
   if (!REPORT_PRIORITIES.includes(priority)) throw new Error("Choose a valid concern priority.");
+  const description = String(fields.get("description") || "").trim();
+  if (description.length > MAX_REPORT_DESCRIPTION_LENGTH) {
+    throw new Error(`Describe the concern in ${MAX_REPORT_DESCRIPTION_LENGTH} characters or fewer.`);
+  }
   return {
     category: String(fields.get("category") || ""),
     barangay: "Palsara",
@@ -825,7 +929,7 @@ export function reportDraftFromForm(fields) {
     locationDetail: String(fields.get("locationDetail") || "").trim(),
     latitude: readOptionalCoordinate(fields.get("latitude")),
     longitude: readOptionalCoordinate(fields.get("longitude")),
-    description: String(fields.get("description") || "").trim(),
+    description,
     priority,
     urgent: priority === "High",
     step: "review",
@@ -833,10 +937,6 @@ export function reportDraftFromForm(fields) {
 }
 
 export function calendarEventFromForm(fields) {
-  const readOptionalCoordinate = (value) => {
-    const text = String(value || "").trim();
-    return text ? Number(text) : null;
-  };
   const latitude = readOptionalCoordinate(fields.get("latitude"));
   const longitude = readOptionalCoordinate(fields.get("longitude"));
   if (
@@ -889,18 +989,32 @@ export function setState(changes = {}) {
     calendarMonth: (v) => (calendarMonth = v),
     calendarYear: (v) => (calendarYear = v),
     calendarSelectedDate: (v) => (calendarSelectedDate = v),
-    selectedPermissionRole: (v) => (selectedPermissionRole = v),
-    communityOfficialHours: (v) => (communityOfficialHours = v),
+    selectedPermissionAccount: (v) => (selectedPermissionAccount = v),
+    correctionFilters: (v) => (correctionFilters = v),
     selectedReportId: (v) => (selectedReportId = v),
     reportFilter: (v) => (reportFilter = v),
+    residentReportSort: (v) => (residentReportSort = v),
+    adminReportFilters: (v) => (adminReportFilters = v),
+    assignmentFilter: (v) => (assignmentFilter = v),
+    officialAssignedFilter: (v) => (officialAssignedFilter = v),
+    officialHistorySort: (v) => (officialHistorySort = v),
+    analyticsRange: (v) => (analyticsRange = v),
+    approvalFilter: (v) => (approvalFilter = v),
     notificationFilter: (v) => (notificationFilter = v),
+    searchQuery: (v) => (searchQuery = v),
     uploadPhotos: (v) => (uploadPhotos = v),
     smtpSettings: (v) => (smtpSettings = v),
+    verificationSettings: (v) => (verificationSettings = v),
+    faceCheckNotice: (v) => (faceCheckNotice = v),
     forcedPasswordDismissed: (v) => (forcedPasswordDismissed = v),
     currentRoute: (v) => (currentRoute = v),
     pendingReportRoute: (v) => (pendingReportRoute = v),
     toastTimer: (v) => (toastTimer = v),
     lastKnownHash: (v) => (lastKnownHash = v),
+    processingState: (v) => (processingState = v),
+    profileSummaryCollapsed: (v) => (profileSummaryCollapsed = v),
+    facePanelOpen: (v) => (facePanelOpen = v),
+    idPanelOpen: (v) => (idPanelOpen = v),
   };
   for (const [key, value] of Object.entries(changes)) {
     if (!handlers[key]) throw new Error(`setState: unknown key "${key}"`);

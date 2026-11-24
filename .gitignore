@@ -1,20 +1,5 @@
-.impeccable/
-.taste-skill/
-pdf files/
 node_modules/
 data/
-data/uploads/
 .env
 .env.*
 !.env.example
-
-# Local run artifacts
-.run/
-graphify-out/
-
-# Playwright
-test-results/
-playwright-report/
-blob-report/
-
-ui-screenshot/

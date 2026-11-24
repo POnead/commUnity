@@ -1,13 +1,28 @@
+import { randomUUID } from "node:crypto";
 import { HttpError } from "../platform/http.mjs";
 import { assertKnownArea, jsonEqual, validId, validISODate } from "../platform/validate.mjs";
-import { appDateLabel, getAppTimeZone } from "../platform/time.mjs";
+import { appDateISO, appDateLabel, getAppTimeZone } from "../platform/time.mjs";
 import { ROLES } from "../platform/roles.mjs";
 import { insertNotification } from "./notifications.mjs";
 import { insertActivity } from "./activity.mjs";
 import { queueEmail } from "../platform/email.mjs";
+import { buildCollectionReminderEmail } from "../platform/email-template.mjs";
 import { withTransaction } from "../platform/db.mjs";
 
 export const SCHEDULE_STATUSES = ["Scheduled", "On the way", "Collecting", "Completed", "Delayed", "Cancelled", "Rescheduled"];
+
+// One insert per area, not one per resident: a large schedule save used to issue
+// thousands of sequential writes inside one transaction.
+async function notifyAreaResidents(db, area, title, body) {
+  const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [area]);
+  if (!residents.rows.length) return;
+  const emails = residents.rows.map((resident) => resident.email);
+  await db.query(
+    `INSERT INTO notifications (id,target_email,title,body,created_at,read)
+     SELECT t.id, t.email, $3, $4, now(), false FROM unnest($1::uuid[], $2::text[]) AS t(id,email)`,
+    [emails.map(() => randomUUID()), emails, title.slice(0, 200), body.slice(0, 1000)],
+  );
+}
 
 function validateScheduleHistory(schedule) {
   const history = schedule?.history;
@@ -64,6 +79,7 @@ function validateSchedule(schedule) {
     !schedule ||
     !validId(schedule.id) ||
     typeof schedule.area !== "string" ||
+    !schedule.area.trim() ||
     schedule.area.length > 120 ||
     typeof schedule.zone !== "string" ||
     schedule.zone.length > 100 ||
@@ -180,6 +196,10 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
     const previous = oldById.get(item.id);
     let history = Array.isArray(item.history) ? item.history.map((entry) => ({ ...entry })) : [];
     if (!previous) {
+      const today = appDateISO();
+      if (item.date < today) throw new HttpError(400, "A new collection cannot be scheduled before today.");
+      if (item.recurrenceEnd && (item.recurrenceEnd < item.date || item.recurrenceEnd < today))
+        throw new HttpError(400, "Repeat until must be on or after the collection date and not in the past.");
       if (item.status === "Rescheduled")
         throw new HttpError(400, "A new collection cannot be marked Rescheduled. Save it first, then move it to a replacement date.");
       if (!history.length && ["Delayed", "Cancelled"].includes(item.status)) {
@@ -239,6 +259,8 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
           ) {
             throw new HttpError(400, "A rescheduled collection needs the replacement pickup date and time.");
           }
+          if (replacement.replacementDate < appDateISO())
+            throw new HttpError(400, "A replacement pickup cannot be in the past.");
           item.date = replacement.replacementDate;
           item.start = replacement.replacementStart;
           item.end = replacement.replacementEnd;
@@ -310,22 +332,24 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
         ? scheduleUpdateMessage(schedule)
         : `${removed.wasteType} collection previously scheduled for ${removed.area} has been removed.`,
     });
+    if (schedule && removed && removed.area !== schedule.area) {
+      addUpdate(removed.area, {
+        title: `Collection update for ${removed.area}`,
+        message: `${schedule.wasteType} pickup previously scheduled for ${removed.area} was moved to ${schedule.area}.`,
+      });
+    }
   }
   for (const [area, entries] of updatesByArea) {
-    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [area]);
     if (entries.length > 5) {
-      for (const resident of residents.rows)
-        await insertNotification(
-          db,
-          resident.email,
-          `Collection updates for ${area}`,
-          `${entries.length} collection updates for ${area}. Open the schedule to see the latest pickups.`,
-        );
+      await notifyAreaResidents(
+        db,
+        area,
+        `Collection updates for ${area}`,
+        `${entries.length} collection updates for ${area}. Open the schedule to see the latest pickups.`,
+      );
       continue;
     }
-    for (const entry of entries) {
-      for (const resident of residents.rows) await insertNotification(db, resident.email, entry.title, entry.message);
-    }
+    for (const entry of entries) await notifyAreaResidents(db, area, entry.title, entry.message);
   }
   // The server records who changed what; the browser cannot write the log.
   const addedSchedules = [];
@@ -366,8 +390,7 @@ export async function syncSchedules(db, oldSchedules, newSchedules, user) {
         ? `${first.wasteType} pickup ${first.status.toLowerCase()} for ${first.area} on ${first.date}.`
         : `${group.length} ${first.wasteType} pickups are scheduled for ${first.area} from ${first.date} to ${last.date}.`;
     const title = group.length === 1 ? `Collection update for ${first.area}` : `Collection schedule added for ${first.area}`;
-    const residents = await db.query("SELECT email FROM users WHERE role='resident' AND status='Active' AND area=$1", [first.area]);
-    for (const resident of residents.rows) await insertNotification(db, resident.email, title, message);
+    await notifyAreaResidents(db, first.area, title, message);
   }
 }
 
@@ -376,6 +399,7 @@ export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } =
   // claim and the insert would otherwise mark a reminder as sent and lose it.
   // shortcut: email delivery is not retried (queueEmail is fire-and-forget); upgrade when a durable mail outbox exists.
   let created = 0;
+  const reminderMails = [];
   await withTransaction(db, async (transaction) => {
     const due = await transaction.query(
       `
@@ -392,17 +416,28 @@ export async function runScheduleReminders(db, { mailer, smtpFrom, appOrigin } =
         [reminder.schedule_id, reminder.user_email],
       );
       if (!claimed.rowCount) continue;
-      const body = `${reminder.waste_type} collection for ${reminder.area} is scheduled tomorrow, ${appDateLabel(reminder.date, { month: "long", day: "numeric" })} at ${reminder.start_time}.`;
+      // Date-only values are UTC midnight; format in UTC so western zones cannot shift the day back.
+      const dateLabel = appDateLabel(reminder.date, { month: "long", day: "numeric", timeZone: "UTC" });
+      const body = `${reminder.waste_type} collection for ${reminder.area} is scheduled tomorrow, ${dateLabel} at ${reminder.start_time}.`;
       await insertNotification(transaction, reminder.user_email, "Collection reminder", body);
-      queueEmail(mailer, {
+      const reminderMail = buildCollectionReminderEmail({
+        wasteType: reminder.waste_type,
+        area: reminder.area,
+        dateLabel,
+        startTime: reminder.start_time,
+        appOrigin,
+      });
+      reminderMails.push({
         from: smtpFrom,
         to: reminder.user_email,
-        subject: `Collection reminder for ${reminder.area}`,
-        text: `${body}\n\nView your collection schedule in CommUnity: ${appOrigin || ""}/#/resident/collection`,
+        subject: reminderMail.subject,
+        text: reminderMail.text,
+        html: reminderMail.html,
       });
       created += 1;
     }
     if (created) await transaction.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
   });
+  for (const message of reminderMails) queueEmail(mailer, message);
   return created;
 }

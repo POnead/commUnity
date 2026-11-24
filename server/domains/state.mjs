@@ -14,13 +14,22 @@ import {
 import { ROLES, PERMISSIONS } from "../platform/roles.mjs";
 import { timestamp } from "../platform/time.mjs";
 import { queueEmail } from "../platform/email.mjs";
+import { buildNewConcernEmail, buildReportStatusEmail } from "../platform/email-template.mjs";
 import { withTransaction } from "../platform/db.mjs";
 import { comparableReport } from "./service-targets.mjs";
-import { REPORT_TRANSITIONS, insertReport, replaceReport, validateReport } from "./reports.mjs";
+import { REPORT_TRANSITIONS, insertReport, notifyStaff, reportReference, replaceReport, validateReport } from "./reports.mjs";
 import { syncSchedules } from "./schedules.mjs";
 import { syncLocations, syncRecyclingLocations } from "./locations.mjs";
 import { syncNotifications, insertNotification, validateNotificationsReadOnly } from "./notifications.mjs";
 import { syncActivities, insertActivity } from "./activity.mjs";
+
+// A state read echoes only the newest slice of a report's detail. Without this,
+// a staff/admin workspace with a long concern history is too large to save back:
+// the 32 MB ceiling is enforced on PUT, so the browser would be permanently
+// locked out of saving. Older rows stay in the database and are restored before
+// any write (see replaceReport), so truncation never deletes data.
+const MAX_ECHOED_HISTORY_PER_REPORT = 50;
+const MAX_ECHOED_PHOTOS_PER_REPORT = 3;
 
 export function validateState(data) {
   if (
@@ -33,21 +42,26 @@ export function validateState(data) {
     !data.permissions ||
     typeof data.permissions !== "object" ||
     Array.isArray(data.permissions) ||
-    data.users.length > 10000 ||
-    data.reports.length > 10000 ||
-    data.schedules.length > 10000 ||
-    data.notifications.length > 100000 ||
-    data.activities.length > 100000 ||
+    data.users.length > 2000 ||
+    data.reports.length > 2000 ||
+    data.schedules.length > 2000 ||
+    data.notifications.length > 10000 ||
+    data.activities.length > 1000 ||
     data.announcements.length > 1000 ||
     data.locations.length > 1000 ||
     data.recyclingLocations.length > 1000 ||
-    (Array.isArray(data.calendarEvents) && data.calendarEvents.length > 1000)
+    (Array.isArray(data.calendarEvents) && data.calendarEvents.length > 1000) ||
+    (Array.isArray(data.hotlines) && data.hotlines.length > 1000) ||
+    (Array.isArray(data.hotlineCorrections) && data.hotlineCorrections.length > 1000)
   ) {
     throw new HttpError(400, "CommUnity data is invalid or exceeds supported limits.");
   }
   // Keep the accepted state shape inside the body limit enforced by the HTTP layer.
-  // The report count above is sized for this ceiling, so a save fails with a clear
-  // message here instead of an unexplained 413 at the parser.
+  // Exact worst-case math is impractical (per-item text caps still allow large
+  // values), so the array caps above are deliberately conservative and the read
+  // side bounds report detail to the newest 50 history / 3 photos per report.
+  // This byte check is the final guard: a save fails with a clear message here
+  // instead of an unexplained 413 at the parser.
   if (Buffer.byteLength(JSON.stringify(data)) > MAX_STATE_BYTES) {
     throw new HttpError(413, "The portal state is larger than the 32 MB save limit. Export or archive old records before saving.");
   }
@@ -93,10 +107,13 @@ export function makeDefaultState() {
     activities: [],
     permissions: structuredClone(PERMISSIONS),
     accountOverrides: {},
+    verificationQueue: [],
     announcements: [],
     calendarEvents: [],
     locations: [],
     recyclingLocations: [],
+    hotlines: [],
+    hotlineCorrections: [],
   };
 }
 
@@ -137,23 +154,23 @@ function withholdState(state, user, visibility) {
   }
   // Role management covers the per-account permission overrides.
   if (user.role === "administrator" && !visibility.manageRoles) state.accountOverrides = {};
+  // The ID queue is administrative data: residents and officials never receive it.
+  if (!user || user.role !== "administrator") state.verificationQueue = [];
 }
+
+const ADMIN_USER_COLUMNS =
+  'SELECT id, email, name, area, phone, role, status, working_hours AS "workingHours", available_days AS "availableDays", requires_password_change AS "requiresPasswordChange", deactivation_reason AS "deactivationReason", recovery_email AS "recoveryEmail", reset_requested AS "resetRequested", photo_url AS "photoUrl", id_status AS "idStatus", to_char(joined_at, \'YYYY-MM-DD\') AS "joinedAt" FROM users';
 
 export async function readFullState(db, user = null, { withheld = true } = {}) {
   const state = makeDefaultState();
   if (!user || user.role === "administrator") {
     const users = user
-      ? await db.query(
-          'SELECT id, email, name, area, phone, role, status, working_hours AS "workingHours", available_days AS "availableDays", requires_password_change AS "requiresPasswordChange", deactivation_reason AS "deactivationReason", recovery_email AS "recoveryEmail", reset_requested AS "resetRequested", photo_url AS "photoUrl", to_char(joined_at, \'YYYY-MM-DD\') AS "joinedAt" FROM users WHERE id <> $1 ORDER BY joined_at, email',
-          [user.id],
-        )
-      : await db.query(
-          'SELECT id, email, name, area, phone, role, status, working_hours AS "workingHours", available_days AS "availableDays", requires_password_change AS "requiresPasswordChange", deactivation_reason AS "deactivationReason", recovery_email AS "recoveryEmail", reset_requested AS "resetRequested", photo_url AS "photoUrl", to_char(joined_at, \'YYYY-MM-DD\') AS "joinedAt" FROM users ORDER BY joined_at, email',
-        );
+      ? await db.query(`${ADMIN_USER_COLUMNS} WHERE id <> $1 ORDER BY joined_at, email`, [user.id])
+      : await db.query(`${ADMIN_USER_COLUMNS} ORDER BY joined_at, email`);
     state.users = users.rows;
   } else if (user.role === "resident") {
     const users = await db.query(
-      'SELECT id, email, name, area, phone, role, status, working_hours AS "workingHours", available_days AS "availableDays", requires_password_change AS "requiresPasswordChange", photo_url AS "photoUrl", to_char(joined_at, \'YYYY-MM-DD\') AS "joinedAt" FROM users WHERE id=$1',
+      'SELECT id, email, name, area, phone, role, status, working_hours AS "workingHours", available_days AS "availableDays", requires_password_change AS "requiresPasswordChange", photo_url AS "photoUrl", id_status AS "idStatus", to_char(joined_at, \'YYYY-MM-DD\') AS "joinedAt" FROM users WHERE id=$1',
       [user.id],
     );
     state.users = users.rows;
@@ -161,25 +178,45 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
     // Officials handle the concern queue: they see each resident's basic account card and
     // photo, never phone numbers, working hours, recovery emails, or staff accounts.
     const users = await db.query(
-      `SELECT id, email, name, area, role, status, photo_url AS "photoUrl" FROM users WHERE role='resident' ORDER BY joined_at, email`,
+      `SELECT id, email, name, area, role, status, photo_url AS "photoUrl", id_status AS "idStatus" FROM users WHERE role='resident' ORDER BY joined_at, email`,
     );
     state.users = users.rows;
   }
 
+  // The admin ID-review queue rides along in the state they already poll.
+  if (user?.role === "administrator") {
+    const queue = await db.query(
+      `SELECT id AS "userId", name, email, area, role, id_type AS "idType", id_number AS "idNumber",
+         id_full_name AS "idFullName", to_char(id_birth_date, 'YYYY-MM-DD') AS "idBirthDate",
+         id_address AS "idAddress", to_char(id_expiration_date, 'YYYY-MM-DD') AS "idExpirationDate",
+         id_face_status AS "idFaceStatus",
+         COALESCE(id_back_image_filename, '') <> '' AS "hasIdBackImage",
+         to_char(id_submitted_at, 'YYYY-MM-DD') AS "idSubmittedAt", id_scan_checks AS "idScanChecks"
+       FROM users WHERE id_status = 'pending' ORDER BY id_submitted_at NULLS LAST, email`,
+    );
+    state.verificationQueue = queue.rows;
+  }
+
+  const residentRead = user?.role === "resident";
+  // Scope the follow-up grouping to the reports this caller can see. Without
+  // it, a resident reading one report still aggregates the whole follow-up
+  // table; the subquery reuses the same resident filter as the outer query.
+  const followUpScope = residentRead ? "WHERE report_id IN (SELECT id FROM reports WHERE user_email=$1)" : "";
   const reports = await db.query(
     `
-    SELECT r.id, r.user_email AS "userEmail", r.name, r.category, r.title, r.area, r.barangay,
+    SELECT r.id, r.reference, r.user_email AS "userEmail", r.name, r.category, r.title, r.area, r.barangay,
     r.location_detail AS "locationDetail", r.latitude, r.longitude, r.description, r.urgent, r.priority,
-    (SELECT count(*)::integer FROM report_follow_ups f WHERE f.report_id=r.id) AS "followUpCount",
+    COALESCE(f.c, 0)::integer AS "followUpCount",
     r.assigned_to AS "assignedToId", assignee.name AS "assignedToName", r.status,
     r.submitted_at AS "submittedAt", r.updated_at AS "updatedAt",
     r.response_deadline AS "responseDeadline", r.responded_at AS "respondedAt",
     r.resolution_deadline AS "resolutionDeadline", r.resolved_at AS "resolvedAt"
     FROM reports r LEFT JOIN users assignee ON assignee.id=r.assigned_to
-    ${user?.role === "resident" ? "WHERE r.user_email=$1" : ""}
-    ORDER BY submitted_at DESC, id
+    LEFT JOIN (SELECT report_id, count(*) AS c FROM report_follow_ups ${followUpScope} GROUP BY report_id) f ON f.report_id=r.id
+    ${residentRead ? "WHERE r.user_email=$1" : ""}
+    ORDER BY r.submitted_at DESC, r.id
   `,
-    user?.role === "resident" ? [user.email] : [],
+    residentRead ? [user.email] : [],
   );
   const reportIds = reports.rows.map((report) => report.id);
   if (reportIds.length) {
@@ -241,8 +278,10 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
         overdue: responseOverdue || resolutionOverdue,
         responseOverdue,
         resolutionOverdue,
-        history: historyByReport.get(report.id) || [],
-        photos: photosByReport.get(report.id) || [],
+        // Echo only the newest detail. The write path reads the full stored
+        // rows again and appends to them, so this cannot delete older entries.
+        history: (historyByReport.get(report.id) || []).slice(-MAX_ECHOED_HISTORY_PER_REPORT),
+        photos: (photosByReport.get(report.id) || []).slice(-MAX_ECHOED_PHOTOS_PER_REPORT),
       };
     });
   }
@@ -305,11 +344,12 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
       .map((row) => [row.email, row.overrides]),
   );
   const announcements = await db.query(`
-    SELECT id, title, detail, to_char(date, 'YYYY-MM-DD') AS date, approval_status AS "approvalStatus", decline_reason AS "declineReason",
-      is_event AS "isEvent", latitude, longitude
-    FROM announcements
-    ${user && user.role === "resident" ? "WHERE approval_status='approved'" : ""}
-    ORDER BY date DESC, id DESC
+    SELECT a.id, a.title, a.detail, to_char(a.date, 'YYYY-MM-DD') AS date, a.approval_status AS "approvalStatus", a.decline_reason AS "declineReason",
+      a.is_event AS "isEvent", a.latitude, a.longitude,
+      a.created_by AS "createdBy", u.name AS "createdByName"
+    FROM announcements a LEFT JOIN users u ON u.id = a.created_by
+    ${user && user.role === "resident" ? "WHERE a.approval_status='approved'" : ""}
+    ORDER BY a.date DESC, a.id DESC
   `);
   state.announcements = announcements.rows.map((item) => ({ ...item, id: String(item.id) }));
   const calendarEvents = await db.query(
@@ -330,15 +370,52 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
     createdAt: timestamp(item.createdAt),
   }));
   const locations = await db.query(
-    "SELECT id, area, barangay, street, purok, landmark FROM community_locations ORDER BY barangay, purok, street, id",
+    "SELECT id, area, barangay, street, purok, landmark, latitude, longitude FROM community_locations ORDER BY barangay, purok, street, id",
   );
   state.locations = locations.rows;
   const recyclingLocations = await db.query(`
     SELECT id, name, barangay, street, purok, landmark, materials, phone, hours, active
-    FROM recycling_locations ${!user || (user.role === "administrator") ? "" : "WHERE active=true"}
+    FROM recycling_locations ${!user || user.role === "administrator" ? "" : "WHERE active=true"}
     ORDER BY active DESC, name
   `);
   state.recyclingLocations = recyclingLocations.rows;
+  // Drafts are staff-only work in progress; residents and officials read the
+  // published directory. An inactive hotline stays visible so people can see it
+  // is temporarily unavailable instead of assuming it was removed.
+  const hotlines = await db.query(`
+    SELECT id, name, category, contact_number AS "contactNumber",
+      alternative_contact_number AS "alternativeContactNumber", office_address AS "officeAddress",
+      description, operating_hours AS "operatingHours", status, published,
+      verified_at AS "verifiedAt", created_at AS "createdAt", updated_at AS "updatedAt"
+    FROM emergency_hotlines
+    ${!user || user.role === "administrator" ? "" : "WHERE published"}
+    ORDER BY lower(name), id
+  `);
+  state.hotlines = hotlines.rows.map((item) => ({
+    ...item,
+    id: String(item.id),
+    verifiedAt: item.verifiedAt ? timestamp(item.verifiedAt) : null,
+    createdAt: timestamp(item.createdAt),
+    updatedAt: timestamp(item.updatedAt),
+  }));
+  const hotlineCorrections = await db.query(
+    `
+    SELECT c.id, c.hotline_id AS "hotlineId", c.kind, c.submitted_by AS "submittedById",
+      u.name AS "submittedByName", c.proposed, c.reason, c.status,
+      c.reviewed_at AS "reviewedAt", c.review_note AS "reviewNote", c.created_at AS "createdAt"
+    FROM hotline_corrections c LEFT JOIN users u ON u.id = c.submitted_by
+    ${user && user.role === "official" ? "WHERE c.submitted_by=$1" : ""}
+    ORDER BY c.created_at DESC, c.id DESC
+  `,
+    user && user.role === "official" ? [user.id] : [],
+  );
+  state.hotlineCorrections = hotlineCorrections.rows.map((item) => ({
+    ...item,
+    id: String(item.id),
+    hotlineId: item.hotlineId == null ? null : String(item.hotlineId),
+    reviewedAt: item.reviewedAt ? timestamp(item.reviewedAt) : null,
+    createdAt: timestamp(item.createdAt),
+  }));
   if (user && withheld) withholdState(state, user, await readVisibility(db, user));
   return state;
 }
@@ -346,8 +423,17 @@ export async function readFullState(db, user = null, { withheld = true } = {}) {
 // Every mutation that returns the refreshed workspace sends the same trio. One
 // home for it so the shape is changed in one place.
 export async function sendStateResponse(response, db, user, statusCode = 200, extra = {}) {
-  const [state, revision] = await Promise.all([readFullState(db, user), db.query("SELECT revision FROM app_meta WHERE id=1")]);
-  sendJson(response, statusCode, { data: stateForRole(state, user), revision: Number(revision.rows[0].revision), user: publicUser(user), ...extra });
+  // Read the revision first, then the state. A commit between the two leaves the
+  // client with a stale low revision so its next save is refused with a 409
+  // rather than silently overwriting newer data.
+  const revision = await db.query("SELECT revision FROM app_meta WHERE id=1");
+  const state = await readFullState(db, user);
+  sendJson(response, statusCode, {
+    data: stateForRole(state, user),
+    revision: Number(revision.rows[0].revision),
+    user: publicUser(user),
+    ...extra,
+  });
 }
 
 export function stateForRole(state, user) {
@@ -373,6 +459,7 @@ export function stateForRole(state, user) {
     role: item.role,
     status: item.status,
     photoUrl: item.photoUrl,
+    idStatus: item.idStatus || "unverified",
   });
   const users =
     user.role === "administrator"
@@ -386,12 +473,13 @@ export function stateForRole(state, user) {
     users,
     reports: user.role === "resident" ? state.reports.filter((item) => item.userEmail === user.email) : state.reports,
     notifications: state.notifications.filter((item) => item.targetEmail === user.email),
+    hotlineCorrections: user.role === "resident" ? [] : state.hotlineCorrections,
     activities: user.role === "administrator" ? state.activities : [],
     recyclingLocations: user.role === "administrator" ? state.recyclingLocations : state.recyclingLocations.filter((item) => item.active),
   };
 }
 
-async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {}) {
+async function updateState(db, user, body, { smtpFrom, appOrigin } = {}) {
   if (!body || !Number.isSafeInteger(body.revision) || body.revision < 0)
     throw new HttpError(400, "A valid database revision is required.");
   if (body.data && typeof body.data === "object" && !Array.isArray(body.data.calendarEvents)) body.data.calendarEvents = [];
@@ -412,12 +500,22 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
     if (adding) await recordAttempt(db, hash(`report-submit:${user.id}`), 10);
   }
   let nextRevision = 0;
+  // Emails are collected here and delivered by the caller only after this
+  // transaction commits, so a rolled-back save sends no mail.
+  const pendingEmails = [];
   await withTransaction(db, async (transaction) => {
     const db = transaction;
-    const revision = await db.query("SELECT revision FROM app_meta WHERE id=1 FOR UPDATE");
-    if (Number(revision.rows[0].revision) !== body.revision)
+    // Cheap, non-locking check to reject already-stale saves before any write.
+    // The commit-time CAS below stays the authority for a real race that moves
+    // the revision after this read.
+    const current = await db.query("SELECT revision FROM app_meta WHERE id=1");
+    if (Number(current.rows[0].revision) !== body.revision)
       throw new HttpError(409, "Data changed in another session. Reload before saving.");
     const after = body.data;
+    // Hotlines and their correction requests are written only by their own
+    // endpoints, so a workspace save never carries an editable copy of them.
+    after.hotlines = visibleBefore.hotlines;
+    after.hotlineCorrections = visibleBefore.hotlineCorrections;
     // Data the caller's permissions do not cover was withheld at read time.
     // Give the server's copy of those collections precedence, so a stale or
     // hand-edited echo is preserved as-is instead of read as deletions.
@@ -434,14 +532,15 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
           if (ids.some((id) => !known.has(id)))
             throw new HttpError(
               403,
-              user.role === "resident" ? "Submitting concerns is not enabled for this role." : "Report management is not enabled for this role.",
+              user.role === "resident"
+                ? "Submitting concerns is not enabled for this role."
+                : "Report management is not enabled for this role.",
             );
         }
       }
       after.reports = visibleBefore.reports;
     }
-    if (!(user.role === "resident" ? visibility.viewSchedules : visibility.manageSchedules))
-      after.schedules = visibleBefore.schedules;
+    if (!(user.role === "resident" ? visibility.viewSchedules : visibility.manageSchedules)) after.schedules = visibleBefore.schedules;
     if (user.role !== "resident" && !visibility.manageAnnouncements) {
       after.announcements = visibleBefore.announcements;
       after.calendarEvents = visibleBefore.calendarEvents;
@@ -458,9 +557,7 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         // Filter out any row that already exists server-side instead of re-inserting it as new.
         const recent = await db.query("SELECT id FROM activities ORDER BY at DESC LIMIT 1000");
         const knownIds = new Set(recent.rows.map((row) => row.id));
-        after.activities = (Array.isArray(after.activities) ? after.activities : []).filter(
-          (item) => item && !knownIds.has(item.id),
-        );
+        after.activities = (Array.isArray(after.activities) ? after.activities : []).filter((item) => item && !knownIds.has(item.id));
       }
     }
     if (user.role === "resident") {
@@ -527,29 +624,46 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         report.history[0].actorRole = "resident";
         await insertReport(db, report);
         const staff = await db.query("SELECT email FROM users WHERE role IN ('official','administrator') AND status='Active'");
+        await notifyStaff(
+          db,
+          report.urgent ? `Urgent concern: ${report.title}` : `New concern: ${report.title}`,
+          `${report.name} submitted a report for ${report.barangay}, ${report.area}, near ${report.locationDetail}.`,
+          report.id,
+        );
+        const concernMail = buildNewConcernEmail({
+          name: report.name,
+          category: report.category,
+          title: report.title,
+          barangay: report.barangay,
+          area: report.area,
+          locationDetail: report.locationDetail,
+          priority: report.priority,
+          reportId: reportReference(report.reference),
+          description: report.description,
+          urgent: report.urgent,
+          appOrigin,
+        });
         for (const account of staff.rows)
-          await insertNotification(
-            db,
-            account.email,
-            report.urgent ? `Urgent concern: ${report.title}` : `New concern: ${report.title}`,
-            `${report.name} submitted a report for ${report.barangay}, ${report.area}, near ${report.locationDetail}.`,
-            report.id,
-          );
-        for (const account of staff.rows)
-          queueEmail(mailer, {
+          pendingEmails.push({
             from: smtpFrom,
             to: account.email,
-            subject: report.urgent ? `Urgent concern: ${report.title}` : `New concern: ${report.title}`,
-            text: `${report.name} submitted a report for ${report.barangay}, ${report.area}, near ${report.locationDetail}.\n\nReview it in CommUnity: ${appOrigin || ""}/#/official/concerns`,
+            subject: concernMail.subject,
+            text: concernMail.text,
+            html: concernMail.html,
           });
         await insertNotification(
           db,
           user.email,
           "Report submitted",
-          `Your concern ${report.id} was submitted and is now on file.`,
+          `Your concern ${reportReference(report.reference)} was submitted and is now on file.`,
           report.id,
         );
-        await insertActivity(db, user, report.urgent ? "Submitted an urgent concern" : "Submitted a concern", `${report.id} · ${report.title}`);
+        await insertActivity(
+          db,
+          user,
+          report.urgent ? "Submitted an urgent concern" : "Submitted a concern",
+          `${reportReference(report.reference)} · ${report.title}`,
+        );
       }
     } else if (user.role === "official") {
       // Officials are never allowed to change accounts, so the client's copy of
@@ -607,14 +721,17 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
             if (!note) {
               throw new HttpError(400, `Add an update note when changing the status to ${incoming.status}.`);
             }
+            if (note.length > 400) throw new HttpError(400, "An update note must be 400 characters or fewer.");
           }
           // The server owns the update clock. The browser may ask for a status
           // change, but it cannot say when it happened, so the recorded first
           // response, the recorded resolution, the status entry, and the update
           // itself are all stamped with the server's own time.
           const updateAt = new Date().toISOString();
+          // Every accepted official update — a claim, a release or a status
+          // change — gets the server's clock, not just a status change.
+          incoming.updatedAt = updateAt;
           if (statusChanged) {
-            incoming.updatedAt = updateAt;
             incoming.history.at(-1).at = updateAt;
           }
           // The server owns the service-target fields, so a client copy is never trusted.
@@ -649,30 +766,38 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
             incoming.history.at(-1).actorName = user.name;
             incoming.history.at(-1).actorRole = user.role;
           }
-          validateReport(incoming);
+          // replaceReport owns validation: it tolerates unchanged legacy text
+          // beyond the current description cap before re-validating the report.
           await replaceReport(db, incoming);
+          const ref = reportReference(oldReport.reference ?? incoming.reference);
           if (assignmentChanged) {
-            await insertActivity(
-              db,
-              user,
-              incoming.assignedTo ? "Claimed a concern" : "Released a concern",
-              `${incoming.id} · ${incoming.title}`,
-            );
+            await insertActivity(db, user, incoming.assignedTo ? "Claimed a concern" : "Released a concern", `${ref} · ${incoming.title}`);
           }
           if (validStatusUpdate) {
-            await insertActivity(db, user, "Updated a report", `${incoming.id} · ${incoming.status}`);
+            await insertActivity(db, user, "Updated a report", `${ref} · ${incoming.status}`);
             await insertNotification(
               db,
               incoming.userEmail,
               `Report ${incoming.status.toLowerCase()}`,
-              `${incoming.id}: ${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}`,
+              `${ref}: ${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}`,
               incoming.id,
             );
-            queueEmail(mailer, {
+            const statusMail = buildReportStatusEmail({
+              reportId: ref,
+              status: incoming.status,
+              category: incoming.category,
+              barangay: incoming.barangay,
+              area: incoming.area,
+              locationDetail: incoming.locationDetail,
+              note: incoming.history.at(-1).note,
+              appOrigin,
+            });
+            pendingEmails.push({
               from: smtpFrom,
               to: incoming.userEmail,
-              subject: `Your report ${incoming.id} is ${incoming.status.toLowerCase()}`,
-              text: `${incoming.history.at(-1).note || `Your concern is now ${incoming.status.toLowerCase()}.`}\n\nView your reports in CommUnity: ${appOrigin || ""}/#/resident/reports`,
+              subject: statusMail.subject,
+              text: statusMail.text,
+              html: statusMail.html,
             });
           }
         }
@@ -774,6 +899,9 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       for (const old of before.reports) {
         const incoming = adminAfterReportsById.get(old.id);
         if (!incoming) throw new HttpError(403, "Reports cannot be deleted from the administrator workspace.");
+        if (incoming.userEmail !== old.userEmail) {
+          throw new HttpError(403, "Report ownership cannot be changed through the administrator workspace.");
+        }
         if (!jsonEqual(old.assignedTo, incoming.assignedTo) || !jsonEqual(old.history, incoming.history)) {
           throw new HttpError(403, "Report assignments and status history can only be changed through the concern queue.");
         }
@@ -790,7 +918,8 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
       }
       for (const report of after.reports) {
         const old = beforeReportsById.get(report.id);
-        if (old && jsonEqual(comparableReport(old), comparableReport(report))) continue;
+        if (!old) throw new HttpError(403, "Reports can only be created through the concern form.");
+        if (jsonEqual(comparableReport(old), comparableReport(report))) continue;
         await replaceReport(db, report);
       }
       await syncSchedules(db, before.schedules, after.schedules, user);
@@ -811,14 +940,14 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         for (const [permission, enabled] of Object.entries(after.permissions[role])) {
           if (typeof enabled !== "boolean" || !Object.hasOwn(PERMISSIONS[role], permission))
             throw new HttpError(400, "Role permissions are invalid.");
-          if (before.permissions?.[role]?.[permission] !== enabled) changedPermissions.push([role, permission]);
-          await db.query(
-            "INSERT INTO role_permissions(role,permission,enabled) VALUES($1,$2,$3) ON CONFLICT(role,permission) DO UPDATE SET enabled=excluded.enabled",
-            [role, permission, enabled],
-          );
+          if (before.permissions?.[role]?.[permission] !== enabled) changedPermissions.push([role, permission, enabled]);
         }
       }
-      for (const [role, permission] of changedPermissions) {
+      for (const [role, permission, enabled] of changedPermissions) {
+        await db.query(
+          "INSERT INTO role_permissions(role,permission,enabled) VALUES($1,$2,$3) ON CONFLICT(role,permission) DO UPDATE SET enabled=excluded.enabled",
+          [role, permission, enabled],
+        );
         await insertActivity(db, user, "Changed role permission", `${role} · ${permission}`);
       }
       const nextOverrides = after.accountOverrides || {};
@@ -857,10 +986,16 @@ async function updateState(db, user, body, { mailer, smtpFrom, appOrigin } = {})
         throw new HttpError(400, "Keep at least one active administrator with both account and role management enabled.");
       await syncActivities(db, before.activities, after.activities);
     }
-    await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
-    nextRevision = Number(revision.rows[0].revision) + 1;
+    // Compare-and-swap at the end: no global row lock is held while the save is
+    // computed, and a concurrent writer makes this UPDATE affect no row. The
+    // thrown 409 rolls the whole transaction back, and the caller sends no mail.
+    const result = await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1 AND revision=$1 RETURNING revision", [
+      body.revision,
+    ]);
+    if (!result.rowCount) throw new HttpError(409, "Data changed in another session. Reload before saving.");
+    nextRevision = Number(result.rows[0].revision);
   });
-  return nextRevision;
+  return { nextRevision, pendingEmails };
 }
 
 export async function handleState(request, response, db, options, user) {
@@ -888,7 +1023,9 @@ export async function handleState(request, response, db, options, user) {
     requireRole(user, ROLES);
     requireJsonBody(request);
     const body = request.body;
-    await updateState(db, user, body, { mailer, smtpFrom, appOrigin });
+    // Deliver mail only after the state save has committed successfully.
+    const { pendingEmails } = await updateState(db, user, body, { smtpFrom, appOrigin });
+    for (const message of pendingEmails) queueEmail(mailer, message);
     const currentUser = await getSessionUser(request, db);
     await sendStateResponse(response, db, currentUser);
     return true;

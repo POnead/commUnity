@@ -1,0 +1,21 @@
+{
+  "revision": "dc5856015791899c4db14b310d9a348c8db2bd8c",
+  "runtime": "bun 1.4.3",
+  "cwd": "C:\\Users\\PrinceDeano\\Downloads\\CommUnity project",
+  "limits": [
+    "Per-probe exploration-NNN.json checkpoints were not published during this run; evidence is retained in the final report only.",
+    "Screenshots blocked: the desktop app window was not visible, so browser.screenshot failed after tabs.focus. Visual/layout category not scored.",
+    "Signed-in flows not run: no credentials were supplied and the agent does not handle passwords; the user must sign in to 127.0.0.1 in the browser to extend coverage.",
+    "Mobile viewport emulation unavailable through the in-app browser tools; responsive behaviour tested only at the current 1056px viewport (no horizontal overflow observed).",
+    "Performance trace not captured; Performance category not scored.",
+    "Forgot-password submission and registration account creation were intentionally not executed (would send mail / create records)."
+  ],
+  "evidence": [],
+  "learning": [],
+  "verdict": {
+    "status": "inconclusive",
+    "open": [
+      "no evidence rows"
+    ]
+  }
+}

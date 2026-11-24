@@ -1,0 +1,31 @@
+{
+  "date": "2026-11-24",
+  "url": "http://127.0.0.1:8768",
+  "healthScore": 90,
+  "issues": [
+    {
+      "id": "QA-001",
+      "title": "Validation/error message persists across public SPA routes",
+      "severity": "medium",
+      "category": "Functional"
+    },
+    {
+      "id": "QA-002",
+      "title": "/api/map-config returns 401 and logs a console error on unauthenticated pages",
+      "severity": "low",
+      "category": "Console"
+    },
+    {
+      "id": "QA-003",
+      "title": "Expected validation failures are logged as console.error with stack traces",
+      "severity": "low",
+      "category": "Console"
+    }
+  ],
+  "categoryScores": {
+    "Console": 70,
+    "Links": 100,
+    "Functional": 92,
+    "Accessibility": 100
+  }
+}

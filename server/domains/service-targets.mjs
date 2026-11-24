@@ -5,9 +5,13 @@
 
 export const REPORT_PRIORITIES = ["High", "Medium", "Low"];
 
-export const FOLLOW_UP_LIMITS = { High: null, Medium: 5, Low: 3 };
-export const RESPONSE_DEADLINE_DAYS = { High: 1, Medium: 3, Low: 7 };
-export const RESOLUTION_DEADLINE_DAYS = { High: 7, Medium: 14, Low: 30 };
+import {
+  FOLLOW_UP_LIMITS,
+  RESPONSE_DEADLINE_DAYS,
+  RESOLUTION_DEADLINE_DAYS,
+} from "../../shared/domain-rules.mjs";
+
+export { FOLLOW_UP_LIMITS, RESPONSE_DEADLINE_DAYS, RESOLUTION_DEADLINE_DAYS };
 
 export function normalizeReportPriority(report) {
   if (!report || typeof report !== "object") return;
@@ -59,6 +63,7 @@ export function comparableReport(report, core = false) {
     updatedAt,
     history,
     assignedTo,
+    reference,
     ...rest
   } = report;
   return core ? rest : { status, updatedAt, history, assignedTo, ...rest };

@@ -41,20 +41,27 @@ export function appDateISO(value = new Date()) {
   return parts ? `${parts.year}-${parts.month}-${parts.day}` : "";
 }
 
-// Date-only values carry a literal calendar day, so they are anchored at UTC
-// midnight and shown in the barangay's zone to keep that day intact. Timestamps
-// are shown in the barangay's zone so the displayed day never follows the viewer.
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+function isDateOnly(value) {
+  return typeof value === "string" && DATE_ONLY.test(value);
+}
+
+// Date-only values carry a literal calendar day: anchor them at UTC midday and
+// format them in UTC, so zones at UTC+12 or beyond cannot roll them to the next
+// day. Timestamps are shown in the barangay's zone so the displayed day never
+// follows the viewer.
 export function parseAppDate(value) {
   if (value instanceof Date) return value;
   const text = String(value || "");
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return new Date(`${text}T00:00:00Z`);
+  if (isDateOnly(text)) return new Date(`${text}T12:00:00Z`);
   return new Date(text);
 }
 
 export function appDateLabel(value, options = {}) {
   const date = parseAppDate(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("en-PH", { timeZone: appTimeZone, ...options }).format(date);
+  const zone = isDateOnly(value) ? "UTC" : appTimeZone;
+  return new Intl.DateTimeFormat("en-PH", { timeZone: zone, ...options }).format(date);
 }
 
 export function appTimeLabel(value = new Date()) {

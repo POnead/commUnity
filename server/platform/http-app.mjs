@@ -13,25 +13,36 @@ const PUBLIC_DIRECTORIES = new Set(["app/"]);
 const PUBLIC_FILES = new Set([
   "index.html",
   "styles.css",
+  "shared/community-map.mjs",
+  "shared/palsara-boundary.mjs",
+  "shared/hotlines.mjs",
+  "shared/domain-rules.mjs",
+  "assets/barangay-hall.png",
+  "assets/admin-header-landscape.svg",
+  "assets/auth-login-corner.svg",
+  "assets/auth-village-waves.svg",
+  "assets/resident-community-landscape.svg",
+  "assets/resident-leaves.svg",
+  "assets/resident-sidebar-leaves.svg",
+  "assets/resident-sidebar-village.svg",
+  "assets/resident-village.svg",
+  "assets/fonts/inter.woff2",
+  "assets/fonts/poppins-500.woff2",
+  "assets/fonts/poppins-600.woff2",
   "logo/palsara-transparent.webp",
   "favicon.png",
-  "node_modules/leaflet/dist/leaflet.js",
-  "node_modules/leaflet/dist/leaflet.css",
-  "node_modules/leaflet/dist/images/layers.png",
-  "node_modules/leaflet/dist/images/layers-2x.png",
-  "node_modules/leaflet/dist/images/marker-icon.png",
-  "node_modules/leaflet/dist/images/marker-icon-2x.png",
-  "node_modules/leaflet/dist/images/marker-shadow.png",
+  "node_modules/chart.js/dist/chart.umd.min.js",
 ]);
 
 function addSecurityHeaders(response, secure) {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; connect-src 'self'; font-src 'self'; frame-src 'none'",
+    "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval' https://maps.googleapis.com https://maps.gstatic.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://maps.googleapis.com https://maps.gstatic.com https://*.googleapis.com https://*.gstatic.com; connect-src 'self' https://maps.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; frame-src 'none'",
   );
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  response.setHeader("Permissions-Policy", "camera=(), microphone=()");
+  // Camera is used only by the face-check page, same origin. Kept as narrow as the app allows.
+  response.setHeader("Permissions-Policy", "camera=(self), microphone=()");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
@@ -47,6 +58,9 @@ export function createExpressApp({
   uploadsDir,
   mailerState,
   smtpSettingsKey,
+  googleMapsApiKey,
+  ocrClient,
+  faceppClient,
   handleApi,
   HttpError,
   logError,
@@ -65,6 +79,9 @@ export function createExpressApp({
       uploadsDir,
       mailerState,
       smtpSettingsKey,
+      googleMapsApiKey,
+      ocrClient,
+      faceppClient,
     },
   });
   app.use(async (request, response, next) => {
@@ -102,7 +119,8 @@ export function createExpressApp({
       response.writeHead(200, {
         "Content-Length": body.length,
         "Content-Type": CONTENT_TYPES[path.extname(filename)] || "application/octet-stream",
-        "Cache-Control": filename === "index.html" ? "no-cache" : "public, max-age=300",
+        "Cache-Control":
+          filename === "index.html" || filename === "styles.css" || filename.startsWith("app/") ? "no-cache" : "public, max-age=300",
       });
       response.end(request.method === "HEAD" ? undefined : body);
     } catch (error) {
@@ -165,7 +183,9 @@ export function createExpressApp({
       return;
     }
     if (error instanceof HttpError) {
-      sendJson(response, error.status, { error: error.message });
+      const payload = { error: error.message };
+      if (error.code) payload.code = error.code;
+      sendJson(response, error.status, payload);
       return;
     }
     if (error.type === "entity.too.large") {

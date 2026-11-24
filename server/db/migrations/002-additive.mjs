@@ -72,6 +72,7 @@ WHERE resolution_deadline IS NULL;`,
     `ALTER TABLE activities ADD COLUMN IF NOT EXISTS client_ip text NOT NULL DEFAULT '';`,
     `ALTER TABLE activities DROP CONSTRAINT IF EXISTS activities_role_check;`,
     `ALTER TABLE activities ADD CONSTRAINT activities_role_check CHECK (role IN ('resident', 'official', 'administrator', 'system'));`,
+    // shortcut: legacy inline photo bytes are discarded; the app stores photos as files, and an upgrade script would be needed to convert them
     `ALTER TABLE report_photos DROP COLUMN IF EXISTS data_url;`,
     `UPDATE report_history history SET actor_name=reports.name, actor_role='resident'
   FROM reports WHERE history.report_id=reports.id AND history.position=0 AND history.actor_name='';`,

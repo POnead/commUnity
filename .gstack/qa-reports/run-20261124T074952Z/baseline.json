@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-24",
+  "url": "http://127.0.0.1:8768",
+  "healthScore": 99,
+  "issues": [
+    {
+      "id": "QA-A01",
+      "title": "Nav badge count concatenated to label without separator (Lighthouse label-content-name-mismatch)",
+      "severity": "low",
+      "category": "Accessibility"
+    }
+  ],
+  "categoryScores": {
+    "Console": 100,
+    "Links": 100,
+    "Functional": 100,
+    "Accessibility": 97
+  }
+}

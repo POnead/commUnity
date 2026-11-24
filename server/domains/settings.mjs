@@ -2,6 +2,7 @@ import { HttpError, requireJsonBody, sendJson } from "../platform/http.mjs";
 import { requireRole } from "../platform/session.mjs";
 import { encryptSettings } from "../platform/crypto.mjs";
 import { createMailer, publicSmtpSettings } from "../platform/email.mjs";
+import { buildSmtpTestEmail } from "../platform/email-template.mjs";
 
 export async function handleSettings(request, response, db, options, user) {
   const { mailerState, smtpSettingsKey } = options;
@@ -44,7 +45,6 @@ export async function handleSettings(request, response, db, options, user) {
       [encryptSettings(settings, smtpSettingsKey)],
     );
     mailerState.settings = settings;
-    // shortcut: the in-memory mailer is per-process; other instances keep the settings they loaded at boot until restart, and the Database row is only re-read at boot. Upgrade path: reload-and-compare on a timer if SMTP changes become routine.
     mailerState.mailer = createMailer({
       smtpHost: settings.host,
       smtpPort: settings.port,
@@ -52,7 +52,7 @@ export async function handleSettings(request, response, db, options, user) {
       smtpPass: settings.pass,
       smtpFrom: settings.from,
     });
-    sendJson(response, 200, { settings: publicSmtpSettings(settings) });
+    sendJson(response, 200, { settings: publicSmtpSettings(settings), restartRequired: Boolean(mailerState.shared) });
     return true;
   }
   if (url.pathname === "/api/settings/smtp" && request.method === "DELETE") {
@@ -62,18 +62,24 @@ export async function handleSettings(request, response, db, options, user) {
     await db.query("DELETE FROM app_settings WHERE key='smtp'");
     mailerState.settings = { host: "", port: "", user: "", pass: "", from: "" };
     mailerState.mailer = null;
-    sendJson(response, 200, { settings: publicSmtpSettings(null) });
+    sendJson(response, 200, { settings: publicSmtpSettings(null), restartRequired: Boolean(mailerState.shared) });
     return true;
   }
   if (url.pathname === "/api/settings/smtp/test" && request.method === "POST") {
     requireRole(user, ["administrator"]);
     if (!mailerState.mailer) throw new HttpError(400, "Save complete SMTP settings before sending a test email.");
     try {
+      const testMail = buildSmtpTestEmail({
+        from: mailerState.settings.from,
+        host: mailerState.settings.host,
+        port: mailerState.settings.port,
+      });
       await mailerState.mailer.sendMail({
         from: mailerState.settings.from,
         to: user.email,
-        subject: "CommUnity SMTP test",
-        text: "CommUnity successfully sent this test email.",
+        subject: testMail.subject,
+        text: testMail.text,
+        html: testMail.html,
       });
     } catch (error) {
       const detail = String(error?.message || "The mail server rejected the message.").slice(0, 200);

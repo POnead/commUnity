@@ -5,12 +5,19 @@ import { appDateISO } from "../platform/time.mjs";
 import { insertNotification } from "./notifications.mjs";
 import { insertActivity } from "./activity.mjs";
 import { queueEmail } from "../platform/email.mjs";
+import {
+  buildAnnouncementApprovalEmail,
+  buildAnnouncementDecisionEmail,
+  buildEventApprovalEmail,
+  buildEventDecisionEmail,
+} from "../platform/email-template.mjs";
 import { sendStateResponse } from "./state.mjs";
+import { isWithinPalsaraBounds, validCoordinates } from "../../shared/community-map.mjs";
 // Announcements and calendar events are one feature area: officials propose,
 // administrators approve, residents see what is approved. They share the same
 // approval workflow and the same notification fan-out.
 
-function validateAnnouncement(body) {
+function validateAnnouncement(body, { allowPast = false } = {}) {
   const date = typeof body.date === "string" ? new Date(`${body.date}T00:00:00Z`) : new Date(Number.NaN);
   if (
     typeof body.title !== "string" ||
@@ -26,20 +33,12 @@ function validateAnnouncement(body) {
   ) {
     throw new HttpError(400, "Enter a title, message, and valid announcement date.");
   }
+  if (!allowPast && body.date < appDateISO()) throw new HttpError(400, "An announcement cannot be scheduled before today.");
   const isEvent = body.isEvent === true;
   if (!isEvent) return { isEvent: false, latitude: null, longitude: null };
   const { latitude, longitude } = body;
-  if (
-    typeof latitude !== "number" ||
-    !Number.isFinite(latitude) ||
-    latitude < -90 ||
-    latitude > 90 ||
-    typeof longitude !== "number" ||
-    !Number.isFinite(longitude) ||
-    longitude < -180 ||
-    longitude > 180
-  ) {
-    throw new HttpError(400, "Choose a map location for this event announcement, or turn off the event option.");
+  if (!validCoordinates(latitude, longitude) || !isWithinPalsaraBounds(latitude, longitude)) {
+    throw new HttpError(400, "Choose a map location within the Palsara, Balete area, or turn off the event option.");
   }
   return { isEvent: true, latitude, longitude };
 }
@@ -66,15 +65,8 @@ function validateCalendarEvent(body) {
   const lngProvided = body.longitude !== undefined && body.longitude !== null && body.longitude !== "";
   if (latProvided !== lngProvided) throw new HttpError(400, "Enter both the map location coordinates, or neither.");
   if (latProvided) {
-    if (
-      !Number.isFinite(latitude) ||
-      latitude < -90 ||
-      latitude > 90 ||
-      !Number.isFinite(longitude) ||
-      longitude < -180 ||
-      longitude > 180
-    ) {
-      throw new HttpError(400, "Enter valid event location coordinates.");
+    if (!validCoordinates(latitude, longitude) || !isWithinPalsaraBounds(latitude, longitude)) {
+      throw new HttpError(400, "Enter event location coordinates within the Palsara, Balete area.");
     }
   }
 }
@@ -93,6 +85,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       throw new HttpError(400, "Choose a valid announcement decision.");
     }
     if (status === "declined" && (!reason || reason.length > 500)) throw new HttpError(400, "A rejection reason is required.");
+    const decisionMails = [];
     await withTransaction(db, async (transaction) => {
       const db = transaction;
       const found = await db.query(
@@ -121,15 +114,18 @@ export async function handleAnnouncements(request, response, db, options, user) 
             ? `Your announcement "${item.title}" was declined. Reason: ${reason}`
             : `Your announcement "${item.title}" was approved and published.`;
         await insertNotification(db, item.creatorEmail, title, text);
-        queueEmail(mailerState?.mailer, {
+        const decisionMail = buildAnnouncementDecisionEmail({ title: item.title, approved: status === "approved", reason, appOrigin });
+        decisionMails.push({
           from: mailerState?.settings?.from,
           to: item.creatorEmail,
-          subject: title,
-          text: `${text}\n\nView it in CommUnity: ${appOrigin || ""}/#/official/announcements`,
+          subject: decisionMail.subject,
+          text: decisionMail.text,
+          html: decisionMail.html,
         });
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
+    for (const message of decisionMails) queueEmail(mailerState?.mailer, message);
     await sendStateResponse(response, db, user);
     return true;
   }
@@ -139,15 +135,20 @@ export async function handleAnnouncements(request, response, db, options, user) 
       throw new HttpError(403, "Announcement management is not enabled for this role.");
     requireJsonBody(request);
     const body = request.body;
+    const approvalMails = [];
     await withTransaction(db, async (transaction) => {
       const db = transaction;
       if (request.method === "DELETE") {
         if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
+        const found = await db.query('SELECT created_by AS "createdBy" FROM announcements WHERE id=$1', [Number(body.id)]);
+        if (!found.rows.length) throw new HttpError(404, "This announcement could not be found.");
+        if (user.role === "official" && found.rows[0].createdBy !== user.id)
+          throw new HttpError(403, "You can only remove announcements you submitted.");
         const deleted = await db.query("DELETE FROM announcements WHERE id=$1", [Number(body.id)]);
         if (!deleted.rowCount) throw new HttpError(404, "This announcement could not be found.");
         await insertActivity(db, user, "Removed an announcement", `Announcement ${body.id}`);
       } else {
-        const location = validateAnnouncement(body);
+        const location = validateAnnouncement(body, { allowPast: request.method === "PUT" });
         if (request.method === "POST") {
           const approvalStatus = user.role === "official" ? "pending" : "approved";
           await db.query(
@@ -171,6 +172,12 @@ export async function handleAnnouncements(request, response, db, options, user) 
           );
           if (approvalStatus === "pending") {
             const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+            const approvalMail = buildAnnouncementApprovalEmail({
+              authorName: user.name,
+              title: body.title.trim(),
+              date: body.date,
+              appOrigin,
+            });
             for (const account of admins.rows) {
               await insertNotification(
                 db,
@@ -178,16 +185,25 @@ export async function handleAnnouncements(request, response, db, options, user) 
                 "Announcement needs approval",
                 `${user.name} submitted “${body.title.trim()}” for ${body.date}.`,
               );
-              queueEmail(mailerState?.mailer, {
+              approvalMails.push({
                 from: mailerState?.settings?.from,
                 to: account.email,
-                subject: "Announcement needs approval",
-                text: `${user.name} submitted "${body.title.trim()}" for ${body.date}.\n\nReview it in CommUnity: ${appOrigin || ""}/#/administrator/approvals`,
+                subject: approvalMail.subject,
+                text: approvalMail.text,
+                html: approvalMail.html,
               });
             }
           }
         } else {
           if (typeof body.id !== "string" || !/^\d+$/.test(body.id)) throw new HttpError(400, "Choose a valid announcement.");
+          const found = await db.query('SELECT created_by AS "createdBy", approval_status AS "approvalStatus" FROM announcements WHERE id=$1', [
+            Number(body.id),
+          ]);
+          if (!found.rows.length) throw new HttpError(404, "This announcement could not be found.");
+          const item = found.rows[0];
+          if (user.role === "official" && item.createdBy !== user.id)
+            throw new HttpError(403, "You can only edit announcements you submitted.");
+          // Any official edit returns the item to review, even an approved one, so changes cannot bypass approval.
           const repending = user.role === "official" ? ",approval_status='pending',decline_reason=''" : "";
           const updated = await db.query(
             `UPDATE announcements SET title=$1,detail=$2,date=$3,is_event=$4,latitude=$5,longitude=$6${repending} WHERE id=$7`,
@@ -199,6 +215,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
+    for (const message of approvalMails) queueEmail(mailerState?.mailer, message);
     await sendStateResponse(response, db, user);
     return true;
   }
@@ -209,6 +226,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
     requireJsonBody(request);
     validateCalendarEvent(request.body);
     const approvalStatus = user.role === "official" ? "pending" : "approved";
+    const eventApprovalMails = [];
     await withTransaction(db, async (transaction) => {
       const db = transaction;
       const title = request.body.title.trim();
@@ -227,6 +245,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       );
       if (approvalStatus === "pending") {
         const admins = await db.query("SELECT email FROM users WHERE role='administrator' AND status='Active'");
+        const approvalMail = buildEventApprovalEmail({ authorName: user.name, title, date: request.body.date, appOrigin });
         for (const account of admins.rows) {
           await insertNotification(
             db,
@@ -234,16 +253,18 @@ export async function handleAnnouncements(request, response, db, options, user) 
             "Calendar event needs approval",
             `${user.name} requested “${title}” on ${request.body.date}.`,
           );
-          queueEmail(mailerState?.mailer, {
+          eventApprovalMails.push({
             from: mailerState?.settings?.from,
             to: account.email,
-            subject: "Calendar event needs approval",
-            text: `${user.name} requested "${title}" on ${request.body.date}.\n\nReview it in CommUnity: ${appOrigin || ""}/#/administrator/calendar`,
+            subject: approvalMail.subject,
+            text: approvalMail.text,
+            html: approvalMail.html,
           });
         }
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
+    for (const message of eventApprovalMails) queueEmail(mailerState?.mailer, message);
     await sendStateResponse(response, db, user);
     return true;
   }
@@ -259,6 +280,7 @@ export async function handleAnnouncements(request, response, db, options, user) 
       throw new HttpError(400, "Choose a valid event decision.");
     }
     if (status === "declined" && (!reason || reason.length > 500)) throw new HttpError(400, "A rejection reason is required.");
+    const eventDecisionMails = [];
     await withTransaction(db, async (transaction) => {
       const db = transaction;
       const found = await db.query(
@@ -287,15 +309,24 @@ export async function handleAnnouncements(request, response, db, options, user) 
             ? `Your event “${item.title}” on ${item.date} was declined. Reason: ${reason}`
             : `Your event “${item.title}” on ${item.date} was approved.`;
         await insertNotification(db, item.creatorEmail, title, body);
-        queueEmail(mailerState?.mailer, {
+        const decisionMail = buildEventDecisionEmail({
+          title: item.title,
+          date: item.date,
+          approved: status === "approved",
+          reason,
+          appOrigin,
+        });
+        eventDecisionMails.push({
           from: mailerState?.settings?.from,
           to: item.creatorEmail,
-          subject: title,
-          text: `${body}\n\nView the calendar in CommUnity: ${appOrigin || ""}/#/official/calendar`,
+          subject: decisionMail.subject,
+          text: decisionMail.text,
+          html: decisionMail.html,
         });
       }
       await db.query("UPDATE app_meta SET revision=revision+1 WHERE id=1");
     });
+    for (const message of eventDecisionMails) queueEmail(mailerState?.mailer, message);
     await sendStateResponse(response, db, user);
     return true;
   }

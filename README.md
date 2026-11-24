@@ -10,6 +10,7 @@ server/
   handle-api.mjs           /api dispatcher: origin check, session gate, audit policy, 404
   platform/                Low-level helpers with no domain logic
     http.mjs               HttpError, sendJson, requireJsonBody, multipart parsing
+    face-match.mjs         Embedding validation and cosine-distance matching (pure)
     http-app.mjs           Express wiring: static files, security headers, error handler
     api-router.mjs         Bridges Express to the dispatcher
     db.mjs                 Pool/PGlite connection, withTransaction()
@@ -25,6 +26,7 @@ server/
   domains/                 One module per domain; each owns its routes and queries
     auth.mjs               Sign-in, registration, password reset, recovery
     users.mjs              Accounts, profile, profile photos, working hours
+    verification.mjs       ID submission/review and face enrollment/duty check
     state.mjs              The /api/state sync engine (read/role-scoped save)
     reports.mjs            Concerns: validation, priority/SLA endpoints, photos
     service-targets.mjs    Response vs. resolution targets, service cycles, overdue flags
@@ -40,12 +42,14 @@ server/
 app/
   main.mjs                 Composition root: boots the app, routes, event listeners
   core.mjs                 State, data loading, saving, live updates, shared helpers
+  face-capture.mjs         Lazy face-api loader, liveness sequence, photo fallback
+  vendor/                  Self-hosted face-api bundle and its model weights
   views.mjs                Page renderers and markup builders
-  map.mjs                  Leaflet map pickers, pin rendering, event maps, and map state
+  map.mjs                  Google Maps pickers, pin rendering, event maps, and map state
   constants.mjs            Pure constants (roles, statuses, permissions, defaults)
 ```
 
-The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. Tests live in `test/` — shared fixtures in `test/helpers.mjs`, `test/frontend-stubs.mjs` provides a minimal DOM for importing the real modules, one file per area (`reports`, `users`, `security`, `schedules`, `announcements`, `activity`, `maintenance`, `state`, `platform`, `frontend`, `service-targets`), plus `postgres-migration.test.mjs` (migrations against embedded PostgreSQL). `npm test` runs everything; `npm run test:e2e` runs the Playwright browser suite in `test/e2e/`.
+The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP.
 
 ## Run locally
 
@@ -68,17 +72,49 @@ After startup, open the website link printed in the terminal (by default, [http:
 
 Resident accounts can register in the portal. Administrators can create official and other accounts. There are no shared demonstration passwords.
 
-### Optional keyless map pin picker
+To reset the password for an existing active administrator, stop the server first. In PowerShell, enter and confirm the new password at the masked prompts:
 
-Resident concern reports can include an optional interactive map pin in addition to the required barangay, area, and street or landmark. The map uses Leaflet and OpenStreetMap tiles, so it does not need a Google Maps API key. Residents can click the map or drag the pin; they can still submit without coordinates. Residents see their saved pin in their report details. Officials see a saved pin in the concern detail. Both can optionally open directions in Google Maps; administrators can open saved pins using Google Maps. No device location permission or address-search service is used.
+```powershell
+.\scripts\reset-administrator-password.ps1 -Email "admin@example.com"
+```
 
-Announcements can be marked as events. When the event option is on, officials and administrators must place a map pin for the event location before publishing; turning the option off removes the pin and saves the announcement as a normal notice. Residents see an event badge and can open the saved pin on an inline map, with a Google Maps link as a fallback.
+The command only resets a matching active administrator account, invalidates that account's existing sessions, and does not print the password. Choose a unique password of at least 8 characters. Restart the server after the reset.
 
-Map tiles are loaded from the public OpenStreetMap tile service and require an internet connection. Keep the visible OpenStreetMap attribution on the map and follow the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/); the public tile service is not intended for offline caching or bulk/high-volume use. The coordinates and text location remain part of the CommUnity report if tiles are temporarily unavailable.
+### Optional Palsara map pin picker
+
+Resident concern reports can include an optional interactive map pin in addition to the required barangay, area, and street or landmark. All map surfaces use the Google Maps JavaScript API with a key set in `GOOGLE_MAPS_API_KEY`; residents can click the map or drag the pin, and can still submit without coordinates. Residents see their saved pin in their report details. Officials see a saved pin in the concern detail. Both can optionally open directions in Google Maps. No address-search service is used.
+
+Submitting a concern requires the device to report a location inside Palsara. On the report page the app checks the browser's geolocation permission and shows a location card: it stays neutral while prompting or checking, confirms when the device is in the barangay, and blocks submission when the device is outside, the reading is too uncertain near the boundary, or location is denied or unavailable. The map pin only marks where the incident happened and can never override the device check. No device coordinates are stored with the report; the permission prompt is triggered by the resident clicking **Allow location**, never on page load. Residents who cannot share a location can use the Barangay hotlines link instead.
+
+Browser geolocation requires a secure context, so this gate works on `http://127.0.0.1` for local development and needs HTTPS in production. It is a user-experience guard, not proof of presence: browser location can be spoofed, and the server continues to validate only map pins.
+
+The map view is framed to the Palsara barangay polygon stored in `shared/palsara-boundary.mjs`. Google Maps can only hard-bound the camera to that polygon's bounding rectangle (`strictBounds`), so pins are also checked against the polygon itself in the browser and again on the server — a point inside the rectangle but outside Palsara is rejected. The outline was traced from a reference image and is **approximate**; replace it with official GeoJSON/KML coordinates when available. It is an operational limit, not a verified legal boundary. Managed location pins, report pins, and event pins use the same limit. Restrict the API key by HTTP referrer and to the Maps JavaScript API in Google Cloud; the key is delivered to signed-in users through `/api/map-config` and is never baked into static HTML.
+
+Announcements can be marked as events. When the event option is on, officials and administrators must place a map pin within the configured service area before publishing; turning the option off removes the pin and saves the announcement as a normal notice. Residents see an event badge and can open the saved pin on an inline map, with a Google Maps link as a fallback.
+
+The maps need an internet connection. If the key is missing or the Maps script cannot load, the map areas show an unavailable message and the text location fields still work — the coordinates and text location remain part of the report either way.
+
+### Concern references and other IDs
+
+Every concern gets one short, stable reference — `R-0001`, `R-0002`, and so on — assigned by the server when it is first submitted. It is the number shown in the resident dashboard, My Reports, the official queue, assigned concerns, report history, CSV exports, notifications, and emails, and it is searchable in each of those lists. The reference never changes when a concern is edited, assigned, resolved, or reopened; deleting a concern retires its number, so gaps are normal.
+
+Existing concerns were numbered oldest-first by submission time when the reference column was introduced. Internally the portal still uses its original opaque id for uploads, links, and database keys, so older saved links keep working; searching either the short reference or the internal id finds the same concern.
+
+Other visible records use one clear prefix each: hotline correction requests show `HC-001` (based on their numeric id). Accounts are identified by email, and schedules, announcements, locations, recycling listings, notifications, activity entries, photos, and sessions keep opaque internal ids that are never shown or searched as numbers.
 
 ### Confirmation prompts
 
 Signing out and every action that saves, updates, approves, declines, deactivates, resets, or removes data asks for confirmation first. Canceling leaves the data and any open form unchanged. Read-only actions such as navigation, filtering, and viewing details do not prompt.
+
+### Identity verification
+
+Identity checks are optional. The on-device matcher is self-hosted, and Face++ face matching is enabled automatically when `FACEPP_API_KEY` and `FACEPP_API_SECRET` are configured. OCR ID prefill (OCR.space) turns on automatically when `OCR_API_KEY` is set; an administrator can still disable it in **Settings → Verification**. `npm start` loads `.env` automatically (`node --env-file-if-exists=.env server/index.mjs`), so credentials do not need to be exported manually. Sending an image to a provider happens only when that aid is enabled.
+
+- **Resident ID verification:** a resident can attach a front (and optional back) photo of a PhilSys, driver's license, passport, UMID, voter's, postal, SSS or PhilHealth ID from their profile, with explicit consent. The number stays text so leading zeros survive. The resident sees a preview of both sides as soon as each photo is chosen and can view the stored front and back on their profile; only the account owner or an administrator can open them. An administrator reviews the image in **ID reviews**, then approves or rejects it with a reason. Only after approval does the "ID verified" badge appear on the resident's profile and beside their name on concerns staff view. Duplicate numbers across pending and verified records are refused. Residents and administrators can permanently delete the image and details; both actions are recorded in the activity log. Self-reported fields are never silently rewritten.
+- **Official face duty check:** officials enroll a face from their profile's **Face check** page. MediaPipe FaceLandmarker (vendored locally) supplies 478 landmarks and blink blendshapes for a front → blink → left → right → front sequence; every stage requires sustained frames, so a single noisy frame cannot skip it. The browser also derives a 128-number descriptor; no face photo is stored. When Face++ is enabled the final JPEG is sent for a face token and compared on the server; otherwise the on-device descriptors are compared with a cosine-distance threshold (default `0.033`). A rolling duty window defaults to 9 hours. While the duty check is enabled, every write from an official is refused with 403 and the browser sends them back to the face-check page. Officials must enroll a face before they can use the account: after entering their password, an official whose duty window has expired (or who has not enrolled) lands on a full-screen face-gate page with no workspace navigation; the API session stays restricted to the check and sign-out until it succeeds. A fresh check opens the workspace directly. Administrators are exempt. The live camera is required — there is no photo fallback.
+- **Face check at sign-in** defaults on when Face++ keys are configured, independently of the **Face duty check** toggle that gates writes. Both, plus the duty hours and match threshold, can be changed under **Settings → Verification**. An administrator can clear any official's face reference from **User Management** with a mandatory reason.
+- Camera access needs a secure context: `http://127.0.0.1` (the default local address) or HTTPS. On a plain-HTTP LAN address browsers block `getUserMedia`, so the face check cannot run there. The face library, face-api model weights, MediaPipe wasm and `face_landmarker.task` are committed under `app/vendor/` and served locally; no CDN is contacted. MediaPipe needs `'wasm-unsafe-eval'` in the CSP, which is set by the server.
+- **Third-party aids:** Face++ face matching turns on automatically when its keys are present; an administrator can still disable it in **Settings → Verification** and set the confidence threshold (default `80`, range `50–99`). Officials enrolled before Face++ was enabled must re-enroll so Face++ tokens exist. OCR ID prefill (OCR.space) turns on when its key is configured and can be disabled in Settings. Either aid sends the relevant image to the provider, so complete the privacy review first (including the Philippine Data Privacy Act). The dialog guides the resident through three steps — Scan ID, Check details, Submit. Adding an ID (camera or upload) previews and attaches the image; pressing **Continue** then runs OCR.space to read the letters, shows a loading state, compares what was read with the account name and the form fields, and loads **Check details** with the ID type, number, name and birth date already written. The name comparison is token-tolerant so a missing middle name still passes, while a conflicting name, number or date is marked FAIL. The resident can still correct any field at the check step before submitting. An optional selfie is compared with the ID photo through Face++; if no face is found or the check cannot run, the name check is used instead and the result is labelled name-only. A PASS / NEEDS REVIEW badge lists the checks that used the same validation as submission (image readable, all four details found, number and date formats, name match, no duplicate). It checks the details on the card, not whether the document is genuine — an administrator still reviews every ID. Scanning and continuing do not require consent; the consent checkbox is confirmed at the final submit step, which is where the server requires it. Setting `OCR_API_KEY`, `FACEPP_API_KEY`, and `FACEPP_API_SECRET` is required before the matching toggle can be saved; `FACEPP_API_BASE` selects a regional Face++ endpoint — use `api-us.faceplusplus.com` for US accounts, `api-cn.faceplusplus.com` for China accounts and `api.faceplusplus.com` for international accounts; a wrong region returns 403 even with valid keys.
 
 ### Concern priority and follow-up limits
 
@@ -162,26 +198,9 @@ Deploy this Node.js project on a host that supports Node.js and connect a manage
 Use `npm install` as the build/install command and `npm start` as the start command. The first startup creates a clean database schema and the initial administrator. After verifying that account can sign in, remove the initial administrator secrets from the deployment environment. The bootstrap credentials are only used when the database has no active administrator.
 The `/api/healthz` endpoint checks database readiness. Configure the hosting provider's health check against this path. Set `PG_POOL_MAX` to fit the database connection budget across all app instances. Only set `TRUSTED_PROXY_IPS` when the service is reachable exclusively through those trusted proxies and they replace client-supplied forwarding headers.
 
-SMTP settings saved from the website take effect on the instance that saved them immediately. Other instances keep the settings they loaded at boot until they restart — either restart every instance after saving SMTP settings, or configure the SMTP values as environment variables on every instance instead of saving them in the UI.
+With a shared database, SMTP settings saved from the website take effect only after every instance is restarted; the save response says so. SMTP environment variables apply only while no SMTP settings row has been saved: a saved row always takes precedence over them. Delete the saved row first (or restart every instance) for environment-variable changes to take effect. On a local single-process database, saved settings apply immediately. A shared database requires `SMTP_SETTINGS_KEY` at boot so every instance can decrypt the saved credentials.
 
 A managed database is verified only with a public CA by default. Providers that issue their own private certificate will not be trusted until `DATABASE_CA` (or the process-wide `NODE_EXTRA_CA_CERTS`) is set.
-
-### Deployment rehearsals
-
-The database backups, the mail path, photo storage, and simultaneous use are all rehearsed against throwaway infrastructure rather than asserted in prose:
-
-```powershell
-npm run rehearse:restore       # pg_dump & pg_restore against a fresh database, then verify every table
-npm run verify:smtp            # production server delivers mail over verified STARTTLS against a local SMTP server
-npm run verify:photo-persistence # photos survive a redeploy with the uploads directory intact, and 404 with it empty
-npm run rehearse:concurrency   # simultaneous reads, submissions, photo uploads, approvals, and claims
-```
-
-Run them after a schema change and before a release that touches persistence, mail, or shared state. CI runs all four on every push and pull request (the `rehearsals` job in `.github/workflows/ci.yml`). `rehearse:restore` needs `pg_dump`/`pg_restore` matching the cluster's major version — CI installs PostgreSQL 18's client tools for it. `verify:smtp` and `rehearse:concurrency` need openssl; they resolve a working `openssl` binary (PATH lookup first, then common install locations such as Git for Windows and Homebrew) before failing.
-
-### Verify the mail delivery path
-
-`npm run verify:smtp` boots the application in production mode against a TLS-verified local PostgreSQL and an SMTP server with STARTTLS and a dedicated CA, then confirms the administrator's test email and a password-recovery mail actually reach the wire with TLS and authentication. It proves the mail path (TLS, auth, message construction) — not any particular provider's acceptance; a provider still needs its own credentials and a real recipient to confirm deliverability. Requires Node and a working `openssl` binary (resolved from PATH or from common install locations such as Git for Windows).
 
 ### Persistent photo storage
 
@@ -209,21 +228,11 @@ Upgrading an existing deployment applies the schema changes at startup and recov
 
 ## Backups
 
-Rehearse a restore before real resident records live in this database.
+Verify a restore before real resident records live in this database.
 
-- **Managed PostgreSQL:** take a logical dump with `pg_dump` (for example `pg_dump --format=custom --file=backup.dump "$DATABASE_URL"`) and restore with `pg_restore` into a fresh database before going live and after every meaningful schema change. A restore into a migrated database is safe as long as the migration-owned seed rows (`schema_migrations`, `app_meta`, `role_permissions`, `community_locations`) are matched on conflict rather than duplicated. The rehearsed restore procedure recovers a logical dump into a freshly migrated database and verifies the row count of every public table.
+- **Managed PostgreSQL:** take a logical dump with `pg_dump` (for example `pg_dump --format=custom --file=backup.dump "$DATABASE_URL"`) and restore with `pg_restore` into an **empty** database before going live and after every meaningful schema change. Do not restore into a database where migrations already ran: `pg_restore` does not use `ON CONFLICT`, so its `CREATE TABLE` statements fail against an existing schema. Restore into an empty database, then run the startup migration and verify the row count of every public table.
 - **Local PGlite:** the database lives entirely in `data/pglite/`. Stop the server, copy the directory to backup storage, and restore by stopping the server and replacing the directory with the backup copy. Do not copy the directory while the server is running.
 - **Uploaded photos:** are stored in `data/uploads/` (or `UPLOADS_DIR`), not in either database, and need their own backup. Photo backups must be restored alongside the matching database.
-
-The same round trip — dump, restore into a fresh database, then verify every table — is automated against a throwaway PostgreSQL 18 cluster:
-
-```powershell
-# pg_dump/pg_restore must be on PATH, or point PG_BIN at the PostgreSQL bin directory.
-$env:PG_BIN = "C:\Program Files\PostgreSQL\18\bin"
-npm run rehearse:restore
-```
-
-It seeds a representative row set, takes a custom-format dump, restores it into an empty database, reruns the startup migration, and fails if any table's row count or content checksum differs. Run it after a schema change and before the first real deployment.
 
 ## Security notes
 
@@ -238,25 +247,15 @@ It seeds a representative row set, takes a custom-format dump, restores it into 
 - Password recovery uses 15-minute single-use reset tokens. A recovery email only authorizes a reset once the account owner has confirmed it through the emailed verification link; an unconfirmed address is never used to authorize recovery. Reset requests are limited per client address and per recovery address, held back by a short resend cooldown, and a repeat request never cancels a link that was already sent.
 - The monitoring page summarizes the latest loaded database records; it is not external uptime monitoring or a security audit. Use `/api/healthz` for provider readiness checks and forward the server's structured error logs to an operational logging service.
 - Security headers include a restrictive Content Security Policy. The local server refuses non-loopback binds unless it is configured with a managed database and HTTPS origin.
-- The report map uses OpenStreetMap's public tile service without an API key; follow its attribution and usage policy.
+- The maps use the Google Maps JavaScript API with `GOOGLE_MAPS_API_KEY`. Restrict that key to the Maps JavaScript API and to the deployment's HTTP referrers; a demo key is acceptable for local development only. The server delivers the key only to signed-in sessions through `/api/map-config`.
 - Resident sign-up is not email-verified. Do not treat an account email address as a verified identity. A recovery email becomes usable for password recovery only after the owner confirms it, and administrators can still issue a reset directly when a resident cannot receive mail.
+- Identity verification data is local to this deployment by default: ID images are served through session-authenticated routes that allow only the account owner (front and back) or an administrator (review queue), face enrollment stores only a numeric descriptor, and no external vendor receives either. Opting into OCR prefill or Face++ matching sends the ID or face image to those providers; both toggles are off by default and every enable is recorded in the activity log. Verified badges mean an administrator approved a submitted document — this is not a government identity attestation, and the face duty check only discourages casual use of an unlocked staff session. If this build is used with real resident records, complete the applicable privacy review (including the Philippine Data Privacy Act), document retention and access policy, and treat both features as aids rather than certified identity services.
 - Report photos are stored as files under `UPLOADS_DIR`; the database stores only authenticated photo URLs. Only JPEG and PNG files are accepted, checked by their file signature rather than the browser's declared type, and abandoned uploads older than a day are removed by the maintenance job. Back up the directory and use a persistent volume in deployment. A large public service should later move files to private object storage.
+- A local `.env` file is loaded automatically by `npm start` and is gitignored. Never copy it into a deployment image, archive, or shared folder: it can hold live OCR.space, Face++, and Google Maps credentials. Set production secrets through the host's secret settings instead, and rotate any key that has been copied around.
 - This is not a security certification. Before using real resident records, review privacy/legal obligations, account recovery, access retention, backup/restore, monitoring, and the hosting provider's TLS, database-network, and at-rest encryption settings.
 
-Run the API, authentication, role-access, and persistence checks with:
+## Code checks
 
 ```powershell
-npm test
+npm run lint
 ```
-
-The suite runs one file at a time. Every file starts its own database and HTTP server, and running them in parallel makes Windows contend for the embedded PostgreSQL and WASM database resources, which produces false failures and occasional cleanup hangs.
-
-Browser end-to-end tests live in `test/e2e/` and drive a real Chromium through the critical paths (register, sign in, report submission with a map pin and photos, official review, notifications, reopening, announcement approval, collection schedules, and form preservation during the automatic refresh). They use a throwaway embedded database seeded by the test server, so nothing is shared between runs.
-
-```powershell
-npm install        # one-time: installs @playwright/test
-npx playwright install chromium   # one-time: downloads the browser
-npm run test:e2e
-```
-
-The e2e suite runs serially against one shared server instance on port 8799.

@@ -23,20 +23,26 @@ const nodeGlobals = {
   FormData: "readonly",
   Blob: "readonly",
   AbortController: "readonly",
+  AbortSignal: "readonly",
 };
 
 export default [
   {
-    ignores: ["node_modules/**", "data/**", "ui-screenshot/**", "pdf files/**", "logo/**", ".github/**", ".run/**"],
+    ignores: [
+      "node_modules/**",
+      "data/**",
+      "app/vendor/**",
+      "logo/**",
+      ".github/**",
+    ],
   },
   js.configs.recommended,
   {
-    files: ["server/**/*.mjs", "scripts/**/*.mjs", "*.mjs", "test/**/*.mjs"],
+    files: ["server/**/*.mjs", "scripts/**/*.mjs", "*.mjs"],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: "module",
-      // Browser globals for the expressions Playwright evaluates in page.evaluate().
-      globals: { ...nodeGlobals, document: "readonly", window: "readonly" },
+      globals: { ...nodeGlobals, document: "readonly", window: "readonly", navigator: "readonly" },
     },
     rules: {
       "no-unused-vars": ["error", { argsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_", ignoreRestSiblings: true }],
@@ -59,6 +65,7 @@ export default [
         navigator: "readonly",
         localStorage: "readonly",
         sessionStorage: "readonly",
+        atob: "readonly",
         fetch: "readonly",
         Headers: "readonly",
         Request: "readonly",
@@ -75,12 +82,18 @@ export default [
         clearTimeout: "readonly",
         requestAnimationFrame: "readonly",
         cancelAnimationFrame: "readonly",
+        performance: "readonly",
         Intl: "readonly",
         structuredClone: "readonly",
         BroadcastChannel: "readonly",
         L: "readonly",
+        google: "readonly",
         CustomEvent: "readonly",
         Event: "readonly",
+        AbortController: "readonly",
+        AbortSignal: "readonly",
+        DOMException: "readonly",
+        DataTransfer: "readonly",
         alert: "readonly",
         confirm: "readonly",
         prompt: "readonly",

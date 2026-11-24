@@ -76,17 +76,30 @@ function activityLogFilters(url) {
     return value;
   };
   const source = url.searchParams.get("source");
+  const role = url.searchParams.get("role");
   return {
     page: Math.min(Math.max(Number(url.searchParams.get("page")) || 1, 1), 100000),
     pageSize: Math.min(Math.max(Number(url.searchParams.get("pageSize")) || 25, 1), 100),
     from: date("from"),
     to: date("to"),
+    role: ["administrator", "resident", "official"].includes(role) ? role : "",
     actor: text("actor"),
     action: text("action"),
     result: text("result", 80),
     affectedId: text("affectedId"),
     source: ["current", "archived", "all"].includes(source) ? source : "all",
   };
+}
+
+// The log stores internal ids in affectedId, but people search for the short
+// reference they see on a concern. Resolve R-0001 to its internal id first.
+async function resolveActivityAffectedId(db, filters) {
+  const match = String(filters.affectedId || "")
+    .trim()
+    .match(/^R-0*(\d{1,})$/i);
+  if (!match) return;
+  const found = await db.query("SELECT id FROM reports WHERE reference=$1", [Number(match[1])]);
+  if (found.rows.length) filters.affectedId = found.rows[0].id;
 }
 
 function activityLogWhere(filters) {
@@ -98,6 +111,7 @@ function activityLogWhere(filters) {
   };
   if (filters.from) add(filters.from, "at >= ?::date");
   if (filters.to) add(filters.to, "at < (?::date + interval '1 day')");
+  if (filters.role) add(filters.role, "role = ?");
   if (filters.actor) add(filters.actor, "position(lower(?) in lower(actor)) > 0");
   if (filters.action) add(filters.action, "position(lower(?) in lower(action)) > 0");
   if (filters.result) add(filters.result, "result = ?");
@@ -127,9 +141,9 @@ export async function handleActivity(request, response, db, options, user) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/community/activity" && request.method === "GET") {
     requireRole(user, ["administrator"]);
-    if (!(await hasPermission(db, user, "viewAudit")))
-      throw new HttpError(403, "Reviewing activity history is not enabled for this role.");
+    if (!(await hasPermission(db, user, "viewAudit"))) throw new HttpError(403, "Reviewing activity history is not enabled for this role.");
     const filters = activityLogFilters(url);
+    await resolveActivityAffectedId(db, filters);
     const { where, values } = activityLogWhere(filters);
     const summary = await db.query(
       `
@@ -172,9 +186,9 @@ export async function handleActivity(request, response, db, options, user) {
   }
   if (url.pathname === "/api/community/activity/export" && request.method === "GET") {
     requireRole(user, ["administrator"]);
-    if (!(await hasPermission(db, user, "viewAudit")))
-      throw new HttpError(403, "Reviewing activity history is not enabled for this role.");
+    if (!(await hasPermission(db, user, "viewAudit"))) throw new HttpError(403, "Reviewing activity history is not enabled for this role.");
     const filters = activityLogFilters(url);
+    await resolveActivityAffectedId(db, filters);
     const { where, values } = activityLogWhere(filters);
     const rows = await db.query(
       `SELECT *, count(*) OVER () AS total_count FROM (${ACTIVITY_LOG_SOURCE}) AS log ${where} ORDER BY at DESC, id DESC LIMIT $${values.length + 1}`,

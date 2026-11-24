@@ -1,6 +1,7 @@
 import { HttpError, sendJson } from "../platform/http.mjs";
 import { jsonEqual, validId } from "../platform/validate.mjs";
 import { insertActivity } from "./activity.mjs";
+import { isWithinPalsaraBounds, validCoordinates } from "../../shared/community-map.mjs";
 
 function validateLocations(locations) {
   const areas = new Set();
@@ -22,6 +23,8 @@ function validateLocations(locations) {
       location.purok.length > 100 ||
       typeof location.landmark !== "string" ||
       location.landmark.length > 160 ||
+      ((location.latitude ?? null) === null) !== ((location.longitude ?? null) === null) ||
+      ((location.latitude ?? null) !== null && !validCoordinates(location.latitude, location.longitude)) ||
       areas.has(location.area.trim().toLowerCase()) ||
       ids.has(location.id)
     ) {
@@ -38,6 +41,12 @@ export async function syncLocations(db, oldLocations, newLocations, user) {
   const newById = new Map(newLocations.map((item) => [item.id, item]));
   for (const item of newLocations) {
     const old = oldById.get(item.id);
+    if ((!old || !jsonEqual(old, item)) && (item.latitude == null || item.longitude == null)) {
+      throw new HttpError(400, "Select a valid map pin before adding or editing a community location.");
+    }
+    if ((!old || !jsonEqual(old, item)) && item.latitude != null && !isWithinPalsaraBounds(item.latitude, item.longitude)) {
+      throw new HttpError(400, "Choose a map pin within the Palsara, Balete map area.");
+    }
     if (old && old.area !== item.area) {
       const references = await db.query(
         "SELECT EXISTS(SELECT 1 FROM users WHERE area=$1) OR EXISTS(SELECT 1 FROM reports WHERE area=$1) OR EXISTS(SELECT 1 FROM schedules WHERE area=$1) AS used",
@@ -49,12 +58,22 @@ export async function syncLocations(db, oldLocations, newLocations, user) {
     if (old && jsonEqual(old, item)) continue; // unchanged rows write no audit noise
     await db.query(
       `
-      INSERT INTO community_locations (id,area,barangay,street,purok,landmark)
-      VALUES ($1,$2,$3,$4,$5,$6)
+      INSERT INTO community_locations (id,area,barangay,street,purok,landmark,latitude,longitude)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
       ON CONFLICT (id) DO UPDATE SET area=excluded.area,barangay=excluded.barangay,
-        street=excluded.street,purok=excluded.purok,landmark=excluded.landmark
+        street=excluded.street,purok=excluded.purok,landmark=excluded.landmark,
+        latitude=excluded.latitude,longitude=excluded.longitude
     `,
-      [item.id, item.area.trim(), item.barangay.trim(), item.street.trim(), item.purok.trim(), item.landmark.trim()],
+      [
+        item.id,
+        item.area.trim(),
+        item.barangay.trim(),
+        item.street.trim(),
+        item.purok.trim(),
+        item.landmark.trim(),
+        item.latitude ?? null,
+        item.longitude ?? null,
+      ],
     );
     if (user) {
       await insertActivity(
@@ -142,7 +161,12 @@ export async function syncRecyclingLocations(db, oldLocations, newLocations, use
         ],
       );
       if (user) {
-        await insertActivity(db, user, old ? "Updated a recycling directory listing" : "Added a recycling directory listing", item.name.trim());
+        await insertActivity(
+          db,
+          user,
+          old ? "Updated a recycling directory listing" : "Added a recycling directory listing",
+          item.name.trim(),
+        );
       }
     }
   }
@@ -157,8 +181,9 @@ export async function syncRecyclingLocations(db, oldLocations, newLocations, use
 export async function handleLocations(request, response, db, _options, _user) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname === "/api/locations" && request.method === "GET") {
+    // Public directory: the signed-out landing page shows these locations.
     const locations = await db.query(
-      "SELECT id,area,barangay,street,purok,landmark FROM community_locations ORDER BY barangay,purok,street,id",
+      "SELECT id,area,barangay,street,purok,landmark,latitude,longitude FROM community_locations ORDER BY barangay,purok,street,id",
     );
     sendJson(response, 200, { locations: locations.rows });
     return true;

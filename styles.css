@@ -1502,6 +1502,7 @@ a:hover {
 .form-field {
   display: grid;
   min-width: 0;
+  align-content: start;
   gap: 7px;
 }
 

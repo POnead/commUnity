@@ -498,10 +498,9 @@ function setupProfileDirtyState() {
   const form = app.querySelector("#profile-form");
   const reset = app.querySelector("[data-profile-reset]");
   if (!form || !reset) return;
+  const initial = [...form.elements].filter((field) => field.name).map((field) => ({ field, value: field.value }));
   const sync = () => {
-    const dirty = [...form.elements].some(
-      (field) => field.name && field.type !== "file" && field.value !== field.defaultValue,
-    );
+    const dirty = initial.some(({ field, value }) => field.value !== value);
     reset.hidden = !dirty && !profilePhotoFile;
   };
   form.addEventListener("input", sync);

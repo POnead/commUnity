@@ -7690,35 +7690,35 @@ html[data-theme="resident"]
   color: #ffffff;
 }
 
-html[data-theme="resident"] .resident-profile-main > .panel-head .button {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head .button {
   border-color: rgba(255, 255, 255, 0.3);
   background: rgba(255, 255, 255, 0.14);
   color: #ffffff;
 }
 
-html[data-theme="resident"] .resident-profile-main > .panel-head .button:hover {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head .button:hover {
   background: rgba(255, 255, 255, 0.22);
 }
 
 /* The profile header carries less weight than the task form beneath it. */
-html[data-theme="resident"] .resident-profile-main > .panel-head {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head {
   border-bottom: 1px solid #c2dacb;
   background: linear-gradient(110deg, #e8f5ee 0%, #f7fcf9 100%);
 }
-html[data-theme="resident"] .resident-profile-main > .panel-head h2,
-html[data-theme="resident"] .resident-profile-main > .panel-head p {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head h2,
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head p {
   color: #064e3b;
 }
-html[data-theme="resident"] .resident-profile-main > .panel-head .panel-title-icon {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head .panel-title-icon {
   background: #d1fae5;
   color: #047857;
 }
-html[data-theme="resident"] .resident-profile-main > .panel-head .button {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head .button {
   border-color: #c2dacb;
   background: #ffffff;
   color: #064e3b;
 }
-html[data-theme="resident"] .resident-profile-main > .panel-head .button:hover {
+html[data-theme="resident"] .resident-workspace .resident-profile-main > .panel-head .button:hover {
   background: #e8f5ee;
 }
 .profile-form-actions {
@@ -9922,6 +9922,8 @@ html[data-theme="auth"] .processing-modal {
   height: 6px;
   border-radius: 50%;
   background: #f87171;
+}
+.face-video-frame[data-camera-state="live"] .face-live-dot {
   animation: face-live-pulse 1.6s ease-in-out infinite;
 }
 @keyframes face-live-pulse {

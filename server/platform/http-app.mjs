@@ -27,6 +27,7 @@ const PUBLIC_FILES = new Set([
   "assets/resident-sidebar-village.svg",
   "assets/resident-village.svg",
   "assets/fonts/inter.woff2",
+  "assets/fonts/karla-latin.woff2",
   "assets/fonts/poppins-500.woff2",
   "assets/fonts/poppins-600.woff2",
   "logo/palsara-transparent.webp",

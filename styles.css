@@ -8199,22 +8199,6 @@ html[data-theme="resident"] .resident-profile-page {
   gap: 18px;
 }
 
-/* The account summary is fixed bottom-right; keep the task content clear of it. */
-@media (min-width: 901px) {
-  html[data-theme="resident"] .resident-profile-page {
-    padding-right: 248px;
-  }
-}
-
-@media (min-width: 901px) and (max-width: 1050px) {
-  html[data-theme="resident"] .resident-profile-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  html[data-theme="resident"] .resident-profile-form .profile-field-group .form-field {
-    max-width: none;
-  }
-}
-
 html[data-theme="resident"] .resident-profile-intro {
   min-height: 112px;
   padding: 20px 22px;

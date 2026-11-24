@@ -1,0 +1,21 @@
+{
+  "revision": "15773f4d12bd142255dc89fd3e0562891b237874",
+  "runtime": "bun 1.4.3",
+  "cwd": "C:\\Users\\PrinceDeano\\Downloads\\CommUnity project",
+  "limits": [
+    "Per-probe exploration-NNN.json checkpoints were not published during this run; evidence is retained in the final report only.",
+    "Screenshots blocked: the desktop app window was not visible. Visual/layout category not scored.",
+    "No data mutations were performed: concern status updates, schedule edits, announcement publish, hotline corrections, profile changes were not exercised. Only read-only navigation and rendering were probed.",
+    "Mobile viewport emulation unavailable; responsive behaviour tested only at the current 1041px viewport (no horizontal overflow observed).",
+    "Performance trace not captured; Performance category not scored.",
+    "Lighthouse run on the dashboard only."
+  ],
+  "evidence": [],
+  "learning": [],
+  "verdict": {
+    "status": "inconclusive",
+    "open": [
+      "no evidence rows"
+    ]
+  }
+}

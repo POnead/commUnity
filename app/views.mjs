@@ -2342,6 +2342,7 @@ function residentProfilePage() {
         <div class="panel-body">
           <div class="profile-intro resident-profile-intro"><label class="profile-avatar" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}</label><div><strong>${esc(currentUser.name)}</strong><span>Resident &middot; ${esc(currentUser.area || "Palsara")}</span><span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></div></div>
           <form id="profile-form" class="form-grid resident-profile-form">
+            <h3 class="visually-hidden">Contact details</h3>
             ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
             ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email" })}
             ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}

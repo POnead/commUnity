@@ -1558,10 +1558,10 @@ export function reportPage() {
 }
 
 export function reportsPage(role, view) {
-  if (role === "administrator") return administratorReportsPage();
-  const userRows = role === "resident" ? userReports() : data.reports;
   const selection = selectedReportId ? getReport(selectedReportId) : null;
   if (selection && (role !== "resident" || selection.userEmail === currentUser.email)) return reportDetail(selection, role);
+  if (role === "administrator") return administratorReportsPage();
+  const userRows = role === "resident" ? userReports() : data.reports;
   const officialQueue = role === "official" && view === "concerns";
   const canFilter = (role === "resident" || role === "administrator") && view === "reports";
   const allowedFilters = officialQueue ? [...STATUSES.slice(0, -1)] : canFilter ? ["all", ...STATUSES] : [];

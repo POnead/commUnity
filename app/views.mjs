@@ -2283,12 +2283,15 @@ export function profilePage(role) {
   const body = `
     <div class="content-stack profile-main-stack">
       ${profileSummaryCard(role)}
-      <section class="panel">
+      <section class="panel official-profile-main">
         <div class="panel-body">
           <form id="profile-form" class="form-stack">
             <div class="section-heading"><div><h2>Personal information</h2></div></div>
             <div class="notice-bar official-duty-context"><span>Duty check</span><strong>${currentUser.faceEnrolled ? "Face reference enrolled" : "Face enrollment needed"}</strong><p class="field-help">During a duty check, barangay writes require a fresh face check. Keep your reference current in Face check below.</p></div>
-            <div class="profile-photo-field"><label class="profile-photo-control" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}<span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></label></div>
+            <div class="official-profile-intro">
+              <label class="profile-photo-control" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}</label>
+              <div><strong>${esc(currentUser.name)}</strong><span>Barangay official &middot; ${esc(currentUser.area || "Palsara")}</span><span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></div>
+            </div>
             <div class="form-grid">
               ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
               ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email", help: "Managed by your barangay administrator. Contact them to change the address you sign in with." })}

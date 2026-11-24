@@ -6714,14 +6714,6 @@ html[data-theme="official"] .panel-head h2 {
   font-weight: 600;
 }
 
-html[data-theme="official"] .official-duty-context {
-  flex-wrap: wrap;
-  align-items: baseline;
-}
-html[data-theme="official"] .official-duty-context .field-help {
-  flex-basis: 100%;
-  margin: 0;
-}
 html[data-theme="official"] .official-profile-main .panel-body {
   padding: 16px 20px 18px;
 }

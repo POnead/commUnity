@@ -272,7 +272,7 @@ export function pageTitle(role, page) {
     official: {
       dashboard: ["Barangay overview", "The latest concerns and collection activity across the community."],
       calendar: ["Calendar", "Announcements and collection schedules in one place."],
-      concerns: ["Concern queue", "Review resident reports and record the next step."],
+      concerns: ["Concern queue", ""],
       assigned: ["My assigned concerns", "Track and manage concerns assigned to you."],
       collection: ["Collection management", "Maintain schedules and post service-status changes."],
       history: ["Report history", "Review concern updates recorded by the barangay."],
@@ -942,7 +942,6 @@ export function calendarPage() {
           myRequests.length
             ? `<div class="calendar-requests">${myRequests.map(requestRow).join("")}</div>`
             : `<div class="empty-state"><strong>No requests yet</strong>Events you request appear here until the administrator reviews them.</div>`,
-          { subtitle: "Events you requested that are waiting for approval or were declined." },
         )
       : "";
 
@@ -1474,7 +1473,7 @@ export function collectionOfficial() {
         stat("Cancelled", schedules.filter((item) => item.status === "Cancelled").length, "", "danger", "close"),
         stat("Collection areas", new Set(schedules.map((item) => item.area)).size, "", "", "pin"),
       ])}
-      ${panel("Collection schedules", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search schedules</span><input class="input" type="search" data-search-input autocomplete="off" placeholder="Search schedules..."></label></div>${scheduleRows(schedules, true)}`, { subtitle: "Edit an existing schedule or add a collection", action: actionButton(`${icon("plus")} Add schedule`, "add-schedule", "small") })}
+      ${panel("Collection schedules", `<div class="toolbar"><label class="search-field">${icon("search")}<span class="visually-hidden">Search schedules</span><input class="input" type="search" data-search-input autocomplete="off" placeholder="Search schedules..."></label></div>${scheduleRows(schedules, true)}`, { action: actionButton(`${icon("plus")} Add schedule`, "add-schedule", "small") })}
     </div>`;
   return page("official", "collection", body);
 }
@@ -1571,7 +1570,7 @@ export function reportsPage(role, view) {
   const filtered = sortedReports(
     officialQueue || canFilter ? userRows.filter((report) => (activeFilter === "all" ? true : report.status === activeFilter)) : userRows,
   );
-  const subtitle = view === "history" ? "A complete record of submitted concerns and their latest updates." : pageTitle(role, view)[1];
+  const subtitle = view === "history" ? (role === "official" ? "" : "A complete record of submitted concerns and their latest updates.") : pageTitle(role, view)[1];
   const showResolvedSeparately = !canFilter || activeFilter === "all";
   const activeRows = view === "history" || !showResolvedSeparately ? filtered : filtered.filter((report) => report.status !== "Resolved");
   const resolvedRows = view === "history" || !showResolvedSeparately ? [] : filtered.filter((report) => report.status === "Resolved");
@@ -1824,14 +1823,13 @@ export function officialHotlinesPage() {
       `${hotlineDirectoryToolbar()}<div class="hotline-grid mt-16" data-hotline-results>${hotlines.length ? hotlines.map((item) => hotlineCard(item, "official")).join("") : `<div class="empty-state"><strong>No hotlines published yet</strong>Published emergency contacts will appear here.</div>`}</div><div class="empty-state hotline-no-results" hidden><strong>No matching hotlines</strong>Try a different name, number, or category.</div>`,
       {
         icon: "phone",
-        subtitle: "Check the number, then suggest a correction if something is wrong.",
         action: actionButton(`${icon("plus")} Suggest contact`, "suggest-hotline", "small"),
       },
     )}
     ${panel(
       "My correction requests",
       `${hotlineCorrectionToolbar()}<div class="records mt-16 hotline-correction-records hotline-correction-records-official" data-page-size="5" role="table" aria-label="My hotline correction requests"><div class="record-row record-head" role="row"><span role="columnheader">Request ID</span><span role="columnheader">Request Type</span><span role="columnheader">Hotline Name</span><span role="columnheader">Category</span><span role="columnheader">Date Submitted</span><span role="columnheader">Actions</span></div>${requestRows || `<div class="empty-state"><strong>No correction requests yet</strong>Corrections you submit will appear here with the administrator's decision.</div>`}</div><div class="empty-state hotline-no-results" data-correction-no-results hidden><strong>No matching requests</strong>Try changing the filters.</div>`,
-      { icon: "clipboard", subtitle: "Requests are reviewed by an administrator before the directory changes." },
+      { icon: "clipboard" },
     )}
   </div>`;
   return page("official", "hotlines", body);
@@ -2287,16 +2285,15 @@ export function profilePage(role) {
         <div class="panel-body">
           <form id="profile-form" class="form-stack">
             <div class="section-heading"><div><h2>Personal information</h2></div></div>
-            <div class="notice-bar official-duty-context"><span>Duty check</span><strong>${currentUser.faceEnrolled ? "Face reference enrolled" : "Face enrollment needed"}</strong><p class="field-help">During a duty check, barangay writes require a fresh face check. Keep your reference current in Face check below.</p></div>
             <div class="official-profile-intro">
               <label class="profile-photo-control" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}</label>
               <div><strong>${esc(currentUser.name)}</strong><span>Barangay official &middot; ${esc(currentUser.area || "Palsara")}</span><span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></div>
             </div>
             <div class="form-grid">
               ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
-              ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email", help: "Managed by your barangay administrator. Contact them to change the address you sign in with." })}
+              ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email" })}
               ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
-              ${inputField("Purok", "area", currentUser.area || "Palsara", { readonly: true, help: "Your assigned purok decides which concerns and collection updates reach you." })}
+              ${inputField("Purok", "area", currentUser.area || "Palsara", { readonly: true })}
             </div>
             <input type="file" id="profile-photo" accept="image/jpeg,image/png" class="visually-hidden">
             <div class="form-actions"><button class="button secondary small" type="button" data-profile-reset hidden>Reset</button><button class="button" type="submit">Save profile</button></div>

@@ -7700,6 +7700,33 @@ html[data-theme="resident"] .resident-profile-main > .panel-head .button:hover {
   background: rgba(255, 255, 255, 0.22);
 }
 
+/* The profile header carries less weight than the task form beneath it. */
+html[data-theme="resident"] .resident-profile-main > .panel-head {
+  border-bottom: 1px solid #c2dacb;
+  background: linear-gradient(110deg, #e8f5ee 0%, #f7fcf9 100%);
+}
+html[data-theme="resident"] .resident-profile-main > .panel-head h2,
+html[data-theme="resident"] .resident-profile-main > .panel-head p {
+  color: #064e3b;
+}
+html[data-theme="resident"] .resident-profile-main > .panel-head .panel-title-icon {
+  background: #d1fae5;
+  color: #047857;
+}
+html[data-theme="resident"] .resident-profile-main > .panel-head .button {
+  border-color: #c2dacb;
+  background: #ffffff;
+  color: #064e3b;
+}
+html[data-theme="resident"] .resident-profile-main > .panel-head .button:hover {
+  background: #e8f5ee;
+}
+.profile-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 html[data-theme="resident"] .resident-dashboard-panel .panel-body {
   padding-top: 8px;
 }
@@ -8172,6 +8199,22 @@ html[data-theme="resident"] .resident-profile-page {
   gap: 18px;
 }
 
+/* The account summary is fixed bottom-right; keep the task content clear of it. */
+@media (min-width: 901px) {
+  html[data-theme="resident"] .resident-profile-page {
+    padding-right: 248px;
+  }
+}
+
+@media (min-width: 901px) and (max-width: 1050px) {
+  html[data-theme="resident"] .resident-profile-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  html[data-theme="resident"] .resident-profile-form .profile-field-group .form-field {
+    max-width: none;
+  }
+}
+
 html[data-theme="resident"] .resident-profile-intro {
   min-height: 112px;
   padding: 20px 22px;
@@ -8203,6 +8246,26 @@ html[data-theme="resident"] .resident-profile-form {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   padding: 18px 20px 4px;
+}
+
+html[data-theme="resident"] .resident-profile-form .profile-field-group {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid #e5eee8;
+}
+
+html[data-theme="resident"] .resident-profile-form .profile-field-group h3 {
+  margin: 0 0 10px;
+  color: #064e3b;
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+html[data-theme="resident"] .resident-profile-form .profile-field-group .form-field {
+  max-width: 50%;
 }
 
 html[data-theme="resident"] .resident-profile-security-panel > .panel-head {
@@ -8706,10 +8769,10 @@ html[data-theme="resident"] .resident-workspace .resident-dashboard .resident-ho
     inset: 0;
     background: url("assets/resident-community-landscape.svg?v=12") right bottom / 100% auto no-repeat;
     -webkit-mask-image:
-      linear-gradient(90deg, rgba(0, 0, 0, 0.16) 0%, rgba(0, 0, 0, 0.22) 18%, rgba(0, 0, 0, 0.4) 38%, rgba(0, 0, 0, 0.75) 56%, #000 72%),
+      linear-gradient(90deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0.12) 18%, rgba(0, 0, 0, 0.24) 38%, rgba(0, 0, 0, 0.45) 56%, rgba(0, 0, 0, 0.72) 72%),
       linear-gradient(to top, transparent 0%, #000 10%);
     mask-image:
-      linear-gradient(90deg, rgba(0, 0, 0, 0.16) 0%, rgba(0, 0, 0, 0.22) 18%, rgba(0, 0, 0, 0.4) 38%, rgba(0, 0, 0, 0.75) 56%, #000 72%),
+      linear-gradient(90deg, rgba(0, 0, 0, 0.08) 0%, rgba(0, 0, 0, 0.12) 18%, rgba(0, 0, 0, 0.24) 38%, rgba(0, 0, 0, 0.45) 56%, rgba(0, 0, 0, 0.72) 72%),
       linear-gradient(to top, transparent 0%, #000 10%);
     -webkit-mask-composite: source-in;
     mask-composite: intersect;

@@ -6713,6 +6713,15 @@ html[data-theme="official"] .panel-head h2 {
   font-weight: 600;
 }
 
+html[data-theme="official"] .official-duty-context {
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+html[data-theme="official"] .official-duty-context .field-help {
+  flex-basis: 100%;
+  margin: 0;
+}
+
 html[data-theme="official"] .panel-body {
   padding: 12px 16px 16px;
 }

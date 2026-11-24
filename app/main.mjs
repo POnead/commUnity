@@ -510,7 +510,7 @@ function setupProfileDirtyState() {
     if (profilePhotoFile) {
       profilePhotoFile = null;
       profilePhotoPreview = null;
-      const avatar = app.querySelector(".profile-intro .avatar");
+      const avatar = app.querySelector(".profile-intro .avatar, .profile-photo-field .avatar");
       if (avatar) avatar.outerHTML = userAvatar(currentUser, "large");
     }
     sync();
@@ -711,7 +711,7 @@ export function render() {
       }
       setupProfileSummaryDrag(summaryPanel);
     }
-    if (route.role === "resident" && route.page === "profile") setupProfileDirtyState();
+    if ((route.role === "resident" || route.role === "official") && route.page === "profile") setupProfileDirtyState();
     // The browser restores <details open> across reloads; keep the profile
     // panels closed unless they were opened in this session.
     const facePanel = app.querySelector("#face-panel");

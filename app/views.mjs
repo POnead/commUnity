@@ -279,7 +279,7 @@ export function pageTitle(role, page) {
       notifications: ["Notifications", "New concerns and service updates for your team."],
       announcements: ["Announcements", "Publish service notices for residents and staff."],
       hotlines: ["Emergency hotlines", "Check published hotlines and suggest corrections to the administrator."],
-      profile: ["Your profile", "Keep your official account details up to date."],
+      profile: ["Account & verification", "Manage your official details, identity checks, and sign-in security."],
       verify: ["Face check", "Prove it is you before making changes while the duty check is on."],
     },
     administrator: {
@@ -2271,8 +2271,10 @@ function profileSummaryCard(role) {
   </section>`;
 }
 
-function passwordInput(label, name, id, autocomplete, minimum = 0) {
-  return `<div class="form-field"><label for="${id}">${esc(label)}</label><div class="password-field"><input class="input" id="${id}" name="${name}" type="password" autocomplete="${autocomplete}" ${minimum ? `minlength="${minimum}"` : ""} required><button class="password-toggle" type="button" data-action="toggle-password-field" data-target="${id}" aria-label="Show ${esc(label.toLowerCase())}">${icon("eye")}</button></div></div>`;
+function passwordInput(label, name, id, autocomplete, minimum = 0, help = "") {
+  const helpId = help ? `${id}-help` : "";
+  const describedBy = helpId ? ` aria-describedby="${helpId}"` : "";
+  return `<div class="form-field"><label for="${id}">${esc(label)}</label><div class="password-field"><input class="input" id="${id}" name="${name}" type="password" autocomplete="${autocomplete}" ${minimum ? `minlength="${minimum}"` : ""}${describedBy} required><button class="password-toggle" type="button" data-action="toggle-password-field" data-target="${id}" aria-label="Show ${esc(label.toLowerCase())}">${icon("eye")}</button></div>${helpId ? `<p class="field-help" id="${helpId}">${esc(help)}</p>` : ""}</div>`;
 }
 
 export function profilePage(role) {
@@ -2285,15 +2287,16 @@ export function profilePage(role) {
         <div class="panel-body">
           <form id="profile-form" class="form-stack">
             <div class="section-heading"><div><h2>Personal information</h2></div></div>
+            <div class="notice-bar official-duty-context"><span>Duty check</span><strong>${currentUser.faceEnrolled ? "Face reference enrolled" : "Face enrollment needed"}</strong><p class="field-help">During a duty check, barangay writes require a fresh face check. Keep your reference current in Face check below.</p></div>
             <div class="profile-photo-field"><label class="profile-photo-control" for="profile-photo" title="Change profile photo">${userAvatar(currentUser, "large")}<span class="field-help">Click your photo to change it. JPG or PNG, up to 5 MB.</span></label></div>
             <div class="form-grid">
               ${inputField("Full name", "name", currentUser.name, { required: true, autocomplete: "name" })}
-              ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email" })}
+              ${inputField("Sign-in email", "email", currentUser.email, { id: "profile-sign-in-email", readonly: true, autocomplete: "email", help: "Managed by your barangay administrator. Contact them to change the address you sign in with." })}
               ${inputField("Contact number", "phone", currentUser.phone || "", { type: "tel", autocomplete: "tel" })}
-              ${inputField("Purok", "area", currentUser.area || "Palsara", { readonly: true })}
+              ${inputField("Purok", "area", currentUser.area || "Palsara", { readonly: true, help: "Your assigned purok decides which concerns and collection updates reach you." })}
             </div>
             <input type="file" id="profile-photo" accept="image/jpeg,image/png" class="visually-hidden">
-            <div class="form-actions"><button class="button" type="submit">Save profile</button></div>
+            <div class="form-actions"><button class="button secondary small" type="button" data-profile-reset hidden>Reset</button><button class="button" type="submit">Save profile</button></div>
           </form>
         </div>
       </section>
@@ -2304,7 +2307,7 @@ export function profilePage(role) {
         <div class="panel-body"><form id="change-email-form" class="form-stack">
           <div class="form-grid">
             ${inputField("New email address", "email", "", { id: "change-email-address", required: true, type: "email", autocomplete: "email" })}
-            ${inputField("Current password", "currentPassword", "", { id: "profile-email-current-password", required: true, type: "password", autocomplete: "current-password" })}
+            ${passwordInput("Current password", "currentPassword", "profile-email-current-password", "current-password")}
           </div>
           <p class="field-help">Confirm the verification link sent to the new address.</p>
           <div class="form-actions"><button class="button secondary" type="submit">Send verification link</button></div>
@@ -2313,10 +2316,10 @@ export function profilePage(role) {
       <details class="panel profile-collapsible-panel">
         <summary class="panel-head"><div><h2>Account password</h2></div></summary>
         <div class="panel-body"><form id="password-form" class="form-stack">
-          ${inputField("Current password", "currentPassword", "", { id: "profile-current-password", type: "password", required: true, autocomplete: "current-password" })}
+          ${passwordInput("Current password", "currentPassword", "profile-current-password", "current-password")}
           <div class="form-grid">
-            ${inputField("New password", "newPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
-            ${inputField("Confirm new password", "confirmPassword", "", { type: "password", required: true, minLength: 8, autocomplete: "new-password" })}
+            ${passwordInput("New password", "newPassword", "profile-new-password", "new-password", 8, "Use at least 8 characters. A phrase with numbers or symbols is harder to guess.")}
+            ${passwordInput("Confirm new password", "confirmPassword", "profile-confirm-password", "new-password", 8)}
           </div>
           <div class="form-actions"><button class="button secondary" type="submit">Update password</button></div>
         </form></div>

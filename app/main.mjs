@@ -5372,7 +5372,7 @@ export function startCommUnity() {
       setState({ pendingReportRoute: "" });
       return;
     }
-    if (destination !== lastKnownHash) setState({ permissionDrafts: {} });
+    if (destination !== lastKnownHash) setState({ permissionDrafts: {}, modalState: null });
     if (window.location.hash !== pendingReportRoute) setState({ selectedReportId: null });
     setState({ pendingReportRoute: "" });
     // Clear any lingering toast so a validation error from one public route does

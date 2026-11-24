@@ -418,9 +418,9 @@ export function panel(title, body, options = {}) {
   return `<section class="panel ${options.className || ""}">${header}<div class="panel-body">${body}</div></section>`;
 }
 
-export function reportRows(reports, role) {
+export function reportRows(reports, role, emptyHint = "") {
   if (!reports.length && role !== "administrator")
-    return `<div class="empty-state"><strong>No concerns in this view</strong>When a report is submitted, it will appear here.</div>`;
+    return `<div class="empty-state"><strong>${emptyHint ? "No active concerns" : "No concerns in this view"}</strong>${esc(emptyHint || "When a report is submitted, it will appear here.")}</div>`;
   if (role === "resident") {
     const residentReports = [...reports].sort((a, b) => {
       const direction = residentReportSort === "oldest" ? 1 : -1;
@@ -1600,7 +1600,7 @@ export function reportsPage(role, view) {
         : searchToolbar(role === "official" && view === "history" ? "Search report activity" : undefined);
   const body = `
     <div class="content-stack">
-      ${panel(role === "official" && view === "history" ? "Report activity" : view === "history" ? "Past and current concerns" : role === "official" ? "Concern queue" : role === "resident" ? "My Reports" : "Reports", `${role === "official" && view === "history" ? "" : view === "reports" ? reportFilters(userRows, activeFilter) : officialQueue ? officialReportFilters(userRows, activeFilter) : ""}${historyControls}<div class="mt-16" data-report-table>${role === "official" && view === "history" ? reportHistoryRows(userRows, officialHistorySort) : reportRows(view === "history" ? filtered : activeRows, role)}</div>${resolvedRows.length && view !== "history" ? `<div class="section-heading mt-20"><div><h2>Resolved concerns</h2><p>${resolvedRows.length} marked as addressed</p></div></div><div data-report-table>${reportRows(resolvedRows, role)}</div>` : ""}`, { subtitle: role === "resident" && view === "reports" ? "" : subtitle, action: exportActions, className: role === "resident" && view === "reports" ? "resident-reports-panel" : "" })}
+      ${panel(role === "official" && view === "history" ? "Report activity" : view === "history" ? "Past and current concerns" : role === "official" ? "Concern queue" : role === "resident" ? "My Reports" : "Reports", `${role === "official" && view === "history" ? "" : view === "reports" ? reportFilters(userRows, activeFilter) : officialQueue ? officialReportFilters(userRows, activeFilter) : ""}${historyControls}<div class="mt-16" data-report-table>${role === "official" && view === "history" ? reportHistoryRows(userRows, officialHistorySort) : reportRows(view === "history" ? filtered : activeRows, role, resolvedRows.length ? "Resolved ones are listed below." : "")}</div>${resolvedRows.length && view !== "history" ? `<div class="section-heading mt-20"><div><h2>Resolved concerns</h2><p>${resolvedRows.length} marked as addressed</p></div></div><div data-report-table>${reportRows(resolvedRows, role)}</div>` : ""}`, { subtitle: role === "resident" && view === "reports" ? "" : subtitle, action: exportActions, className: role === "resident" && view === "reports" ? "resident-reports-panel" : "" })}
     </div>`;
   return page(role, view, body, primaryAction);
 }

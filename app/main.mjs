@@ -68,6 +68,8 @@ import {
   profileSummaryCollapsed,
   facePanelOpen,
   idPanelOpen,
+  emailPanelOpen,
+  passwordPanelOpen,
   searchQuery,
   currentRoute,
   correctionFilters,
@@ -121,6 +123,7 @@ import {
   faceGateMarkup,
   adminFaceEnrollMarkup,
   profilePage,
+  userAvatar,
   usersPage,
   rolesPage,
   photoPreviewMarkup,
@@ -491,6 +494,30 @@ function routeState() {
 // offset lives outside shared state so live-update re-renders can reapply it.
 let profileSummaryOffset = null;
 
+function setupProfileDirtyState() {
+  const form = app.querySelector("#profile-form");
+  const reset = app.querySelector("[data-profile-reset]");
+  if (!form || !reset) return;
+  const sync = () => {
+    const dirty = [...form.elements].some(
+      (field) => field.name && field.type !== "file" && field.value !== field.defaultValue,
+    );
+    reset.hidden = !dirty && !profilePhotoFile;
+  };
+  form.addEventListener("input", sync);
+  form.addEventListener("change", sync);
+  reset.addEventListener("click", () => {
+    form.reset();
+    if (profilePhotoFile) {
+      profilePhotoFile = null;
+      profilePhotoPreview = null;
+      const avatar = app.querySelector(".profile-intro .avatar");
+      if (avatar) avatar.outerHTML = userAvatar(currentUser, "large");
+    }
+    sync();
+  });
+}
+
 function setupProfileSummaryDrag(panel) {
   const handle = panel.querySelector(".profile-summary-toggle");
   if (!handle) return;
@@ -685,12 +712,17 @@ export function render() {
       }
       setupProfileSummaryDrag(summaryPanel);
     }
+    if (route.role === "resident" && route.page === "profile") setupProfileDirtyState();
     // The browser restores <details open> across reloads; keep the profile
     // panels closed unless they were opened in this session.
     const facePanel = app.querySelector("#face-panel");
     if (facePanel) facePanel.open = facePanelOpen;
     const idPanel = app.querySelector("#id-panel");
     if (idPanel) idPanel.open = idPanelOpen;
+    const emailPanel = app.querySelector("#email-change-panel");
+    if (emailPanel) emailPanel.open = emailPanelOpen;
+    const passwordPanel = app.querySelector("#password-change-panel");
+    if (passwordPanel) passwordPanel.open = passwordPanelOpen;
     if (route.role === "administrator" && route.page === "analytics") {
       initializeAnalyticsCharts(app).catch((error) => {
         console.error("Analytics charts could not be initialized.", error);
@@ -5168,6 +5200,8 @@ export function startCommUnity() {
     (toggleEvent) => {
       if (toggleEvent.target?.id === "face-panel") setState({ facePanelOpen: toggleEvent.target.open });
       if (toggleEvent.target?.id === "id-panel") setState({ idPanelOpen: toggleEvent.target.open });
+      if (toggleEvent.target?.id === "email-change-panel") setState({ emailPanelOpen: toggleEvent.target.open });
+      if (toggleEvent.target?.id === "password-change-panel") setState({ passwordPanelOpen: toggleEvent.target.open });
     },
     true,
   );

@@ -1,6 +1,14 @@
 @charset "UTF-8";
 
-/* Poppins (headings) + Inter (body) redrawn; bundled locally so the portal works offline. */
+/* Poppins (headings) + Karla (resident body) + Inter (other roles), bundled locally. */
+@font-face {
+  font-family: "Karla";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("assets/fonts/karla-latin.woff2") format("woff2");
+}
+
 @font-face {
   font-family: "Inter";
   font-style: normal;
@@ -70,8 +78,8 @@ html[data-theme="resident"] {
   --accent-soft: #d1fae5;
   --accent-wash: #e8f5ee;
   --accent-ink: #064e3b;
-  --font: "Inter", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-heading: "Poppins", "Inter", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font: "Karla", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-heading: "Poppins", "Karla", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
   --sidebar: 248px;
 }
 

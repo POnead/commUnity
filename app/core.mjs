@@ -107,6 +107,9 @@ export let profileSummaryCollapsed = false;
 export let facePanelOpen = false;
 // Kept so a live-update rebuild does not close the ID panel mid-review.
 export let idPanelOpen = false;
+// Security panels are rebuilt on save; remember which one the resident had open.
+export let emailPanelOpen = false;
+export let passwordPanelOpen = false;
 // The activity log is browsed from the server, so its page and filters live outside the shared state.
 export let activityLogState = { activities: [], total: 0, page: 1, pageSize: 25, pageCount: 1, summary: {} };
 export let activityFilters = { from: "", to: "", role: "" };
@@ -898,16 +901,24 @@ export function inputField(label, name, value = "", options = {}) {
   const required = options.required ? "required" : "";
   const readonly = options.readonly ? "readonly" : "";
   const placeholder = options.placeholder ? `placeholder="${esc(options.placeholder)}"` : "";
-  const help = options.help ? `<p class="field-help">${esc(options.help)}</p>` : "";
+  const helpId = options.help ? `${id}-help` : "";
+  const help = helpId ? `<p class="field-help" id="${esc(helpId)}">${esc(options.help)}</p>` : "";
+  const describedBy = [options.describedBy, helpId].filter(Boolean).join(" ");
+  const describedByAttr = describedBy ? ` aria-describedby="${esc(describedBy)}"` : "";
   const min = options.min === undefined ? "" : `min="${esc(options.min)}"`;
   const max = options.max === undefined ? "" : `max="${esc(options.max)}"`;
-  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${placeholder} ${min} ${max} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}>${help}</div>`;
+  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><input class="input" id="${esc(id)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" ${required} ${readonly} ${placeholder} ${min} ${max} ${describedByAttr} ${options.minLength ? `minlength="${options.minLength}"` : ""} ${options.maxLength ? `maxlength="${options.maxLength}"` : ""} ${options.autocomplete ? `autocomplete="${esc(options.autocomplete)}"` : ""}>${help}</div>`;
 }
 
 export function selectField(label, name, items, selected, options = {}) {
+  const id = options.id || name;
   const labelMap = options.labels || {};
   const required = options.required ? "required" : "";
-  return `<div class="form-field"><label for="${esc(name)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(name)}" name="${esc(name)}" ${required}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select></div>`;
+  const helpId = options.help ? `${id}-help` : "";
+  const help = helpId ? `<p class="field-help" id="${esc(helpId)}">${esc(options.help)}</p>` : "";
+  const describedBy = [options.describedBy, helpId].filter(Boolean).join(" ");
+  const describedByAttr = describedBy ? ` aria-describedby="${esc(describedBy)}"` : "";
+  return `<div class="form-field"><label for="${esc(id)}">${esc(label)}${options.required ? " *" : ""}</label><select class="select" id="${esc(id)}" name="${esc(name)}" ${required} ${describedByAttr}>${options.placeholder ? `<option value="">${esc(options.placeholder)}</option>` : ""}${items.map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(labelMap[item] || item)}</option>`).join("")}</select>${help}</div>`;
 }
 
 export function readOptionalCoordinate(value) {
@@ -1015,6 +1026,8 @@ export function setState(changes = {}) {
     profileSummaryCollapsed: (v) => (profileSummaryCollapsed = v),
     facePanelOpen: (v) => (facePanelOpen = v),
     idPanelOpen: (v) => (idPanelOpen = v),
+    emailPanelOpen: (v) => (emailPanelOpen = v),
+    passwordPanelOpen: (v) => (passwordPanelOpen = v),
   };
   for (const [key, value] of Object.entries(changes)) {
     if (!handlers[key]) throw new Error(`setState: unknown key "${key}"`);

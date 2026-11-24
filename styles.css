@@ -9158,7 +9158,7 @@ html[data-theme="resident"] .resident-workspace .resident-dashboard .resident-ho
 }
 .location-gate-footnote {
   margin: 8px 0 0;
-  color: var(--quiet);
+  color: var(--muted);
   font-size: 12px;
 }
 .location-gate-actions {

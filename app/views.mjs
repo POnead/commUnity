@@ -872,13 +872,14 @@ export function calendarPage() {
         )
         .join("");
       const more = cell.events.length > 2 ? `<span class="calendar-cell-more">+${cell.events.length - 2} more</span>` : "";
+      const eventTitles = cell.events.slice(0, 2).map((event) => event.title).join(" ");
       const detailsHint = hasEvents
         ? `, ${cell.events.length} event${cell.events.length === 1 ? "" : "s"}; double-click to view details`
         : "";
       const viewHint = hasEvents
         ? `<span class="calendar-cell-view" aria-hidden="true" title="Double-click to view event details">${icon("arrow", "calendar-cell-view-icon")}</span>`
         : "";
-      return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}${detailsHint}"><span class="calendar-day-number">${cell.day}</span>${hasEvents ? `<span class="calendar-cell-events">${cellEvents}${more}</span>` : ""}${viewHint}</button>`;
+      return `<button type="button" class="${classes}" data-action="calendar-day" data-date="${esc(cell.date)}" aria-label="${esc(hasEvents ? `${cell.day} ${eventTitles} - ${dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" })}${detailsHint}` : dateLabel(cell.date, { weekday: "long", month: "long", day: "numeric" }))}"><span class="calendar-day-number" aria-hidden="true">${cell.day}</span>${hasEvents ? ` <span class="calendar-cell-events" aria-hidden="true">${cellEvents}${more}</span>` : ""}${viewHint}</button>`;
     })
     .join("");
 
@@ -946,11 +947,11 @@ export function calendarPage() {
   const body = `
     <div class="content-stack ${isResident ? "resident-calendar-page" : ""}">
       <div class="calendar-toolbar">
-        <button type="button" class="button secondary small" data-action="calendar-prev" aria-label="Previous month">‹</button>
+        <button type="button" class="button secondary small" data-action="calendar-prev" aria-label="Previous month"><span aria-hidden="true">‹</span></button>
         <h2 class="calendar-month-title">${esc(monthNames[calendarMonth])} ${calendarYear}</h2>
-        <button type="button" class="button secondary small" data-action="calendar-next" aria-label="Next month">›</button>
+        <button type="button" class="button secondary small" data-action="calendar-next" aria-label="Next month"><span aria-hidden="true">›</span></button>
       </div>
-      <div class="calendar-grid" role="grid" aria-label="Calendar">
+      <div class="calendar-grid" aria-label="Calendar">
         <div class="calendar-weekdays">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<div class="calendar-weekday">${day}</div>`).join("")}</div>
         <div class="calendar-days">${grid}</div>
       </div>
@@ -1494,7 +1495,7 @@ export function reportFormMarkup() {
       <div class="location-gate" id="report-location-gate" data-state="prompt" role="status" aria-live="polite" aria-busy="false">
         <span class="location-gate-chip" aria-hidden="true">${icon("pin", "location-gate-icon")}</span>
         <div class="location-gate-copy">
-          <h3 class="location-gate-title" id="report-location-title" tabindex="-1">Confirm you're in Palsara</h3>
+          <h2 class="location-gate-title" id="report-location-title" tabindex="-1">Confirm you're in Palsara</h2>
           <p class="location-gate-detail" id="report-location-detail">We'll ask for your location once so we can confirm you're reporting from the barangay.</p>
           <p class="location-gate-footnote">We check your location once when you submit. We don't store it.</p>
         </div>

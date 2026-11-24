@@ -1,0 +1,13 @@
+{
+  "evidence": [],
+  "limits": [
+    "No per-probe checkpoints published; evidence lives in the final report only.",
+    "No data mutations exercised: approval/rejection, ID review decisions, account edits, settings saves, priority changes, mark-as-read, exports.",
+    "Geolocation unavailable; map pins use saved coordinates only.",
+    "Mobile viewport emulation unavailable; checked at 1056px only.",
+    "Performance trace not captured.",
+    "No test framework on this branch; no regression test added for QA-AD01.",
+    "Third-party Google Maps iframe console messages (font CSP, Marker deprecation) treated as external.",
+    "Formal evidence verdict inconclusive (no evidence rows)."
+  ]
+}

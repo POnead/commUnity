@@ -1,0 +1,22 @@
+{
+  "revision": "8b3d9179b18cb77fa776e9643c05489c07724bf6",
+  "runtime": "bun 1.4.3",
+  "cwd": "C:\\Users\\PrinceDeano\\Downloads\\CommUnity project",
+  "limits": [
+    "Per-probe exploration-NNN.json checkpoints were not published during this run; evidence is retained in the final report only.",
+    "Screenshots captured (desktop window visible) but the model cannot view images; visual evidence stored as files only.",
+    "No data mutations were performed: report submission, profile/photo updates, notification mark-as-read were not exercised. Only read-only navigation and rendering were probed.",
+    "Geolocation is unavailable in this browser environment, so the report-a-concern location gate shows its blocked state (expected).",
+    "Mobile viewport emulation unavailable; responsive behaviour tested only at the current 1056px viewport (no horizontal overflow observed).",
+    "Performance trace not captured; Performance category not scored.",
+    "Lighthouse run on dashboard, report, profile, notifications, calendar pages."
+  ],
+  "evidence": [],
+  "learning": [],
+  "verdict": {
+    "status": "inconclusive",
+    "open": [
+      "no evidence rows"
+    ]
+  }
+}

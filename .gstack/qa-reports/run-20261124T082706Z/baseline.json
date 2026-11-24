@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-24",
+  "url": "http://127.0.0.1:8768",
+  "healthScore": 100,
+  "issues": [
+    {
+      "id": "QA-O01",
+      "title": "Official profile has duplicate element ids and two unlabelled fields",
+      "severity": "medium",
+      "category": "Accessibility"
+    },
+    {
+      "id": "QA-O02",
+      "title": "Concern queue filter labelled \"All reports\" counts only open reports",
+      "severity": "low",
+      "category": "UX"
+    },
+    {
+      "id": "QA-O03",
+      "title": "Informational modal opens without moving focus into the dialog",
+      "severity": "low",
+      "category": "Accessibility"
+    },
+    {
+      "id": "QA-O04",
+      "title": "Repeated hotline action buttons have identical accessible names",
+      "severity": "low",
+      "category": "Accessibility"
+    }
+  ],
+  "categoryScores": {
+    "Console": 100,
+    "Links": 100,
+    "Functional": 100,
+    "Accessibility": 100
+  }
+}

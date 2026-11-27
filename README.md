@@ -44,12 +44,18 @@ app/
   core.mjs                 State, data loading, saving, live updates, shared helpers
   face-capture.mjs         Lazy face-api loader, liveness sequence, photo fallback
   vendor/                  Self-hosted face-api bundle and its model weights
-  views.mjs                Page renderers and markup builders
+  views.mjs                View re-exports and role dispatchers
+  views/
+    shared.mjs             Shared shell, report tables, calendar, notifications, profile/ID panels
+    resident.mjs           Resident pages
+    official.mjs           Barangay official pages
+    administrator.mjs      Administrator pages
+    auth.mjs               Sign-in, registration and face-gate screens
   map.mjs                  Google Maps pickers, pin rendering, event maps, and map state
   constants.mjs            Pure constants (roles, statuses, permissions, defaults)
 ```
 
-The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP.
+The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. `app/views.mjs` re-exports the per-account modules in `app/views/`, so callers keep importing from one path.
 
 ## Run locally
 

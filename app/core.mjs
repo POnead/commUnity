@@ -13,12 +13,11 @@ import {
   RECURRENCE_DEFAULT_MONTHS,
   MAX_RECURRENCE_OCCURRENCES,
   SCHEDULE_REASON_STATUSES,
+  ADMIN_ROLE_PERMISSION_IDS,
 } from "./constants.mjs";
-// render/isProcessing live in main.mjs and hasUnsavedPermissionChanges in views.mjs;
-// all are only invoked at runtime, so the import cycle main -> core -> main/views is
-// safe (function declarations are hoisted and call sites run post-evaluation).
+// render/isProcessing live in main.mjs; they are only invoked at runtime, so the
+// main -> core -> main cycle is safe (declarations hoist, call sites run later).
 import { render, isProcessing } from "./main.mjs";
-import { hasUnsavedPermissionChanges } from "./views.mjs";
 
 export function locationAreas() {
   return data?.locations?.map((location) => location.area) || AREAS;
@@ -88,6 +87,11 @@ export let calendarSelectedDate = "";
 export let selectedPermissionAccount = null;
 export let correctionFilters = { query: "", status: "all", type: "all", date: "all" };
 export let permissionDrafts = {};
+export function hasUnsavedPermissionChanges() {
+  return Object.entries(permissionDrafts).some(([role, draft]) =>
+    ADMIN_ROLE_PERMISSION_IDS.some((id) => draft[id] !== Boolean(data.permissions[role]?.[id])),
+  );
+}
 export let permissionOpenGroups = {};
 // Which per-official override panels the administrator has expanded. Kept so a
 // live-update rebuild does not collapse the panel while it is being read.

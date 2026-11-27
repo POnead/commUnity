@@ -26,8 +26,10 @@ server/
   domains/                 One module per domain; each owns its routes and queries
     auth.mjs               Sign-in, registration, password reset, recovery
     users.mjs              Accounts, profile, profile photos, working hours
-    verification.mjs       ID submission/review and face enrollment/duty check
-    state.mjs              The /api/state sync engine (read/role-scoped save)
+    verification.mjs       Re-exports the verification modules below
+    verification/          ID review/submit routes, face duty check, OCR/ID matching, settings
+    state.mjs              Re-exports the state modules below
+    state/                 Validation, role-scoped read, per-role save branches, /api/state routes
     reports.mjs            Concerns: validation, priority/SLA endpoints, photos
     service-targets.mjs    Response vs. resolution targets, service cycles, overdue flags
     schedules.mjs          Collection schedules and reminders
@@ -40,22 +42,35 @@ server/
     migrate.mjs            Migration runner and administrator bootstrap
     migrations/            Numbered, append-only schema migrations
 app/
-  main.mjs                 Composition root: boots the app, routes, event listeners
-  core.mjs                 State, data loading, saving, live updates, shared helpers
+  main.mjs                 Re-exports the composition-root modules below
+  main/                    Shell, render, actions, reports, content, profile, users, verification,
+                           location, UI helpers and bootstrapping
+  core.mjs                 Re-exports the core modules below
+  core/
+    state.mjs              Live bindings, permission drafts, setState hook
+    session.mjs            Load/save, session sync, live refresh, face-check pause
+    data.mjs               Locations, permissions, selectors, retry merge, schedule rules
+    format.mjs             Icons, escaping, dates, labels, initials, ids
+    forms.mjs              Form fields, buttons, report and calendar drafts
+    feedback.mjs           Toasts, confirm dialog, face-check redirect
   face-capture.mjs         Lazy face-api loader, liveness sequence, photo fallback
   vendor/                  Self-hosted face-api bundle and its model weights
   views.mjs                View re-exports and role dispatchers
   views/
-    shared.mjs             Shared shell, report tables, calendar, notifications, profile/ID panels
-    resident.mjs           Resident pages
-    official.mjs           Barangay official pages
-    administrator.mjs      Administrator pages
-    auth.mjs               Sign-in, registration and face-gate screens
+    shared.mjs             Re-exports the shared modules below
+    shared/                Shell, reports, calendar, hotlines, notifications, ID/face panels
+    dispatch.mjs           Shared page dispatchers (reports, hotlines, profile, announcements)
+    resident/              Overview, calendar, collection, report, hotlines, reports, notifications, profile
+    official/              Overview, concerns, assigned, calendar, collection, history, announcements,
+                           hotlines, notifications, profile, face-check
+    administrator/         Overview, calendar, reports, approvals, verifications, hotlines,
+                           notifications, settings and its nine subpages
+    auth/                  Sign-in, registration, password recovery and face gate
   map.mjs                  Google Maps pickers, pin rendering, event maps, and map state
   constants.mjs            Pure constants (roles, statuses, permissions, defaults)
 ```
 
-The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. `app/views.mjs` re-exports the per-account modules in `app/views/`, so callers keep importing from one path.
+The frontend is buildless vanilla JS as native ES modules under `app/` (`app/main.mjs` imports `app/core.mjs`, `app/views.mjs`, `app/map.mjs`, `app/constants.mjs`) with a strict CSP. `app/main.mjs`, `app/core.mjs` and `app/views.mjs` are barrels: they re-export the modules under `app/main/`, `app/core/` and `app/views/<role>/`, so callers keep importing from one path. Shared bindings live in `app/core/state.mjs`; every write goes through its `setState` hook. A few UI-only counters that cross module boundaries use small setter functions in their owning module (ESM imports are read-only).
 
 ## Run locally
 

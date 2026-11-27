@@ -944,7 +944,8 @@ a:hover {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 16px 8px;
+  /* Match .panel-body's horizontal padding so the title and action line up with the content. */
+  padding: 14px 20px 8px;
 }
 
 .panel-head h2,
@@ -962,9 +963,11 @@ a:hover {
 }
 
 .panel-head a,
-.panel-head .text-button {
+.panel-head .text-button,
+.panel-head > .button {
   flex: none;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .panel-head + .panel-body {
@@ -1833,6 +1836,15 @@ a:hover {
   gap: 12px;
   padding: 13px 15px;
   border-top: 1px solid var(--line);
+}
+
+/* User rows have five cells; the shared six-column template left a phantom
+   track, pushing the Action column 12px off the content edge. */
+@media (min-width: 761px) {
+  .record-row.user-record,
+  .record-row.user-record-head {
+    grid-template-columns: minmax(150px, 1.5fr) minmax(88px, 0.85fr) minmax(104px, 1fr) minmax(100px, 0.95fr) auto;
+  }
 }
 
 .record-row:hover {
@@ -5982,6 +5994,7 @@ html[data-theme="admin"] .user-toolbar .search-field,
 html[data-theme="admin"] .user-toolbar .select {
   width: 100%;
   min-width: 0;
+  max-width: none;
 }
 
 html[data-theme="admin"] .button:not(.secondary):not(.danger):not(.tertiary) {
@@ -10229,8 +10242,11 @@ html[data-theme="auth"] .processing-modal {
   width: min(100%, 320px);
   margin-inline: auto;
 }
-.admin-face-enroll > .button {
-  justify-self: center;
+.admin-face-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 .admin-face-stage {
   margin: 0;

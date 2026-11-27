@@ -2214,7 +2214,10 @@ export function adminFaceEnrollMarkup(user) {
       <button class="face-hud-cancel" type="button" data-action="admin-face-cancel" hidden>Cancel</button>
     </div>
     <p class="admin-face-stage" id="admin-face-stage" role="status" aria-live="polite">Ready to capture.</p>
-    <button class="button secondary" type="button" data-face-start data-idle-label="Capture official face" data-busy-label="Capturing…" data-action="admin-face-enroll" data-id="${esc(user.id)}">Capture official face</button>
+    <div class="admin-face-actions">
+      <button class="button secondary" type="button" data-face-start data-idle-label="Capture official face" data-busy-label="Capturing…" data-action="admin-face-enroll" data-id="${esc(user.id)}">Capture official face</button>
+      <button class="button danger small" type="button" data-action="clear-face" data-id="${esc(user.email)}" title="Remove this official's enrolled face reference; they will need to enroll again">Clear face reference</button>
+    </div>
   </section>`;
 }
 
@@ -2435,7 +2438,7 @@ export function userRowsMarkup(users) {
     <div class="record-meta" role="cell" data-label="Role">${esc(ROLES[user.role] || user.role)}</div>
     <div class="record-meta" role="cell" data-label="Area">${esc(user.area || "—")}</div>
     <div role="cell" data-label="Status">${statusPill(user.status || "Active")}</div>
-    <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="edit-user" data-id="${esc(user.email)}">Edit</button>${user.role === "official" ? `<button class="button secondary small" type="button" data-action="clear-face" data-id="${esc(user.email)}" title="Remove this official's enrolled face reference; they will need to enroll again">Clear face</button>` : ""}</div>
+    <div class="record-actions" role="cell" data-label=""><button class="button secondary small" type="button" data-action="edit-user" data-id="${esc(user.email)}">Edit</button></div>
   </div>`,
     )
     .join("")}</div>`;
